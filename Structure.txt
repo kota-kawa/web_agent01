@@ -1,0 +1,19 @@
+small_browser4/
+├── docker-compose.yml         
+├── vnc/
+│   ├── Dockerfile             
+│   ├── automation_server.py   
+│   ├── scripts/               
+│   │   └── start-chromium.sh 
+│   └── supervisor/          
+│       ├── automation.conf   
+│       └── chromium.conf    
+│       └── websockify.conf    
+│	 └── x11vnc.conf    
+│	 └── xvfb.conf    
+└── web/
+    ├── Dockerfile           
+    ├── app.py               
+    ├── requirements.txt    
+    └── templates/
+        └── index.html       

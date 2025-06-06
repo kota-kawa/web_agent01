@@ -1,0 +1,36 @@
+services:
+  vnc:
+    build: ./vnc
+    ports:
+      - "6901:6901"     # noVNC
+      - "9222:9222"     # Chrome DevTools
+      - "7000:7000"     # Playwright API
+    networks: [small_browser_net]
+    healthcheck:                       # ← 追加: port 7000 が立つまで監視
+      test: ["CMD", "curl", "-f", "http://localhost:7000/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    volumes:
+      - .:/app 
+
+  web:
+    build: ./web
+    working_dir: /app/web          # ← app.py がある場所
+    command: python -u app.py      # ← flask run ではなくシンプルに
+
+    environment:
+      - GEMINI_API_KEY=AIzaSyBkFFaKqduP5TXQpFx4HsYfpg6wgS-ScmY
+      - GROQ_API_KEY=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
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    depends_on:                        # ← vnc が healthy になるまで待つ
+      vnc:
+        condition: service_healthy
+    networks: [small_browser_net]
+
+networks:
+  small_browser_net:
+    name: small_browser_net
