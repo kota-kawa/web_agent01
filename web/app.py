@@ -6,8 +6,7 @@ import requests
 from flask import Flask, request, jsonify, render_template, Response, send_from_directory
 
 # --------------- Gemini SDK --------------------------------------
-import google.generativeai as genai
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+from llm import call_llm
 
 # --------------- Flask & Logger ----------------------------------
 app = Flask(__name__)
@@ -173,70 +172,6 @@ def build_prompt(cmd: str, page: str, hist):
     )
     return system_prompt
 
-# --------------- JSON 抽出 ---------------------------------------
-def extract_json(txt: str):
-    txt = re.sub(r"```(?:json)?|```", "", txt, flags=re.I)
-    dec = json.JSONDecoder()
-    idx = 0
-    while idx < len(txt):
-        if txt[idx] == "{":
-            try:
-                obj, _ = dec.raw_decode(txt[idx:])
-                return obj
-            except json.JSONDecodeError:
-                pass
-        idx += 1
-    raise ValueError("no JSON found")
-
-# --------------- Gemini 応答 → DSL 正規化 ------------------------
-def normalize_action(a: dict) -> dict:
-    act = {k.lower(): v for k, v in a.items()}
-    act["action"] = act.get("action", "").lower()
-
-    if act["action"] == "click_text" and "target" not in act and "text" in act:
-        act["target"] = act["text"]
-
-    if act["action"] == "click" and "target" not in act and "text" in act:
-        act["action"] = "click_text"
-        act["target"] = act["text"]
-
-    if act["action"] == "wait" and "ms" not in act:
-        act["ms"] = 500
-
-    return act
-
-def call_llm(prompt: str) -> dict:
-    try:
-        model = genai.GenerativeModel("models/gemini-2.0-flash")
-        raw   = model.start_chat(history=[]).send_message(prompt).text
-    except Exception as e:
-        log.error("Gemini call failed: %s", e)
-        return {"explanation": "Gemini 呼び出し失敗", "actions": [], "raw": "", "complete": True}
-
-    # raw のログ
-    log.info("◆ GEMINI RAW ◆\n%s\n◆ END RAW ◆", raw)
-
-    expl = re.split(r"```json", raw, 1)[0].strip()
-    try:
-        js = extract_json(raw)
-    except Exception as e:
-        log.error("JSON parse error: %s", e)
-        return {"explanation": expl or "JSON 抽出失敗", "actions": [], "raw": raw, "complete": True}
-
-    acts = []
-    for act in js.get("actions", []):
-        if isinstance(act, dict) and "commands" in act:    # ネスト構造の平坦化
-            for c in act["commands"]:
-                acts.append(normalize_action({"action": c.get("command"), **c}))
-        else:
-            acts.append(normalize_action(act))
-
-    return {
-        "explanation": expl,
-        "actions": acts,
-        "raw": raw,
-        "complete": js.get("complete", True)
-    }
 
 # --------------- API ---------------------------------------------
 @app.post("/execute")
@@ -246,10 +181,11 @@ def execute():
     if not cmd:
         return jsonify(error="command empty"), 400
 
-    page = data.get("pageSource") or vnc_html()
-    hist = load_hist()
+    page  = data.get("pageSource") or vnc_html()
+    model = data.get("model", "gemini")
+    hist  = load_hist()
     prompt = build_prompt(cmd, strip_html(page), hist)
-    res  = call_llm(prompt)
+    res   = call_llm(prompt, model)
 
     hist.append({"user": cmd, "bot": res})
     save_hist(hist)

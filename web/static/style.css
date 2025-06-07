@@ -115,6 +115,13 @@ footer {
     align-items: center;
 }
 
+#input-area select {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 5px;
+    font-size: 14px;
+}
+
 #input-area textarea {
     flex-grow: 1;
     border: 1px solid #ddd;
