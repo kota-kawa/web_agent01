@@ -12,6 +12,10 @@
     <div id="window-header"><span>チャット</span><div class="close-btn" onclick="closeWindow()">×</div></div>
     <div id="chat-area"><p class="bot-message">こんにちは！</p></div>
     <div id="input-area">
+      <select id="model-select" style="height:38px;">
+        <option value="gemini">Gemini</option>
+        <option value="groq">Groq</option>
+      </select>
       <textarea id="user-input" rows="2" placeholder="ここに入力..."></textarea>
       <button>送信</button>
     </div>

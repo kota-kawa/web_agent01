@@ -47,14 +47,14 @@ async function sendDSL(acts) {
    showInUI === true ならチャット欄に説明を追加
    戻り値: { cont:Boolean, explanation:String }
    ====================================== */
-async function runTurn(cmd, showInUI = true) {
+async function runTurn(cmd, showInUI = true, model = "gemini") {
   // 最新ページ HTML を取得 (失敗しても '' になる)
   const html = await fetch("/vnc-source")
     .then(r => (r.ok ? r.text() : ""))
     .catch(() => "");
 
-  // Gemini＋解析結果取得
-  const res = await sendCommand(cmd, html);
+  // LLM 解析結果取得
+  const res = await sendCommand(cmd, html, model);
 
   /* -- UI へ進行状況を追加表示 -- */
   if (showInUI && res.explanation) {
@@ -66,7 +66,7 @@ async function runTurn(cmd, showInUI = true) {
   }
 
   /* -- DevTools Console に raw を 1 回だけ出力 -- */
-  if (res.raw) console.log("Gemini raw output:\n", res.raw);
+  if (res.raw) console.log("LLM raw output:\n", res.raw);
 
   /* -- DSL 実行 -- */
   await sendDSL(normalizeActions(res));
@@ -79,7 +79,7 @@ async function runTurn(cmd, showInUI = true) {
    マルチターン実行
    skipFirst === true なら 1 ターン目は UI に二重表示しない
    ====================================== */
-async function executeTask(cmd, skipFirst = false) {
+async function executeTask(cmd, skipFirst = false, model = "gemini") {
   let keepLoop   = true;
   let firstIter  = true;
   let lastMsg    = "";       // ★ 追加: 前ターンの説明
@@ -89,7 +89,7 @@ async function executeTask(cmd, skipFirst = false) {
   while (keepLoop) {
     try {
       const show = !(skipFirst && firstIter);
-      const { cont, explanation } = await runTurn(cmd, show);
+      const { cont, explanation } = await runTurn(cmd, show, model);
 
       /* ----- ★ 追加: 重複説明チェック ----- */
       if (explanation === lastMsg) {
@@ -128,5 +128,7 @@ async function executeTask(cmd, skipFirst = false) {
 document.getElementById("executeButton")
   .addEventListener("click", () => {
     const cmd = document.getElementById("nlCommand").value.trim();
-    if (cmd) executeTask(cmd, false);
+    const sel = document.getElementById("model-select");
+    const model = sel ? sel.value : "gemini";
+    if (cmd) executeTask(cmd, false, model);
   });

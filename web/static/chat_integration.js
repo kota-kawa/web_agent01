@@ -1,8 +1,9 @@
 // chat_integration.js ― チャット欄とバックエンドをつなぐ
 document.addEventListener("DOMContentLoaded", () => {
-  const sendButton = document.querySelector("#input-area button");
-  const userInput  = document.getElementById("user-input");
-  const chatArea   = document.getElementById("chat-area");
+  const sendButton  = document.querySelector("#input-area button");
+  const userInput   = document.getElementById("user-input");
+  const chatArea    = document.getElementById("chat-area");
+  const modelSelect = document.getElementById("model-select");
 
   /* ----- ページ読み込み時に未完了タスクがあれば再開 ----- */
   (async function resumeIfNeeded() {
@@ -19,7 +20,8 @@ document.addEventListener("DOMContentLoaded", () => {
           notice.textContent = `未完了タスクを再開します: 「${cmd}」`;
           chatArea.appendChild(notice);
           /* 変更: skipFirst=false → 最初の説明も UI に表示 */
-          await executeTask(cmd, false);    // 変更
+          const model = modelSelect ? modelSelect.value : "gemini";
+          await executeTask(cmd, false, model);    // 変更
         }
       }
     } catch (err) {
@@ -65,19 +67,20 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       /* プレビュー用に LLM 呼び出し（/execute） */
       const pageSrc = await fetchVncHtml();
-      const preview = await sendCommand(text, pageSrc);
+      const model   = modelSelect ? modelSelect.value : "gemini";
+      const preview = await sendCommand(text, pageSrc, model);
 
       /* 変更: チャット欄には explanation のみを表示（JSONプレビューを削除） */
       b.textContent = preview.explanation || "(説明がありません)";
 
       /* DevTools Console に raw を 1 回だけ表示 */
-      if (preview.raw) console.log("Gemini raw output:\n", preview.raw);
+      if (preview.raw) console.log("LLM raw output:\n", preview.raw);
 
       /* ----- マルチターン実行開始 -----
          skipFirst = true: 1st ターンは既に UI に表示済みなので
          2 ターン目以降だけ追加表示する */
       if (typeof executeTask === "function") {
-        await executeTask(text, true);             // 変更
+        await executeTask(text, true, model);             // 変更
       } else {
         console.error("executeTask function not found.");
       }
