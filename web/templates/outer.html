@@ -16,9 +16,14 @@
         <option value="gemini">Gemini</option>
         <option value="groq">Groq</option>
       </select>
-      <textarea id="user-input" rows="2" placeholder="ここに入力..."></textarea>
+      <textarea id="user-input" rows="4" placeholder="ここに入力..."></textarea>
       <button>送信</button>
     </div>
+  </div>
+  <div id="chat-controls">
+    <button id="stop-button">停止</button>
+    <button id="history-toggle">ログ</button>
+    <div id="operation-history" style="max-height:150px;overflow-y:auto;padding:5px;font-size:12px;"></div>
   </div>
 
   <div id="hidden-browser-executor" style="display:none;">
