@@ -57,4 +57,16 @@ window.addEventListener("load", function() {
         chatWindow.style.top = savedPos.top;
         chatWindow.style.left = savedPos.left;
     }
+
+    var toggleBtn = document.getElementById("history-toggle");
+    var historyArea = document.getElementById("operation-history");
+    if (toggleBtn && historyArea) {
+        toggleBtn.addEventListener("click", function() {
+            if (historyArea.style.display === "none" || historyArea.style.display === "") {
+                historyArea.style.display = "block";
+            } else {
+                historyArea.style.display = "none";
+            }
+        });
+    }
 });
