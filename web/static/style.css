@@ -180,3 +180,7 @@ footer {
     overflow-y: auto;
     font-family: monospace;
 }
+
+#operation-history pre {
+    white-space: pre-wrap;
+}

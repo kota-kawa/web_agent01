@@ -155,6 +155,9 @@ async function executeTask(cmd, skipFirst = false, model = "gemini") {
       }
       /* ----------------------------------- */
 
+
+// make function globally accessible for other scripts
+window.executeTask = executeTask;
       keepLoop  = cont;
       firstIter = false;
 
