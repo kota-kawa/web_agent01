@@ -7,6 +7,12 @@
 <body>
   <iframe id="vnc_frame" src="{{ vnc_url }}" style="width:100%;height:80vh;border:none;"></iframe>
 
+  <div id="chat-controls">
+    <button id="stop-button">停止</button>
+    <button id="history-toggle">ログ</button>
+  </div>
+  <div id="operation-history"></div>
+
   <!-- ===== チャット UI（ブラウザ側のみ） ===== -->
   <div id="draggable-window">
     <div id="window-header"><span>チャット</span><div class="close-btn" onclick="closeWindow()">×</div></div>
@@ -16,11 +22,10 @@
         <option value="gemini">Gemini</option>
         <option value="groq">Groq</option>
       </select>
-      <textarea id="user-input" rows="2" placeholder="ここに入力..."></textarea>
+      <textarea id="user-input" rows="6" placeholder="ここに入力..."></textarea>
       <button>送信</button>
     </div>
   </div>
-
   <div id="hidden-browser-executor" style="display:none;">
     <textarea id="nlCommand"></textarea><button id="executeButton">実行</button>
     <pre id="logOutput"></pre>

@@ -128,7 +128,8 @@ footer {
     border-radius: 8px;
     padding: 10px;
     font-size: 14px;
-    resize: none;
+    resize: vertical;
+    min-height: 160px; /* larger typing area */
 }
 
 #input-area button {
@@ -173,12 +174,39 @@ footer {
     align-self: center;          /* 追加 */
 }
 
+
+#chat-controls {
+    position: fixed;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 6px 12px;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    z-index: 1000;
+}
+
 #operation-history {
+    position: fixed;
+    bottom: 60px;
+    left: 50%;
+    transform: translateX(-50%);
     background: #fafafa;
-    border-top: 1px solid #ccc;
-    padding: 4px;
+    border: 1px solid #ccc;
+    padding: 6px;
     overflow-y: auto;
     font-family: monospace;
+    display: none;
+    max-height: 150px;
+    font-size: 12px;
+    width: 90%;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    border-radius: 6px;
+    z-index: 999;
 }
 
 

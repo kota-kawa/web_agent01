@@ -39,7 +39,11 @@ document.addEventListener("DOMContentLoaded", () => {
           chatArea.appendChild(notice);
           /* 変更: skipFirst=false → 最初の説明も UI に表示 */
           const model = modelSelect ? modelSelect.value : "gemini";
-          await executeTask(cmd, false, model);    // 変更
+          if (typeof window.executeTask === "function") {
+            await window.executeTask(cmd, false, model);
+          } else {
+            console.error("executeTask function not found.");
+          }
         }
       }
     } catch (err) {
@@ -97,8 +101,8 @@ document.addEventListener("DOMContentLoaded", () => {
       /* ----- マルチターン実行開始 -----
          skipFirst = true: 1st ターンは既に UI に表示済みなので
          2 ターン目以降だけ追加表示する */
-      if (typeof executeTask === "function") {
-        await executeTask(text, true, model);             // 変更
+      if (typeof window.executeTask === "function") {
+        await window.executeTask(text, true, model);
       } else {
         console.error("executeTask function not found.");
       }
