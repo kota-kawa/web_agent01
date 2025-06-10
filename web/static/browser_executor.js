@@ -5,6 +5,8 @@
    ====================================== */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chatArea = document.getElementById("chat-area");       // 追加: チャット欄参照
+const opHistory = document.getElementById("operation-history"); // 操作履歴
+let stopRequested = false;
 
 /* ======================================
    DSL 正規化
@@ -28,6 +30,16 @@ function normalizeActions(instr) {
    ====================================== */
 async function sendDSL(acts) {
   if (!acts.length) return;           // 空なら送らない → 500 防止
+  if (requiresApproval(acts)) {
+    if (!confirm("重要な操作を実行しようとしています。続行しますか?")) {
+      const warn = document.createElement("p");
+      warn.classList.add("system-message");
+      warn.textContent = "ユーザーが操作を拒否しました";
+      chatArea.appendChild(warn);
+      chatArea.scrollTop = chatArea.scrollHeight;
+      return;
+    }
+  }
   try {
     const r = await fetch("/automation/execute-dsl", {
       method: "POST",
@@ -37,9 +49,27 @@ async function sendDSL(acts) {
     if (!r.ok) {
       console.error("execute-dsl failed:", r.status, await r.text());
     }
+    appendHistory(acts);
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
   }
+}
+
+function requiresApproval(acts) {
+  return acts.some(a => {
+    const t = (a.text || a.target || "").toLowerCase();
+    return /購入|削除|checkout|pay|支払/.test(t);
+  });
+}
+
+function appendHistory(acts) {
+  if (!opHistory) return;
+  acts.forEach(a => {
+    const li = document.createElement("div");
+    li.textContent = JSON.stringify(a);
+    opHistory.appendChild(li);
+    opHistory.scrollTop = opHistory.scrollHeight;
+  });
 }
 
 /* ======================================
@@ -85,8 +115,10 @@ async function executeTask(cmd, skipFirst = false, model = "gemini") {
   let lastMsg    = "";       // ★ 追加: 前ターンの説明
   let repeatCnt  = 0;        // ★ 追加: 同一説明の連続回数
   const MAX_REP  = 1;        // ★ 追加: ここを超えたら強制終了
+  stopRequested  = false;
 
   while (keepLoop) {
+    if (stopRequested) break;
     try {
       const show = !(skipFirst && firstIter);
       const { cont, explanation } = await runTurn(cmd, show, model);
@@ -117,7 +149,7 @@ async function executeTask(cmd, skipFirst = false, model = "gemini") {
   /* 完了 or 強制終了メッセージ */
   const done = document.createElement("p");
   done.classList.add("system-message");
-  done.textContent = "✅ タスクを終了しました";
+  done.textContent = stopRequested ? "⏹ タスクを中断しました" : "✅ タスクを終了しました";
   chatArea.appendChild(done);
   chatArea.scrollTop = chatArea.scrollHeight;
 }
@@ -132,3 +164,8 @@ document.getElementById("executeButton")
     const model = sel ? sel.value : "gemini";
     if (cmd) executeTask(cmd, false, model);
   });
+
+const stopBtn = document.getElementById("stop-button");
+if (stopBtn) {
+  stopBtn.addEventListener("click", () => { stopRequested = true; });
+}
