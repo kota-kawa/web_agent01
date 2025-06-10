@@ -63,6 +63,15 @@ def download_history():
         )
     return jsonify(error="history file not found"), 404
 
+# ----- Memory endpoint -----
+@app.get("/memory")
+def memory():
+    try:
+        return jsonify(load_hist())
+    except Exception as e:
+        log.error("memory error: %s", e)
+        return jsonify(error=str(e)), 500
+
 # --------------- Helper ------------------------------------------
 def strip_html(ht: str) -> str:
     """style/script を削除してテキスト量を圧縮"""

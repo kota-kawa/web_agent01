@@ -33,6 +33,23 @@ PLAYWRIGHT = None        # async_playwright() の戻り値を保持
 GLOBAL_BROWSER = None    # Browser オブジェクト
 GLOBAL_PAGE = None       # Page オブジェクト
 
+async def reset_browser():
+    """ブラウザを再起動してページを開き直す（自己修復用）"""
+    global PLAYWRIGHT, GLOBAL_BROWSER, GLOBAL_PAGE
+    try:
+        if GLOBAL_BROWSER:
+            await GLOBAL_BROWSER.close()
+    except Exception:
+        pass
+    GLOBAL_PAGE = None
+    if PLAYWRIGHT:
+        try:
+            await PLAYWRIGHT.stop()
+        except Exception:
+            pass
+    PLAYWRIGHT = None
+    await init_browser_and_page()
+
 async def init_browser_and_page():
     """
     初回アクセス時に、ブラウザ／ページを起動してグローバル変数に保持する。
@@ -130,33 +147,50 @@ async def run_actions(raw: List[Dict]) -> str:
 
     acts = [await normalize(x) for x in raw]
 
+    async def exec_one(act):
+        match act["action"]:
+            case "navigate":
+                await GLOBAL_PAGE.goto(act["target"])
+            case "click":
+                if sel := act.get("target"):
+                    await GLOBAL_PAGE.locator(sel).first.click()
+                elif txt := act.get("text"):
+                    await safe_click_by_text(GLOBAL_PAGE, txt)
+            case "click_text":
+                await safe_click_by_text(GLOBAL_PAGE, act["target"])
+            case "type":
+                await GLOBAL_PAGE.fill(act["target"], act.get("value", ""))
+            case "wait":
+                await GLOBAL_PAGE.wait_for_timeout(int(act.get("ms", 500)))
+            case "scroll":
+                amt = int(act.get("amount", 400))
+                if str(act.get("direction", "down")).lower().startswith("up"):
+                    amt = -amt
+                if tgt := act.get("target"):
+                    await GLOBAL_PAGE.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", amt)
+                else:
+                    await GLOBAL_PAGE.evaluate("(y)=>window.scrollBy(0,y)", amt)
+            case _:
+                log.warning("Unknown action skipped: %s", act)
+
     for a in acts:
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                match a["action"]:
-                    case "navigate":
-                        await GLOBAL_PAGE.goto(a["target"])
-                    case "click":
-                        if sel := a.get("target"):
-                            await GLOBAL_PAGE.locator(sel).first.click()
-                        elif txt := a.get("text"):
-                            await safe_click_by_text(GLOBAL_PAGE, txt)
-                    case "click_text":
-                        await safe_click_by_text(GLOBAL_PAGE, a["target"])
-                    case "type":
-                        await GLOBAL_PAGE.fill(a["target"], a.get("value", ""))
-                    case "wait":
-                        await GLOBAL_PAGE.wait_for_timeout(int(a.get("ms", 500)))
-                    case _:
-                        log.warning("Unknown action skipped: %s", a)
-                break  # 成功したらリトライループを抜ける
+                await exec_one(a)
+                break
             except Exception as e:
                 log.error(f"Playwright action error (attempt {attempt}/{max_retries}): {e}")
                 if attempt < max_retries:
                     await asyncio.sleep(1)
                 else:
-                    log.error("Max retries reached. Skipping this action.")
+                    log.error("Max retries reached. Attempting browser reset.")
+                    await reset_browser()
+                    try:
+                        await exec_one(a)
+                    except Exception as e2:
+                        log.error("Recovery attempt failed: %s", e2)
+                    break
     # 全アクション実行後にページコンテンツを返す
     html = await GLOBAL_PAGE.content()
     return html
