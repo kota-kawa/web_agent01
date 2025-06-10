@@ -48,6 +48,7 @@ async function sendDSL(acts) {
     });
     if (!r.ok) {
       console.error("execute-dsl failed:", r.status, await r.text());
+
       showSystemMessage(`DSL 実行エラー: ${r.status}`);
     } else {
       appendHistory(acts);
@@ -55,6 +56,12 @@ async function sendDSL(acts) {
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
     showSystemMessage(`通信エラー: ${e}`);
+
+    }
+    appendHistory(acts);
+  } catch (e) {
+    console.error("execute-dsl fetch error:", e);
+
   }
 }
 
@@ -82,6 +89,7 @@ function showSystemMessage(msg) {
   chatArea.appendChild(p);
   chatArea.scrollTop = chatArea.scrollHeight;
 }
+
 
 /* ======================================
    1ターン実行
