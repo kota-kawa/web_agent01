@@ -20,6 +20,7 @@
   </header>
 
   <!-- ===== メインコンテンツ & VNC iframe ===== -->
+
   <main style="display:flex;flex-direction:column;height:calc(100vh - 140px);">
     <div id="vnc-section" style="flex:1;">
       <!-- VNC (NoVNC) を iframe 表示 -->
@@ -36,6 +37,7 @@
     {% block content %}{% endblock %}
   </main>
 
+
   <!-- ===== チャットウィンドウ（共通） ===== -->
   <div id="draggable-window" style="position: fixed;">
     <div id="window-header">
@@ -50,12 +52,13 @@
         <option value="gemini">Gemini</option>
         <option value="groq">Groq</option>
       </select>
+
       <textarea id="user-input" rows="6" placeholder="ここに入力..."></textarea>
       <button>送信</button>
 
     </div>
   </div>
-  <!-- hidden executor area -->
+
   <div id="hidden-browser-executor" style="display:none;">
     <textarea id="nlCommand"></textarea>
     <button id="executeButton">実行</button>

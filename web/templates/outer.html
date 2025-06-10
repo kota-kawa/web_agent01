@@ -5,6 +5,7 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+
   <iframe id="vnc_frame" src="{{ vnc_url }}" style="width:100%;height:80vh;border:none;"></iframe>
 
   <div id="chat-controls">
@@ -27,6 +28,7 @@
     </div>
   </div>
   <div id="hidden-browser-executor" style="display:none;">
+
     <textarea id="nlCommand"></textarea><button id="executeButton">実行</button>
     <pre id="logOutput"></pre>
   </div>
