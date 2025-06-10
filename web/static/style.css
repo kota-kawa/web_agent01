@@ -129,7 +129,9 @@ footer {
     padding: 10px;
     font-size: 14px;
     resize: vertical;
+
     min-height: 80px;
+
 }
 
 #input-area button {
@@ -184,15 +186,20 @@ footer {
     z-index: 1000;
 }
 
+
+
 #operation-history {
     background: #fafafa;
-    border: 1px solid #ccc;
+    border-top: 1px solid #ccc;
+
     padding: 4px;
     overflow-y: auto;
     font-family: monospace;
     display: none;
+
     max-height: 150px;
     font-size: 12px;
+
 }
 
 
