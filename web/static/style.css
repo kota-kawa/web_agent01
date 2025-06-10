@@ -129,7 +129,9 @@ footer {
     padding: 10px;
     font-size: 14px;
     resize: vertical;
-    min-height: 60px;
+
+    min-height: 80px;
+
 }
 
 #input-area button {
@@ -174,13 +176,30 @@ footer {
     align-self: center;          /* 追加 */
 }
 
+
+#chat-controls {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    display: flex;
+    gap: 10px;
+    z-index: 1000;
+}
+
+
+
 #operation-history {
     background: #fafafa;
     border-top: 1px solid #ccc;
+
     padding: 4px;
     overflow-y: auto;
     font-family: monospace;
     display: none;
+
+    max-height: 150px;
+    font-size: 12px;
+
 }
 
 
