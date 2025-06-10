@@ -122,6 +122,7 @@ footer {
     font-size: 14px;
 }
 
+
 #input-area textarea {
     flex-grow: 1;
     border: 1px solid #ddd;
@@ -131,6 +132,7 @@ footer {
     resize: vertical;
     min-height: 120px;
 }
+
 
 #input-area button {
     background: linear-gradient(135deg, #6a11cb, #2575fc);
@@ -175,23 +177,32 @@ footer {
 }
 
 
+
 #chat-controls {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
     display: flex;
     gap: 10px;
-    justify-content: center;
-    margin-top: 10px;
+    z-index: 1000;
 }
+
+
 
 #operation-history {
     background: #fafafa;
-    border: 1px solid #ccc;
+    border-top: 1px solid #ccc;
+
     padding: 4px;
     overflow-y: auto;
     font-family: monospace;
     display: none;
+
     max-height: 150px;
     font-size: 12px;
+
 }
+
 
 
 #operation-history pre {
