@@ -21,6 +21,10 @@ app = Flask(__name__)
 log = logging.getLogger("auto")
 log.setLevel(logging.INFO)
 
+# 一貫したイベントループを確保する
+LOOP = asyncio.new_event_loop()
+asyncio.set_event_loop(LOOP)
+
 CDP = "http://localhost:9222"
 # Web UI の起点となるページ（最初にブラウザを開いたときの URL）
 WEB = "http://web:5000"  # VNC が初期表示するページ（チャット UI 無し）
@@ -32,6 +36,10 @@ WEB = "http://web:5000"  # VNC が初期表示するページ（チャット UI 
 PLAYWRIGHT = None        # async_playwright() の戻り値を保持
 GLOBAL_BROWSER = None    # Browser オブジェクト
 GLOBAL_PAGE = None       # Page オブジェクト
+
+def run_sync(coro):
+    """Run async coroutine on the global event loop."""
+    return LOOP.run_until_complete(coro)
 
 async def reset_browser():
     """ブラウザを再起動してページを開き直す（自己修復用）"""
@@ -206,9 +214,9 @@ def source():
         # もしまだ初期化されていなければ行う（初回のみ重い処理）
         if GLOBAL_PAGE is None:
             # 「Run in event loop」として init_browser_and_page() を同期的に呼び出し
-            asyncio.run(init_browser_and_page())
+            run_sync(init_browser_and_page())
         # ページの現在HTMLをキャッシュから取ってくる
-        html = asyncio.run(GLOBAL_PAGE.content())
+        html = run_sync(GLOBAL_PAGE.content())
         return Response(html, mimetype="text/plain")
     except Exception as e:
         log.exception("fatal")
@@ -226,7 +234,7 @@ def exec_dsl():
         if isinstance(acts, dict):
             acts = [acts]
         # run_actions では「もしまだ初期化されていなければ内部で init を呼ぶ」仕組み
-        html = asyncio.run(run_actions(acts))
+        html = run_sync(run_actions(acts))
         return Response(html, mimetype="text/plain")
     except Exception as e:
         log.exception("fatal")
@@ -237,6 +245,6 @@ def health():
     return "ok", 200
 
 if __name__ == "__main__":
-    # アプリ起動前にあらかじめブラウザを立ち上げてしまう場合は
-    # ここで asyncio.run(init_browser_and_page()) を呼んでも良い。
-    app.run(host="0.0.0.0", port=7000)
+    # 必要に応じて起動時にブラウザを初期化
+    # run_sync(init_browser_and_page())
+    app.run(host="0.0.0.0", port=7000, threaded=False)
