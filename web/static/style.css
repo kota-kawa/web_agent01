@@ -122,6 +122,7 @@ footer {
     font-size: 14px;
 }
 
+
 #input-area textarea {
     flex-grow: 1;
     border: 1px solid #ddd;
@@ -129,10 +130,9 @@ footer {
     padding: 10px;
     font-size: 14px;
     resize: vertical;
-
-    min-height: 80px;
-
+    min-height: 120px;
 }
+
 
 #input-area button {
     background: linear-gradient(135deg, #6a11cb, #2575fc);
@@ -177,6 +177,7 @@ footer {
 }
 
 
+
 #chat-controls {
     position: fixed;
     bottom: 20px;
@@ -201,6 +202,7 @@ footer {
     font-size: 12px;
 
 }
+
 
 
 #operation-history pre {
