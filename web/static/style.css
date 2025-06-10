@@ -171,4 +171,16 @@ footer {
     background: #fff3cd;         /* 追加 */
     color: #856404;              /* 追加 */
     align-self: center;          /* 追加 */
-}      
+}
+
+#operation-history {
+    background: #fafafa;
+    border-top: 1px solid #ccc;
+    padding: 4px;
+    overflow-y: auto;
+    font-family: monospace;
+}
+
+#operation-history pre {
+    white-space: pre-wrap;
+}

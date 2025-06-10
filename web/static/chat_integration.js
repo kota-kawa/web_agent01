@@ -4,6 +4,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const userInput   = document.getElementById("user-input");
   const chatArea    = document.getElementById("chat-area");
   const modelSelect = document.getElementById("model-select");
+  const memoryBtn   = document.getElementById("memory-button");
+
+  if (memoryBtn) {
+    memoryBtn.addEventListener("click", async () => {
+      try {
+        const r = await fetch("/memory");
+        if (!r.ok) throw new Error("memory fetch failed");
+        const hist = await r.json();
+        const pre = document.createElement("pre");
+        pre.classList.add("system-message");
+        pre.textContent = JSON.stringify(hist, null, 2);
+        chatArea.appendChild(pre);
+        chatArea.scrollTop = chatArea.scrollHeight;
+      } catch (e) {
+        console.error("memory fetch error:", e);
+      }
+    });
+  }
 
   /* ----- ページ読み込み時に未完了タスクがあれば再開 ----- */
   (async function resumeIfNeeded() {
