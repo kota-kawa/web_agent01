@@ -205,8 +205,19 @@ def forward_dsl():
     payload = request.get_json(force=True)
     if not payload.get("actions"):
         return Response("", 200, mimetype="text/plain")
-    r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=60)
-    return Response(r.text, r.status_code, mimetype="text/plain")
+    try:
+        r = requests.post(
+            f"{VNC_API}/execute-dsl",
+            json=payload,
+            timeout=60,
+        )
+        return Response(r.text, r.status_code, mimetype="text/plain")
+    except requests.Timeout:
+        log.error("forward_dsl timeout")
+        return jsonify(error="timeout"), 504
+    except Exception as e:
+        log.error("forward_dsl error: %s", e)
+        return jsonify(error=str(e)), 500
 
 @app.get("/vnc-source")
 def vhtml():
