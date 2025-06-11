@@ -126,6 +126,43 @@ async def normalize(a: Dict) -> Dict:
         a["target"] = a["text"]
     return a
 
+async def safe_click(loc, timeout: int = ACTION_TIMEOUT, force: bool = False):
+    """Click element with fallbacks to avoid common Playwright errors."""
+    try:
+        await loc.wait_for(state="visible", timeout=timeout)
+        await loc.scroll_into_view_if_needed(timeout=timeout)
+        await loc.click(timeout=timeout, force=force)
+    except Exception as e:
+        log.warning("click failed: %s; trying recovery", e)
+        try:
+            await GLOBAL_PAGE.keyboard.press("Escape")
+            await loc.click(timeout=timeout, force=True)
+            return
+        except Exception:
+            pass
+        try:
+            await loc.evaluate("el => el.click()")
+        except Exception as e2:
+            log.error("fallback JS click failed: %s", e2)
+            raise
+
+async def safe_fill(loc, value: str, timeout: int = ACTION_TIMEOUT):
+    """Fill input element with a fallback in case of failures."""
+    try:
+        await loc.wait_for(state="visible", timeout=timeout)
+        await loc.scroll_into_view_if_needed(timeout=timeout)
+        await loc.fill(value, timeout=timeout)
+    except Exception as e:
+        log.warning("fill failed: %s; trying JS value set", e)
+        try:
+            await loc.evaluate(
+                "(el, val) => {el.focus(); el.value = val; el.dispatchEvent(new Event('input', {bubbles: true}));}",
+                value,
+            )
+        except Exception as e2:
+            log.error("fallback fill failed: %s", e2)
+            raise
+
 async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT, force: bool = False):
     """
     Playwright strict-mode で複数マッチした場合の 500 を防ぐ。
@@ -139,7 +176,7 @@ async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT, forc
 
         await link.first.wait_for(state="visible", timeout=timeout)
         await link.first.scroll_into_view_if_needed(timeout=timeout)
-        await link.first.click(timeout=timeout, force=force)
+        await safe_click(link.first, timeout=timeout, force=force)
         return
 
     # 2) exact=True テキスト
@@ -148,14 +185,14 @@ async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT, forc
 
         await exact_loc.first.wait_for(state="visible", timeout=timeout)
         await exact_loc.first.scroll_into_view_if_needed(timeout=timeout)
-        await exact_loc.first.click(timeout=timeout, force=force)
+        await safe_click(exact_loc.first, timeout=timeout, force=force)
         return
 
     # 3) 非 strict (first match)
     last = page.get_by_text(txt).first
     await last.wait_for(state="visible", timeout=timeout)
     await last.scroll_into_view_if_needed(timeout=timeout)
-    await last.click(timeout=timeout, force=force)
+    await safe_click(last, timeout=timeout, force=force)
 
 
 async def run_actions(raw: List[Dict]) -> str:
@@ -183,9 +220,7 @@ async def run_actions(raw: List[Dict]) -> str:
             case "click":
                 if sel := act.get("target"):
                     loc = GLOBAL_PAGE.locator(sel).first
-                    await loc.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-                    await loc.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
-                    await loc.click(timeout=ACTION_TIMEOUT, force=force)
+                    await safe_click(loc, timeout=ACTION_TIMEOUT, force=force)
                 elif txt := act.get("text"):
                     await safe_click_by_text(
                         GLOBAL_PAGE,
@@ -202,10 +237,7 @@ async def run_actions(raw: List[Dict]) -> str:
                 )
             case "type":
                 loc = GLOBAL_PAGE.locator(act["target"]).first
-                await loc.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-
-                await loc.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
-                await loc.fill(act.get("value", ""), timeout=ACTION_TIMEOUT)
+                await safe_fill(loc, act.get("value", ""), timeout=ACTION_TIMEOUT)
             case "wait":
                 await GLOBAL_PAGE.wait_for_timeout(int(act.get("ms", 500)))
             case "scroll":
