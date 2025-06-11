@@ -104,9 +104,12 @@ async function runTurn(cmd, showInUI = true, model = "gemini", placeholder = nul
 
   if (res.raw) console.log("LLM raw output:\n", res.raw);
 
-  await sendDSL(normalizeActions(res));
+  const acts = normalizeActions(res);
+  if (acts.length) {
+    await sendDSL([acts[0]]);
+  }
 
-  return { cont: res.complete === false, explanation: res.explanation || "" };
+  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "" };
 }
 
 /* ======================================
