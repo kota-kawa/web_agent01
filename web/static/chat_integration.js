@@ -80,29 +80,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const b = document.createElement("p");
     b.classList.add("bot-message");
     b.textContent = "AI が応答中...";
-    const spin = document.createElement("span");   // 追加
-    spin.classList.add("spinner");                 // 追加
-    b.appendChild(spin);                           // 追加
+    const spin = document.createElement("span");
+    spin.classList.add("spinner");
+    b.appendChild(spin);
     chatArea.appendChild(b);
     chatArea.scrollTop = chatArea.scrollHeight;
 
     try {
-      /* プレビュー用に LLM 呼び出し（/execute） */
-      const pageSrc = await fetchVncHtml();
-      const model   = modelSelect ? modelSelect.value : "gemini";
-      const preview = await sendCommand(text, pageSrc, model);
-
-      /* 変更: チャット欄には explanation のみを表示（JSONプレビューを削除） */
-      b.textContent = preview.explanation || "(説明がありません)";
-
-      /* DevTools Console に raw を 1 回だけ表示 */
-      if (preview.raw) console.log("LLM raw output:\n", preview.raw);
-
-      /* ----- マルチターン実行開始 -----
-         skipFirst = true: 1st ターンは既に UI に表示済みなので
-         2 ターン目以降だけ追加表示する */
+      const model = modelSelect ? modelSelect.value : "gemini";
+      /* ----- マルチターン実行開始 ----- */
       if (typeof window.executeTask === "function") {
-        await window.executeTask(text, true, model);
+        await window.executeTask(text, model, b);
       } else {
         console.error("executeTask function not found.");
       }
