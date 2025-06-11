@@ -22,9 +22,10 @@ log = logging.getLogger("auto")
 log.setLevel(logging.INFO)
 
 # 各 Playwright アクションのデフォルトタイムアウト(ms)
-# Google Flights など動的なページでも余裕を持って待機できるよう
+
 # やや長めに設定する
 ACTION_TIMEOUT = 20000
+
 
 # 一貫したイベントループを確保する
 LOOP = asyncio.new_event_loop()
@@ -135,14 +136,16 @@ async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT):
     # 1) リンク (exact)
     link = page.get_by_role("link", name=txt, exact=True)
     if await link.count():
+
         await link.first.wait_for(state="visible", timeout=timeout)
         await link.first.scroll_into_view_if_needed(timeout=timeout)
-        await link.first.click(timeout=timeout)
+
         return
 
     # 2) exact=True テキスト
     exact_loc = page.get_by_text(txt, exact=True)
     if await exact_loc.count():
+
         await exact_loc.first.wait_for(state="visible", timeout=timeout)
         await exact_loc.first.scroll_into_view_if_needed(timeout=timeout)
         await exact_loc.first.click(timeout=timeout)
@@ -153,6 +156,7 @@ async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT):
     await last.wait_for(state="visible", timeout=timeout)
     await last.scroll_into_view_if_needed(timeout=timeout)
     await last.click(timeout=timeout)
+
 
 async def run_actions(raw: List[Dict]) -> str:
     """
@@ -170,6 +174,7 @@ async def run_actions(raw: List[Dict]) -> str:
     async def exec_one(act):
         match act["action"]:
             case "navigate":
+
                 await GLOBAL_PAGE.goto(
                     act["target"],
                     timeout=ACTION_TIMEOUT,
@@ -196,6 +201,7 @@ async def run_actions(raw: List[Dict]) -> str:
             case "type":
                 loc = GLOBAL_PAGE.locator(act["target"]).first
                 await loc.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+
                 await loc.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
                 await loc.fill(act.get("value", ""), timeout=ACTION_TIMEOUT)
             case "wait":
