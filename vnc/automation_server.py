@@ -21,6 +21,9 @@ app = Flask(__name__)
 log = logging.getLogger("auto")
 log.setLevel(logging.INFO)
 
+# 各 Playwright アクションのデフォルトタイムアウト(ms)
+ACTION_TIMEOUT = 10000
+
 # 一貫したイベントループを確保する
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
@@ -120,7 +123,7 @@ async def normalize(a: Dict) -> Dict:
         a["target"] = a["text"]
     return a
 
-async def safe_click_by_text(page, txt: str):
+async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT):
     """
     Playwright strict-mode で複数マッチした場合の 500 を防ぐ。
     1) リンク (<a>) を role='link', exact=True で取得しクリック
@@ -130,17 +133,17 @@ async def safe_click_by_text(page, txt: str):
     # 1) リンク (exact)
     link = page.get_by_role("link", name=txt, exact=True)
     if await link.count():
-        await link.first.click()
+        await link.first.click(timeout=timeout)
         return
 
     # 2) exact=True テキスト
     exact_loc = page.get_by_text(txt, exact=True)
     if await exact_loc.count():
-        await exact_loc.first.click()
+        await exact_loc.first.click(timeout=timeout)
         return
 
     # 3) 非 strict (first match)
-    await page.get_by_text(txt).first.click()
+    await page.get_by_text(txt).first.click(timeout=timeout)
 
 async def run_actions(raw: List[Dict]) -> str:
     """
@@ -158,16 +161,20 @@ async def run_actions(raw: List[Dict]) -> str:
     async def exec_one(act):
         match act["action"]:
             case "navigate":
-                await GLOBAL_PAGE.goto(act["target"])
+                await GLOBAL_PAGE.goto(act["target"], timeout=ACTION_TIMEOUT)
             case "click":
                 if sel := act.get("target"):
-                    await GLOBAL_PAGE.locator(sel).first.click()
+                    loc = GLOBAL_PAGE.locator(sel).first
+                    await loc.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+                    await loc.click(timeout=ACTION_TIMEOUT)
                 elif txt := act.get("text"):
-                    await safe_click_by_text(GLOBAL_PAGE, txt)
+                    await safe_click_by_text(GLOBAL_PAGE, txt, timeout=ACTION_TIMEOUT)
             case "click_text":
-                await safe_click_by_text(GLOBAL_PAGE, act["target"])
+                await safe_click_by_text(GLOBAL_PAGE, act["target"], timeout=ACTION_TIMEOUT)
             case "type":
-                await GLOBAL_PAGE.fill(act["target"], act.get("value", ""))
+                loc = GLOBAL_PAGE.locator(act["target"]).first
+                await loc.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+                await loc.fill(act.get("value", ""), timeout=ACTION_TIMEOUT)
             case "wait":
                 await GLOBAL_PAGE.wait_for_timeout(int(act.get("ms", 500)))
             case "scroll":
