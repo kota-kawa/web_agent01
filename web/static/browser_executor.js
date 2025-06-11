@@ -82,7 +82,7 @@ function showSystemMessage(msg) {
 /* ======================================
    Execute one turn
    ====================================== */
-async function runTurn(cmd, showInUI = true, model = "gemini") {
+async function runTurn(cmd, showInUI = true, model = "gemini", placeholder = null) {
   const html = await fetch("/vnc-source")
     .then(r => (r.ok ? r.text() : ""))
     .catch(() => "");
@@ -90,11 +90,16 @@ async function runTurn(cmd, showInUI = true, model = "gemini") {
   const res = await sendCommand(cmd, html, model);
 
   if (showInUI && res.explanation) {
-    const p = document.createElement("p");
-    p.classList.add("bot-message");
-    p.textContent = res.explanation;
-    chatArea.appendChild(p);
-    chatArea.scrollTop = chatArea.scrollHeight;
+    if (placeholder) {
+      placeholder.textContent = res.explanation;
+      placeholder.querySelector(".spinner")?.remove();
+    } else {
+      const p = document.createElement("p");
+      p.classList.add("bot-message");
+      p.textContent = res.explanation;
+      chatArea.appendChild(p);
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
   }
 
   if (res.raw) console.log("LLM raw output:\n", res.raw);
@@ -107,7 +112,7 @@ async function runTurn(cmd, showInUI = true, model = "gemini") {
 /* ======================================
    Multi-turn executor
    ====================================== */
-async function executeTask(cmd, skipFirst = false, model = "gemini") {
+async function executeTask(cmd, model = "gemini", placeholder = null) {
   let keepLoop  = true;
   let firstIter = true;
   let lastMsg   = "";
@@ -118,8 +123,7 @@ async function executeTask(cmd, skipFirst = false, model = "gemini") {
   while (keepLoop) {
     if (stopRequested) break;
     try {
-      const show = !(skipFirst && firstIter);
-      const { cont, explanation } = await runTurn(cmd, show, model);
+      const { cont, explanation } = await runTurn(cmd, true, model, firstIter ? placeholder : null);
 
       if (explanation === lastMsg) {
         repeatCnt += 1;
@@ -154,7 +158,7 @@ async function executeTask(cmd, skipFirst = false, model = "gemini") {
 document.getElementById("executeButton")?.addEventListener("click", () => {
   const cmd   = document.getElementById("nlCommand").value.trim();
   const model = document.getElementById("model-select")?.value || "gemini";
-  if (cmd) executeTask(cmd, false, model);
+  if (cmd) executeTask(cmd, model);
 });
 
 const stopBtn = document.getElementById("stop-button");
