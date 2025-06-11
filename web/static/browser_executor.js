@@ -118,6 +118,7 @@ async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeho
     if (ret) newHtml = ret;
   }
 
+
   return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml };
 
 }
