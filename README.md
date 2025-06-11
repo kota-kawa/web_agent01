@@ -43,3 +43,6 @@ GROQ_API_KEY=<Your Groq API Key>
 Playwright の API を直接呼び出すのではなく、LLM で生成した JSON DSL を `automation_server.py` に転送することでブラウザ操作を行う設計になっています。詳細なディレクトリ構成は `Structure.txt` も参照してください。
 
 
+さらにクリック動作で要素が覆い隠されている場合に備え、数回失敗したら`force`オプション
+を使って強制クリックを試みるよう `automation_server.py` を改良しています。
+

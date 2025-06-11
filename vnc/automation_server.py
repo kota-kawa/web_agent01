@@ -126,7 +126,7 @@ async def normalize(a: Dict) -> Dict:
         a["target"] = a["text"]
     return a
 
-async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT):
+async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT, force: bool = False):
     """
     Playwright strict-mode で複数マッチした場合の 500 を防ぐ。
     1) リンク (<a>) を role='link', exact=True で取得しクリック
@@ -139,7 +139,7 @@ async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT):
 
         await link.first.wait_for(state="visible", timeout=timeout)
         await link.first.scroll_into_view_if_needed(timeout=timeout)
-
+        await link.first.click(timeout=timeout, force=force)
         return
 
     # 2) exact=True テキスト
@@ -148,14 +148,14 @@ async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT):
 
         await exact_loc.first.wait_for(state="visible", timeout=timeout)
         await exact_loc.first.scroll_into_view_if_needed(timeout=timeout)
-        await exact_loc.first.click(timeout=timeout)
+        await exact_loc.first.click(timeout=timeout, force=force)
         return
 
     # 3) 非 strict (first match)
     last = page.get_by_text(txt).first
     await last.wait_for(state="visible", timeout=timeout)
     await last.scroll_into_view_if_needed(timeout=timeout)
-    await last.click(timeout=timeout)
+    await last.click(timeout=timeout, force=force)
 
 
 async def run_actions(raw: List[Dict]) -> str:
@@ -171,7 +171,7 @@ async def run_actions(raw: List[Dict]) -> str:
 
     acts = [await normalize(x) for x in raw]
 
-    async def exec_one(act):
+    async def exec_one(act, force=False):
         match act["action"]:
             case "navigate":
 
@@ -185,18 +185,20 @@ async def run_actions(raw: List[Dict]) -> str:
                     loc = GLOBAL_PAGE.locator(sel).first
                     await loc.wait_for(state="visible", timeout=ACTION_TIMEOUT)
                     await loc.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
-                    await loc.click(timeout=ACTION_TIMEOUT)
+                    await loc.click(timeout=ACTION_TIMEOUT, force=force)
                 elif txt := act.get("text"):
                     await safe_click_by_text(
                         GLOBAL_PAGE,
                         txt,
                         timeout=ACTION_TIMEOUT,
+                        force=force,
                     )
             case "click_text":
                 await safe_click_by_text(
                     GLOBAL_PAGE,
                     act["target"],
                     timeout=ACTION_TIMEOUT,
+                    force=force,
                 )
             case "type":
                 loc = GLOBAL_PAGE.locator(act["target"]).first
@@ -221,7 +223,7 @@ async def run_actions(raw: List[Dict]) -> str:
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                await exec_one(a)
+                await exec_one(a, force=attempt > 1)
                 break
             except Exception as e:
                 log.error(f"Playwright action error (attempt {attempt}/{max_retries}): {e}")
@@ -231,7 +233,7 @@ async def run_actions(raw: List[Dict]) -> str:
                     log.error("Max retries reached. Attempting browser reset.")
                     await reset_browser()
                     try:
-                        await exec_one(a)
+                        await exec_one(a, force=True)
                     except Exception as e2:
                         log.error("Recovery attempt failed: %s", e2)
                     break
