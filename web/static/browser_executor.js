@@ -29,7 +29,7 @@ function normalizeActions(instr) {
    Send DSL to Playwright server
    ====================================== */
 async function sendDSL(acts) {
-  if (!acts.length) return;
+  if (!acts.length) return "";
   if (requiresApproval(acts)) {
     if (!confirm("重要な操作を実行しようとしています。続行しますか?")) {
       showSystemMessage("ユーザーが操作を拒否しました");
@@ -45,12 +45,15 @@ async function sendDSL(acts) {
     if (!r.ok) {
       console.error("execute-dsl failed:", r.status, await r.text());
       showSystemMessage(`DSL 実行エラー: ${r.status}`);
+      return "";
     } else {
       appendHistory(acts);
+      return await r.text();
     }
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
     showSystemMessage(`通信エラー: ${e}`);
+    return "";
   }
 }
 
@@ -82,10 +85,13 @@ function showSystemMessage(msg) {
 /* ======================================
    Execute one turn
    ====================================== */
-async function runTurn(cmd, showInUI = true, model = "gemini", placeholder = null) {
-  const html = await fetch("/vnc-source")
-    .then(r => (r.ok ? r.text() : ""))
-    .catch(() => "");
+async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeholder = null) {
+  let html = pageHtml;
+  if (!html) {
+    html = await fetch("/vnc-source")
+      .then(r => (r.ok ? r.text() : ""))
+      .catch(() => "");
+  }
 
   const res = await sendCommand(cmd, html, model);
 
@@ -105,11 +111,13 @@ async function runTurn(cmd, showInUI = true, model = "gemini", placeholder = nul
   if (res.raw) console.log("LLM raw output:\n", res.raw);
 
   const acts = normalizeActions(res);
+  let newHtml = html;
   if (acts.length) {
-    await sendDSL([acts[0]]);
+    const ret = await sendDSL([acts[0]]);
+    if (ret) newHtml = ret;
   }
 
-  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "" };
+  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml };
 }
 
 /* ======================================
@@ -118,6 +126,9 @@ async function runTurn(cmd, showInUI = true, model = "gemini", placeholder = nul
 async function executeTask(cmd, model = "gemini", placeholder = null) {
   let keepLoop  = true;
   let firstIter = true;
+  let pageHtml  = await fetch("/vnc-source")
+    .then(r => (r.ok ? r.text() : ""))
+    .catch(() => "");
   let lastMsg   = "";
   let repeatCnt = 0;
   const MAX_REP = 1;
@@ -126,7 +137,8 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   while (keepLoop) {
     if (stopRequested) break;
     try {
-      const { cont, explanation } = await runTurn(cmd, true, model, firstIter ? placeholder : null);
+      const { cont, explanation, html } = await runTurn(cmd, pageHtml, true, model, firstIter ? placeholder : null);
+      if (html) pageHtml = html;
 
       if (explanation === lastMsg) {
         repeatCnt += 1;
