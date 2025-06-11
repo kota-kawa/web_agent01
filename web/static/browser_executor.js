@@ -111,6 +111,7 @@ async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeho
   if (res.raw) console.log("LLM raw output:\n", res.raw);
 
   const acts = normalizeActions(res);
+
   let newHtml = html;
   if (acts.length) {
     const ret = await sendDSL([acts[0]]);
@@ -118,6 +119,7 @@ async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeho
   }
 
   return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml };
+
 }
 
 /* ======================================
