@@ -37,10 +37,10 @@ document.addEventListener("DOMContentLoaded", () => {
           notice.classList.add("system-message");
           notice.textContent = `未完了タスクを再開します: 「${cmd}」`;
           chatArea.appendChild(notice);
-          /* 変更: skipFirst=false → 最初の説明も UI に表示 */
+          /* 未完了タスクをモデル設定で再開する */
           const model = modelSelect ? modelSelect.value : "gemini";
           if (typeof window.executeTask === "function") {
-            await window.executeTask(cmd, false, model);
+            await window.executeTask(cmd, model);
           } else {
             console.error("executeTask function not found.");
           }
