@@ -17,3 +17,5 @@ small_browser4/
     ├── requirements.txt    
     └── templates/
         └── index.html       
+
+追加すべき機能：

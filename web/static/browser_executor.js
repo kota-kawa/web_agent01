@@ -6,7 +6,12 @@
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chatArea   = document.getElementById("chat-area");
 const opHistory  = document.getElementById("operation-history");
-let stopRequested = false;
+let stopRequested   = false;
+
+// ★★★ 追加/変更: Pause/Resume 状態管理 ---------------------------
+let pausedRequested = false;   // 一時停止フラグ
+let resumeResolver  = null;    // 再開時に resolve するコールバック
+// ★★★ ここまで ---------------------------------------------------
 
 /* ======================================
    Normalize DSL actions
@@ -33,7 +38,7 @@ async function sendDSL(acts) {
   if (requiresApproval(acts)) {
     if (!confirm("重要な操作を実行しようとしています。続行しますか?")) {
       showSystemMessage("ユーザーが操作を拒否しました");
-      return;
+      return "";
     }
   }
   try {
@@ -118,9 +123,7 @@ async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeho
     if (ret) newHtml = ret;
   }
 
-
   return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml };
-
 }
 
 /* ======================================
@@ -135,10 +138,21 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   let lastMsg   = "";
   let repeatCnt = 0;
   const MAX_REP = 1;
-  stopRequested = false;
+  stopRequested   = false;
+  pausedRequested = false;  // 毎タスク開始時にリセット
 
   while (keepLoop) {
     if (stopRequested) break;
+
+    // ★★★ 追加/変更: 一時停止処理 -------------------------------
+    if (pausedRequested) {
+      showSystemMessage("⏸ タスクを一時停止中。ブラウザを手動操作できます。");
+      await new Promise(res => { resumeResolver = res; });  // Resume を待つ
+      if (stopRequested) break;   // 再開前に停止された場合
+      showSystemMessage("▶ タスクを再開します。");
+    }
+    // ★★★ ここまで ------------------------------------------
+
     try {
       const { cont, explanation, html } = await runTurn(cmd, pageHtml, true, model, firstIter ? placeholder : null);
       if (html) pageHtml = html;
@@ -171,7 +185,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
 }
 
 /* ======================================
-   Debug buttons
+   Debug buttons & UI wiring
    ====================================== */
 document.getElementById("executeButton")?.addEventListener("click", () => {
   const cmd   = document.getElementById("nlCommand").value.trim();
@@ -183,5 +197,31 @@ const stopBtn = document.getElementById("stop-button");
 if (stopBtn) {
   stopBtn.addEventListener("click", () => { stopRequested = true; });
 }
+
+// ★★★ 追加/変更: Pause / Resume ボタン -------------------------
+const pauseBtn  = document.getElementById("pause-button");
+const resumeBtn = document.getElementById("resume-button");
+
+if (pauseBtn) {
+  pauseBtn.addEventListener("click", () => {
+    if (pausedRequested) return;
+    pausedRequested = true;
+    pauseBtn.style.display  = "none";
+    if (resumeBtn) resumeBtn.style.display = "inline-block";
+  });
+}
+if (resumeBtn) {
+  resumeBtn.addEventListener("click", () => {
+    if (!pausedRequested) return;
+    pausedRequested = false;
+    resumeBtn.style.display = "none";
+    if (pauseBtn) pauseBtn.style.display  = "inline-block";
+    if (typeof resumeResolver === "function") {
+      resumeResolver();     // 待機している executeTask を再開
+      resumeResolver = null;
+    }
+  });
+}
+// ★★★ ここまで --------------------------------------------------
 
 window.executeTask = executeTask;

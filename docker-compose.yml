@@ -20,7 +20,7 @@ services:
     command: python -u app.py      # ← flask run ではなくシンプルに
 
     environment:
-      - GEMINI_API_KEY=AIzaSyBkFFaKqduP5TXQpFx4HsYfpg6wgS-ScmY
+      - GEMINI_API_KEY=AIzaSyB_pKw_WMMG3CduttFWYpUhmZH9z6EfyZI
       - GROQ_API_KEY=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
     ports:
       - "5000:5000"

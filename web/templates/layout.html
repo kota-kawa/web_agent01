@@ -20,23 +20,26 @@
   </header>
 
   <!-- ===== メインコンテンツ & VNC iframe ===== -->
-
   <main style="display:flex;flex-direction:column;height:calc(100vh - 140px);">
     <div id="vnc-section" style="flex:1;">
       <!-- VNC (NoVNC) を iframe 表示 -->
       <iframe id="vnc_frame" src="{{ vnc_url }}" style="width:100%;height:100%;border:none;"></iframe>
     </div>
 
+    <!-- ★★★ 追加/変更: Pause / Resume ボタン -------------------- -->
     <div id="chat-controls">
       <button id="stop-button">停止</button>
+      <button id="pause-button">一時停止</button>
+      <button id="resume-button" style="display:none;">続行</button>
       <button id="memory-button">履歴</button>
       <button id="history-toggle">ログ</button>
     </div>
+    <!-- ★★★ ここまで ------------------------------------------ -->
+
     <div id="operation-history"></div>
 
     {% block content %}{% endblock %}
   </main>
-
 
   <!-- ===== チャットウィンドウ（共通） ===== -->
   <div id="draggable-window" style="position: fixed;">

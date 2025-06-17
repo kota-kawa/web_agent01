@@ -12,7 +12,7 @@ log = logging.getLogger("llm")
 # Configure clients
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if GEMINI_API_KEY:
