@@ -1,405 +1,71 @@
 [
   {
-    "user": "羽田からニューヨーク観光をしたいので７月４日から８の予約を代わりに取って。片道でJFKまで",
+    "user": "今日の世界情勢を教えて。",
     "bot": {
-      "explanation": "承知いたしました。羽田（HND）からニューヨーク（JFK）への7月4日～8日の片道航空券を検索します。",
+      "explanation": "現在表示されている Yahoo! JAPAN のトップページから、主要なニュースとして以下の情報が得られます。\n\n- 関東・東海・近畿 危険な暑さに\n- 一律2万円給付はバラマキ? 解説\n- 米大統領 イランに無条件降伏要求\n- 車3台が絡む事故で2人重体 練馬区\n- ご当地ナンバー モノトーン版廃止\n- 値上げ続く中 小売店の飲料安い訳\n- 内藤哲也 たこ焼き屋出勤し大行列\n- 元競泳・大橋悠依さん 引退後の今",
+      "actions": [],
+      "raw": "現在表示されている Yahoo! JAPAN のトップページから、主要なニュースとして以下の情報が得られます。\n\n- 関東・東海・近畿 危険な暑さに\n- 一律2万円給付はバラマキ? 解説\n- 米大統領 イランに無条件降伏要求\n- 車3台が絡む事故で2人重体 練馬区\n- ご当地ナンバー モノトーン版廃止\n- 値上げ続く中 小売店の飲料安い訳\n- 内藤哲也 たこ焼き屋出勤し大行列\n- 元競泳・大橋悠依さん 引退後の今\n\n```json\n{\n  \"actions\": [],\n  \"complete\": true\n}\n```",
+      "complete": true
+    }
+  },
+  {
+    "user": "大府駅から、辻堂駅への路線検索を代わりにしてほしい",
+    "bot": {
+      "explanation": "Yahoo! JAPANのトップページでは、直接的な路線検索はできません。しかし、主なサービスの中に「路線情報」がありますので、そちらをクリックして、大府駅から辻堂駅への路線検索を行います。",
       "actions": [
         {
           "action": "click",
-          "target": "a[aria-controls='primaryPanel1']"
+          "target": "css=a[aria-label='路線情報へ遷移する']"
         },
         {
           "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click",
-          "target": "#fromAirportName"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
+          "ms": 2000
         },
         {
           "action": "type",
-          "target": "input[name='searchAirport']",
-          "value": "羽田"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "羽田, Japan",
-          "target": "羽田, Japan"
-        },
-        {
-          "action": "click",
-          "target": "#toAirportName"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
+          "target": "css=input[name='from']",
+          "value": "大府"
         },
         {
           "action": "type",
-          "target": "input[name='searchAirport']",
-          "value": "ニューヨーク"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "ニューヨーク(JFK), NY, アメリカ合衆国",
-          "target": "ニューヨーク(JFK), NY, アメリカ合衆国"
+          "target": "css=input[name='to']",
+          "value": "辻堂"
         },
         {
           "action": "click",
-          "target": "span.calenderDepartSpan"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "7月 4",
-          "target": "7月 4"
-        },
-        {
-          "action": "click",
-          "target": "span.calenderReturnSpan"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "7月 8",
-          "target": "7月 8"
-        },
-        {
-          "action": "click",
-          "target": "#btn-book-submit"
+          "target": "css=button[type='submit']"
         }
       ],
-      "raw": "承知いたしました。羽田（HND）からニューヨーク（JFK）への7月4日～8日の片道航空券を検索します。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"click\",\n      \"target\": \"a[aria-controls='primaryPanel1']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"#fromAirportName\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"input[name='searchAirport']\",\n      \"value\": \"羽田\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"羽田, Japan\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"#toAirportName\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"input[name='searchAirport']\",\n      \"value\": \"ニューヨーク\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"ニューヨーク(JFK), NY, アメリカ合衆国\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"span.calenderDepartSpan\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"7月 4\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"span.calenderReturnSpan\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"7月 8\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"#btn-book-submit\"\n    }\n  ],\n  \"complete\": false\n}\n```",
+      "raw": "Yahoo! JAPANのトップページでは、直接的な路線検索はできません。しかし、主なサービスの中に「路線情報」がありますので、そちらをクリックして、大府駅から辻堂駅への路線検索を行います。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"click\",\n      \"target\": \"css=a[aria-label='路線情報へ遷移する']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 2000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"css=input[name='from']\",\n      \"value\": \"大府\"\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"css=input[name='to']\",\n      \"value\": \"辻堂\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"css=button[type='submit']\"\n    }\n  ],\n  \"complete\": false\n}\n```",
       "complete": false
     }
   },
   {
-    "user": "羽田からニューヨーク観光をしたいので７月４日から８の予約を代わりに取って。片道でJFKまで",
+    "user": "大府駅から、辻堂駅への路線検索を代わりにしてほしい",
     "bot": {
-      "explanation": "羽田（HND）からニューヨーク（JFK）への7月4日から8日の片道航空券を検索するために、出発地を羽田、目的地をニューヨーク（JFK）、出発日を7月4日、旅行人数を1名で指定して検索します。",
+      "explanation": "大府駅から辻堂駅への路線を検索するために、出発地に「大府」、到着地に「辻堂」を入力し、検索ボタンをクリックします。",
       "actions": [
         {
-          "action": "click",
-          "target": "a[id='fromAirportName']"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
+          "action": "type",
+          "target": "css=input[name=from]",
+          "value": "大府"
         },
         {
           "action": "type",
-          "target": "input[name='searchAirport']",
-          "value": "羽田"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
+          "target": "css=input[name=to]",
+          "value": "辻堂"
         },
         {
           "action": "click",
-          "target": "a[aria-label='羽田, Japan - 東京国際']"
-        },
-        {
-          "action": "click",
-          "target": "a[id='toAirportName']"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "input[name='searchAirport']",
-          "value": "ニューヨーク"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click",
-          "target": "a[aria-label='ニューヨーク, NY - ジョン F. ケネディ']"
-        },
-        {
-          "action": "click",
-          "target": "div[class='travelDateSelectionView']"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "7月 2024",
-          "target": "7月 2024"
-        },
-        {
-          "action": "click_text",
-          "text": "4",
-          "target": "4"
-        },
-        {
-          "action": "click_text",
-          "text": "1名様",
-          "target": "1名様"
-        },
-        {
-          "action": "click_text",
-          "text": "片道",
-          "target": "片道"
-        },
-        {
-          "action": "click",
-          "target": "button[id='btnSubmit']"
-        }
-      ],
-      "raw": "羽田（HND）からニューヨーク（JFK）への7月4日から8日の片道航空券を検索するために、出発地を羽田、目的地をニューヨーク（JFK）、出発日を7月4日、旅行人数を1名で指定して検索します。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"click\",\n      \"target\": \"a[id='fromAirportName']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"input[name='searchAirport']\",\n      \"value\": \"羽田\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"a[aria-label='羽田, Japan - 東京国際']\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"a[id='toAirportName']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"input[name='searchAirport']\",\n      \"value\": \"ニューヨーク\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"a[aria-label='ニューヨーク, NY - ジョン F. ケネディ']\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"div[class='travelDateSelectionView']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"7月 2024\"\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"4\"\n    },\n        {\n      \"action\": \"click_text\",\n      \"text\": \"1名様\"\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"片道\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"button[id='btnSubmit']\"\n    }\n  ],\n  \"complete\": false\n}\n```",
-      "complete": false
-    }
-  },
-  {
-    "user": "羽田からニューヨーク観光をしたいので７月４日から８の予約を代わりに取って。片道でJFKまで",
-    "bot": {
-      "explanation": "羽田（HND）からニューヨーク（JFK）への7月4日から8日の片道航空券を検索するために、出発地を羽田、目的地をニューヨーク（JFK）、出発日を7月4日、旅行人数を1名で指定して検索します。",
-      "actions": [
-        {
-          "action": "click",
-          "target": "#fromAirportName"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "#search_input",
-          "value": "羽田"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "羽田",
-          "target": "羽田"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click",
-          "target": "#toAirportName"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "#search_input",
-          "value": "ニューヨーク"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "ニューヨーク",
-          "target": "ニューヨーク"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click",
-          "target": "date-selection-view:nth-of-type(1) .calDispValueCont"
+          "target": "css=input[type=submit][value=検索]"
         },
         {
           "action": "wait",
           "ms": 1000
         }
       ],
-      "raw": "羽田（HND）からニューヨーク（JFK）への7月4日から8日の片道航空券を検索するために、出発地を羽田、目的地をニューヨーク（JFK）、出発日を7月4日、旅行人数を1名で指定して検索します。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"click\",\n      \"target\": \"#fromAirportName\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"#search_input\",\n      \"value\": \"羽田\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"羽田\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"#toAirportName\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"#search_input\",\n      \"value\": \"ニューヨーク\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"ニューヨーク\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"date-selection-view:nth-of-type(1) .calDispValueCont\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    }\n  ],\n  \"complete\": false\n}\n```",
-      "complete": false
-    }
-  },
-  {
-    "user": "羽田からニューヨーク観光をしたいので７月４日から８の予約を代わりに取って。片道でJFKまで",
-    "bot": {
-      "explanation": "現在表示されているページはデルタ航空のホームページで、航空券の予約ウィジェットが表示されています。羽田（HND）からニューヨーク（JFK）への7月4日～8日の片道航空券を検索するため、予約ウィジェットに出発地、目的地、日付、人数を入力し、検索を実行します。",
-      "actions": [
-        {
-          "action": "click",
-          "target": "a[id='fromAirportName']"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "input[id='search_input']",
-          "value": "羽田"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "羽田, Japan",
-          "target": "羽田, Japan"
-        },
-        {
-          "action": "click",
-          "target": "a[id='toAirportName']"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "input[id='search_input']",
-          "value": "ニューヨーク"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "ニューヨーク, United States",
-          "target": "ニューヨーク, United States"
-        },
-        {
-          "action": "click",
-          "target": "div.calDispValueCont"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "7",
-          "target": "7"
-        },
-        {
-          "action": "click_text",
-          "text": "4",
-          "target": "4"
-        },
-        {
-          "action": "click",
-          "target": "select[id='passengers']"
-        },
-        {
-          "action": "click_text",
-          "text": "1名様",
-          "target": "1名様"
-        },
-        {
-          "action": "click",
-          "target": "button[id='btnSubmit']"
-        }
-      ],
-      "raw": "現在表示されているページはデルタ航空のホームページで、航空券の予約ウィジェットが表示されています。羽田（HND）からニューヨーク（JFK）への7月4日～8日の片道航空券を検索するため、予約ウィジェットに出発地、目的地、日付、人数を入力し、検索を実行します。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"click\",\n      \"target\": \"a[id='fromAirportName']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"input[id='search_input']\",\n      \"value\": \"羽田\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"羽田, Japan\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"a[id='toAirportName']\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"input[id='search_input']\",\n      \"value\": \"ニューヨーク\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"ニューヨーク, United States\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"div.calDispValueCont\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"7\"\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"4\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"select[id='passengers']\"\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"1名様\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"button[id='btnSubmit']\"\n    }\n  ],\n  \"complete\": false\n}\n```",
-      "complete": false
-    }
-  },
-  {
-    "user": "羽田からニューヨーク観光をしたいので７月４日から８の予約を代わりに取って。片道でJFKまで",
-    "bot": {
-      "explanation": "羽田（HND）からニューヨーク（JFK）への7月4日から8日の片道航空券を検索するため、予約ウィジェットに出発地、目的地、日付、人数を入力し、検索を実行します。",
-      "actions": [
-        {
-          "action": "click",
-          "target": "#fromAirportName"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "#search_input",
-          "value": "羽田"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "羽田, Japan",
-          "target": "羽田, Japan"
-        },
-        {
-          "action": "click",
-          "target": "#toAirportName"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "type",
-          "target": "#search_input",
-          "value": "ニューヨーク"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "ニューヨーク(JFK), United States",
-          "target": "ニューヨーク(JFK), United States"
-        },
-        {
-          "action": "click",
-          "target": "div.calDispValueCont"
-        },
-        {
-          "action": "wait",
-          "ms": 1000
-        },
-        {
-          "action": "click_text",
-          "text": "7",
-          "target": "7"
-        },
-        {
-          "action": "click_text",
-          "text": "btn btn-danger btn-book-submit last-focusable-element ng-tns-c84-2 ng-star-inserted",
-          "target": "btn btn-danger btn-book-submit last-focusable-element ng-tns-c84-2 ng-star-inserted"
-        }
-      ],
-      "raw": "羽田（HND）からニューヨーク（JFK）への7月4日から8日の片道航空券を検索するため、予約ウィジェットに出発地、目的地、日付、人数を入力し、検索を実行します。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"click\",\n      \"target\": \"#fromAirportName\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"#search_input\",\n      \"value\": \"羽田\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"羽田, Japan\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"#toAirportName\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"#search_input\",\n      \"value\": \"ニューヨーク\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"ニューヨーク(JFK), United States\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"div.calDispValueCont\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"7\"\n    },\n    {\n      \"action\": \"click_text\",\n      \"text\": \"btn btn-danger btn-book-submit last-focusable-element ng-tns-c84-2 ng-star-inserted\"\n    }\n  ],\n  \"complete\": false\n}\n```",
-      "complete": false
+      "raw": "大府駅から辻堂駅への路線を検索するために、出発地に「大府」、到着地に「辻堂」を入力し、検索ボタンをクリックします。\n\n```json\n{\n  \"actions\": [\n    {\n      \"action\": \"type\",\n      \"target\": \"css=input[name=from]\",\n      \"value\": \"大府\"\n    },\n    {\n      \"action\": \"type\",\n      \"target\": \"css=input[name=to]\",\n      \"value\": \"辻堂\"\n    },\n    {\n      \"action\": \"click\",\n      \"target\": \"css=input[type=submit][value=検索]\"\n    },\n    {\n      \"action\": \"wait\",\n      \"ms\": 1000\n    }\n  ],\n  \"complete\": true\n}\n```",
+      "complete": true
     }
   }
 ]
