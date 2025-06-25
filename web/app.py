@@ -80,12 +80,13 @@ def strip_html(ht: str) -> str:
     return ht.strip()
 
 # --------------- システムプロンプト ------------------------------
-def build_prompt(cmd: str, page: str, hist):
+def build_prompt(cmd: str, page: str, hist, screenshot: bool = False):
     """
     LLM に与える完全なシステムプロンプトを返す
     """
     past_conv = "\n".join(f"U:{h['user']}\nA:{h['bot']['explanation']}" for h in hist)
     
+    add_img = "スクリーンショット画像も与えます。" if screenshot else ""
     system_prompt = (
         "あなたは高性能な Web 自動操作エージェントです。\n"
         "### 目的\n"
@@ -130,6 +131,7 @@ def build_prompt(cmd: str, page: str, hist):
         f"## これまでの会話履歴\n{past_conv}\n"
         "--------------------------------\n"
         f"## ユーザー命令\n{cmd}\n"
+        f"{add_img}"
     )
     return system_prompt
 
@@ -143,10 +145,11 @@ def execute():
         return jsonify(error="command empty"), 400
 
     page  = data.get("pageSource") or vnc_html()
+    shot  = data.get("screenshot")
     model = data.get("model", "gemini")
     hist  = load_hist()
-    prompt = build_prompt(cmd, strip_html(page), hist)
-    res   = call_llm(prompt, model)
+    prompt = build_prompt(cmd, strip_html(page), hist, bool(shot))
+    res   = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})
     save_hist(hist)

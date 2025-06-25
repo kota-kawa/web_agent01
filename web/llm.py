@@ -77,10 +77,18 @@ def _post_process(raw: str) -> Dict:
         "complete": js.get("complete", True)
     }
 
-def call_gemini(prompt: str) -> Dict:
+import base64
+
+def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
     try:
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        raw = model.start_chat(history=[]).send_message(prompt).text
+        model_name = GEMINI_MODEL if not screenshot else "models/gemini-pro-vision"
+        model = genai.GenerativeModel(model_name)
+        if screenshot:
+            img_b64 = screenshot.split(",", 1)[-1]
+            img_bytes = base64.b64decode(img_b64)
+            raw = model.generate_content([prompt, {"mime_type": "image/png", "data": img_bytes}]).text
+        else:
+            raw = model.start_chat(history=[]).send_message(prompt).text
     except Exception as e:
         log.error("Gemini call failed: %s", e)
         return {"explanation": "Gemini 呼び出し失敗", "actions": [], "raw": "", "complete": True}
@@ -88,14 +96,17 @@ def call_gemini(prompt: str) -> Dict:
     log.info("◆ GEMINI RAW ◆\n%s\n◆ END RAW ◆", raw)
     return _post_process(raw)
 
-def call_groq(prompt: str) -> Dict:
+def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
     if not _groq_client:
         return {"explanation": "Groq API key 未設定", "actions": [], "raw": "", "complete": True}
 
     try:
+        content = [{"type": "text", "text": prompt}]
+        if screenshot:
+            content.append({"type": "image_url", "image_url": {"url": screenshot}})
         res = _groq_client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content}],
         )
         raw = res.choices[0].message.content
     except Exception as e:
@@ -105,7 +116,7 @@ def call_groq(prompt: str) -> Dict:
     log.info("◆ GROQ RAW ◆\n%s\n◆ END RAW ◆", raw)
     return _post_process(raw)
 
-def call_llm(prompt: str, model: str = "gemini") -> Dict:
+def call_llm(prompt: str, model: str = "gemini", screenshot: str | None = None) -> Dict:
     if model == "groq":
-        return call_groq(prompt)
-    return call_gemini(prompt)
+        return call_groq(prompt, screenshot)
+    return call_gemini(prompt, screenshot)

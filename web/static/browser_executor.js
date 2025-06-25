@@ -8,6 +8,19 @@ const chatArea   = document.getElementById("chat-area");
 const opHistory  = document.getElementById("operation-history");
 let stopRequested   = false;
 
+// screenshot helper
+async function captureScreenshot() {
+  const iframe = document.getElementById("vnc_frame");
+  if (!iframe) return null;
+  try {
+    const canvas = await html2canvas(iframe, {useCORS: true});
+    return canvas.toDataURL("image/png");
+  } catch (e) {
+    console.error("screenshot error:", e);
+    return null;
+  }
+}
+
 // ★★★ 追加/変更: Pause/Resume 状態管理 ---------------------------
 let pausedRequested = false;   // 一時停止フラグ
 let resumeResolver  = null;    // 再開時に resolve するコールバック
@@ -90,7 +103,7 @@ function showSystemMessage(msg) {
 /* ======================================
    Execute one turn
    ====================================== */
-async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeholder = null) {
+async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemini", placeholder = null) {
   let html = pageHtml;
   if (!html) {
     html = await fetch("/vnc-source")
@@ -98,7 +111,7 @@ async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeho
       .catch(() => "");
   }
 
-  const res = await sendCommand(cmd, html, model);
+  const res = await sendCommand(cmd, html, screenshot, model);
 
   if (showInUI && res.explanation) {
     if (placeholder) {
@@ -118,12 +131,14 @@ async function runTurn(cmd, pageHtml, showInUI = true, model = "gemini", placeho
   const acts = normalizeActions(res);
 
   let newHtml = html;
+  let newShot = screenshot;
   if (acts.length) {
     const ret = await sendDSL([acts[0]]);
     if (ret) newHtml = ret;
+    newShot = await captureScreenshot();
   }
 
-  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml };
+  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml, screenshot: newShot };
 }
 
 /* ======================================
@@ -135,6 +150,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   let pageHtml  = await fetch("/vnc-source")
     .then(r => (r.ok ? r.text() : ""))
     .catch(() => "");
+  let screenshot = null;
   let lastMsg   = "";
   let repeatCnt = 0;
   const MAX_REP = 1;
@@ -154,7 +170,8 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
     // ★★★ ここまで ------------------------------------------
 
     try {
-      const { cont, explanation, html } = await runTurn(cmd, pageHtml, true, model, firstIter ? placeholder : null);
+      const { cont, explanation, html, screenshot: shot } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null);
+      if (shot) screenshot = shot;
       if (html) pageHtml = html;
 
       if (explanation === lastMsg) {
