@@ -7,6 +7,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chatArea   = document.getElementById("chat-area");
 const opHistory  = document.getElementById("operation-history");
 let stopRequested   = false;
+const START_URL = window.START_URL || "https://www.google.com";
 
 // screenshot helper
 async function captureScreenshot() {
@@ -109,6 +110,9 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     html = await fetch("/vnc-source")
       .then(r => (r.ok ? r.text() : ""))
       .catch(() => "");
+  }
+  if (!screenshot) {
+    screenshot = await captureScreenshot();
   }
 
   const res = await sendCommand(cmd, html, screenshot, model);
@@ -218,6 +222,7 @@ if (stopBtn) {
 // ★★★ 追加/変更: Pause / Resume ボタン -------------------------
 const pauseBtn  = document.getElementById("pause-button");
 const resumeBtn = document.getElementById("resume-button");
+const resetBtn  = document.getElementById("reset-button");
 
 if (pauseBtn) {
   pauseBtn.addEventListener("click", () => {
@@ -237,6 +242,12 @@ if (resumeBtn) {
       resumeResolver();     // 待機している executeTask を再開
       resumeResolver = null;
     }
+  });
+}
+if (resetBtn) {
+  resetBtn.addEventListener("click", async () => {
+    stopRequested = true;
+    await sendDSL([{ action: "navigate", target: START_URL }]);
   });
 }
 // ★★★ ここまで --------------------------------------------------

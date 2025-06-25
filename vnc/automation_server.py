@@ -1,5 +1,6 @@
 # automation_server.py (全文)
 
+import os
 import asyncio
 import time
 import logging
@@ -30,7 +31,8 @@ LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
 CDP = "http://localhost:9222"
-WEB = "http://web:5000"  # VNC が初期表示するページ（チャット UI 無し）
+# 起動時に開く既定ページ
+WEB = os.getenv("START_URL", "https://www.google.com")
 
 PLAYWRIGHT = None        # async_playwright() の戻り値を保持
 GLOBAL_BROWSER = None    # Browser オブジェクト

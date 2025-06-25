@@ -15,6 +15,7 @@ log.setLevel(logging.INFO)
 
 # --------------- VNC / Playwright API ----------------------------
 VNC_API = "http://vnc:7000"          # Playwright 側の API
+START_URL = os.getenv("START_URL", "https://www.google.com")
 
 def vnc_html() -> str:
     """Playwright 側から現在ページの HTML ソースを取得。失敗時は空文字"""
@@ -181,7 +182,11 @@ def vhtml():
 # --------------- UI エントリポイント ------------------------------
 @app.route("/")
 def outer():
-    return render_template("layout.html", vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901")
+    return render_template(
+        "layout.html",
+        vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901",
+        start_url=START_URL,
+    )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
