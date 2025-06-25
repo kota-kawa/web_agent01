@@ -8,8 +8,8 @@ for i in {1..30}; do
   echo "[chromium] waiting for X..." ; sleep 1
 done
 
-# ★ 起動 URL を /client に変更（チャットなし）
-URL="http://web:5000/client"
+# 既定の起動 URL
+URL="${START_URL:-https://www.google.com}"
 
 if ! pgrep -f "--remote-debugging-port=9222" >/dev/null; then
   echo "[chromium] launching chromium..."

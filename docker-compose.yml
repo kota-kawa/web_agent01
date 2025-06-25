@@ -12,15 +12,19 @@ services:
       timeout: 2s
       retries: 12
     volumes:
-      - .:/app 
+      - .:/app
+    environment:
+      - START_URL=https://www.google.com
 
   web:
     build: ./web
     working_dir: /app/web         
     command: python -u app.py   
 
-    env_file:                     
-      - .env       
+    env_file:
+      - .env
+    environment:
+      - START_URL=https://www.google.com
     ports:
       - "5000:5000"
     volumes:

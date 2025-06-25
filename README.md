@@ -23,6 +23,7 @@ GROQ_API_KEY=<Your Groq API Key>
 ```
 
 任意で `GEMINI_MODEL` や `GROQ_MODEL` を指定することもできます。
+表示する初期ページは `START_URL` 環境変数で変更できます（デフォルト: Google）。
 
 ## 実行方法
 
