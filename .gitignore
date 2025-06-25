@@ -1,5 +1,37 @@
 __pycache__/
 **/__pycache__/
-*.pyc
-*.json
+# バイナリファイルを無視
 *.env
+*.ini
+*.service
+*.sock
+*.exe
+*.dll
+*.json
+*.Identifier
+# ログファイルを無視
+
+*.cgi
+*.htaccess
+
+*.zip
+*.pptx
+
+*.json
+
+
+# OSやIDEの一時ファイルを無視
+.DS_Store
+Thumbs.db
+.vscode/
+
+
+
+
+logs/access.log
+logs/error.log
+
+
+# ビルドディレクトリを無視
+/build/
+__pycache__/

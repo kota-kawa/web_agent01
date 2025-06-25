@@ -81,7 +81,7 @@ import base64
 
 def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
     try:
-        model_name = GEMINI_MODEL if not screenshot else "models/gemini-pro-vision"
+        model_name = GEMINI_MODEL if not screenshot else "models/gemini-2.0-flash"
         model = genai.GenerativeModel(model_name)
         if screenshot:
             img_b64 = screenshot.split(",", 1)[-1]
