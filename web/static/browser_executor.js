@@ -149,6 +149,8 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
    Multi-turn executor
    ====================================== */
 async function executeTask(cmd, model = "gemini", placeholder = null) {
+  const MAX_STEPS = typeof window.MAX_STEPS === "number" ? window.MAX_STEPS : 10;
+  let stepCount = 0;
   let keepLoop  = true;
   let firstIter = true;
   let pageHtml  = await fetch("/vnc-source")
@@ -161,7 +163,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   stopRequested   = false;
   pausedRequested = false;  // 毎タスク開始時にリセット
 
-  while (keepLoop) {
+  while (keepLoop && stepCount < MAX_STEPS) {
     if (stopRequested) break;
 
     // ★★★ 追加/変更: 一時停止処理 -------------------------------
@@ -196,11 +198,18 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
       console.error("runTurn error:", e);
       await sleep(1000);
     }
+    stepCount += 1;
   }
 
   const done = document.createElement("p");
   done.classList.add("system-message");
-  done.textContent = stopRequested ? "⏹ タスクを中断しました" : "✅ タスクを終了しました";
+  if (stopRequested) {
+    done.textContent = "⏹ タスクを中断しました";
+  } else if (stepCount >= MAX_STEPS && keepLoop) {
+    done.textContent = `⏹ ステップ上限(${MAX_STEPS})に達したため終了しました`;
+  } else {
+    done.textContent = "✅ タスクを終了しました";
+  }
   chatArea.appendChild(done);
   chatArea.scrollTop = chatArea.scrollHeight;
 }

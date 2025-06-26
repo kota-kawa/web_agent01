@@ -6,10 +6,10 @@ from typing import Dict
 
 import google.generativeai as genai
 from groq import Groq
+import base64
 
 log = logging.getLogger("llm")
 
-# Configure clients
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -18,12 +18,10 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-_groq_client = None
-if GROQ_API_KEY:
-    _groq_client = Groq(api_key=GROQ_API_KEY)
+_groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
 
 def extract_json(txt: str) -> Dict:
-    """Extract the first JSON object from text."""
     txt = re.sub(r"```(?:json)?|```", "", txt, flags=re.I)
     dec = json.JSONDecoder()
     idx = 0
@@ -36,6 +34,7 @@ def extract_json(txt: str) -> Dict:
                 pass
         idx += 1
     raise ValueError("no JSON found")
+
 
 def _normalize_action(a: Dict) -> Dict:
     act = {k.lower(): v for k, v in a.items()}
@@ -53,8 +52,8 @@ def _normalize_action(a: Dict) -> Dict:
 
     return act
 
+
 def _post_process(raw: str) -> Dict:
-    """Parse raw LLM output and return normalized result."""
     expl = re.split(r"```json", raw, 1)[0].strip()
     try:
         js = extract_json(raw)
@@ -74,10 +73,9 @@ def _post_process(raw: str) -> Dict:
         "explanation": expl,
         "actions": acts,
         "raw": raw,
-        "complete": js.get("complete", True)
+        "complete": js.get("complete", True),
     }
 
-import base64
 
 def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
     try:
@@ -95,6 +93,7 @@ def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
 
     log.info("◆ GEMINI RAW ◆\n%s\n◆ END RAW ◆", raw)
     return _post_process(raw)
+
 
 def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
     if not _groq_client:
@@ -115,6 +114,7 @@ def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
 
     log.info("◆ GROQ RAW ◆\n%s\n◆ END RAW ◆", raw)
     return _post_process(raw)
+
 
 def call_llm(prompt: str, model: str = "gemini", screenshot: str | None = None) -> Dict:
     if model == "groq":
