@@ -8,6 +8,7 @@
 ./docker-compose.yml          # サービス定義
 ./vnc/                        # Playwright + VNC 用コンテナ
 ./web/                        # Flask 製 Web アプリ
+./agent/                      # エージェント各種モジュール
 ```
 
 - **vnc**: Chromium を Playwright で制御し、noVNC 経由で画面操作を行うコンテナです。`automation_server.py` がブラウザ操作 API (ポート 7000) を提供します。
@@ -24,6 +25,7 @@ GROQ_API_KEY=<Your Groq API Key>
 
 任意で `GEMINI_MODEL` や `GROQ_MODEL` を指定することもできます。
 表示する初期ページは `START_URL` 環境変数で変更できます（デフォルト: Google）。
+自動実行は既定で 10 ステップまで行います。変更する場合は `MAX_STEPS` を指定します。
 
 ## 実行方法
 
@@ -40,6 +42,7 @@ GROQ_API_KEY=<Your Groq API Key>
 
 - `vnc/automation_server.py` — Playwright 経由でブラウザ操作を実行するサーバー
 - `web/app.py` — LLM からの指示を受けて DSL 生成や履歴管理を行う Flask アプリ
+- `agent/` — ブラウザ連携や LLM ラッパー、コントローラーなど機能別モジュール群
 
 Playwright の API を直接呼び出すのではなく、LLM で生成した JSON DSL を `automation_server.py` に転送することでブラウザ操作を行う設計になっています。詳細なディレクトリ構成は `Structure.txt` も参照してください。
 

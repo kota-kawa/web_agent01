@@ -1,0 +1,32 @@
+import requests
+import logging
+
+VNC_API = "http://vnc:7000"
+log = logging.getLogger(__name__)
+
+
+def get_html() -> str:
+    """Fetch current page HTML from the VNC automation server."""
+    try:
+        res = requests.get(f"{VNC_API}/source", timeout=30)
+        res.raise_for_status()
+        return res.text
+    except Exception as e:
+        log.error("get_html error: %s", e)
+        return ""
+
+
+def execute_dsl(payload):
+    """Forward DSL JSON to the automation server."""
+    if not payload.get("actions"):
+        return ""
+    try:
+        r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=60)
+        r.raise_for_status()
+        return r.text
+    except requests.Timeout:
+        log.error("execute_dsl timeout")
+        raise
+    except Exception as e:
+        log.error("execute_dsl error: %s", e)
+        raise
