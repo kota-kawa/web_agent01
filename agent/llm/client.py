@@ -11,11 +11,11 @@ import base64
 
 log = logging.getLogger("llm")
 
-# <<< section to add
+
 LOG_DIR = os.getenv("LOG_DIR", "./")
 SCREENSHOT_DIR = os.path.join(LOG_DIR, "screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-# >>>
+
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -92,13 +92,11 @@ def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
             img_b64 = screenshot.split(",", 1)[-1]
             img_bytes = base64.b64decode(img_b64)
             
-            # <<< section to add
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             ss_path = os.path.join(SCREENSHOT_DIR, f"ss_{timestamp}.png")
             with open(ss_path, "wb") as f:
                 f.write(img_bytes)
             log.info(f"Screenshot saved to {ss_path}")
-            # >>>
             
             raw = model.generate_content([prompt, {"mime_type": "image/png", "data": img_bytes}]).text
         else:
@@ -121,7 +119,6 @@ def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
             
             
             
-            # <<< section to add
             img_b64 = screenshot.split(",", 1)[-1]
             img_bytes = base64.b64decode(img_b64)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -129,7 +126,6 @@ def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
             with open(ss_path, "wb") as f:
                 f.write(img_bytes)
             log.info(f"Screenshot saved to {ss_path}")
-            # >>>
             
             
             content.append({"type": "image_url", "image_url": {"url": screenshot}})

@@ -11,21 +11,29 @@ const START_URL = window.START_URL || "https://www.yahoo.co.jp";
 
 // screenshot helper
 async function captureScreenshot() {
-  const iframe = document.getElementById("vnc_frame");
-  if (!iframe) return null;
+  //const iframe = document.getElementById("vnc_frame");
+  //if (!iframe) return null;
   try {
-    const canvas = await html2canvas(iframe, {useCORS: true});
-    return canvas.toDataURL("image/png");
+    //const canvas = await html2canvas(iframe, {useCORS: true});
+    //return canvas.toDataURL("image/png");
+  
+      // バックエンドの Playwright API を直接呼び出してスクリーンショットを取得
+    const response = await fetch("/screenshot");
+    if (!response.ok) {
+        console.error("screenshot fetch failed:", response.status, await response.text());
+        return null;
+    }
+    return await response.text(); // base64エンコードされたデータURIを返す
+
   } catch (e) {
     console.error("screenshot error:", e);
     return null;
   }
 }
 
-// ★★★ 追加/変更: Pause/Resume 状態管理 ---------------------------
+
 let pausedRequested = false;   // 一時停止フラグ
 let resumeResolver  = null;    // 再開時に resolve するコールバック
-// ★★★ ここまで ---------------------------------------------------
 
 /* ======================================
    Normalize DSL actions
@@ -137,7 +145,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
   let newHtml = html;
   let newShot = screenshot;
   if (acts.length) {
-    const ret = await sendDSL([acts[0]]);
+    const ret = await sendDSL(acts);
     if (ret) newHtml = ret;
     newShot = await captureScreenshot();
   }
@@ -166,14 +174,13 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   while (keepLoop && stepCount < MAX_STEPS) {
     if (stopRequested) break;
 
-    // ★★★ 追加/変更: 一時停止処理 -------------------------------
+   
     if (pausedRequested) {
       showSystemMessage("⏸ タスクを一時停止中。ブラウザを手動操作できます。");
       await new Promise(res => { resumeResolver = res; });  // Resume を待つ
       if (stopRequested) break;   // 再開前に停止された場合
       showSystemMessage("▶ タスクを再開します。");
     }
-    // ★★★ ここまで ------------------------------------------
 
     try {
       const { cont, explanation, html, screenshot: shot } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null);
@@ -228,7 +235,7 @@ if (stopBtn) {
   stopBtn.addEventListener("click", () => { stopRequested = true; });
 }
 
-// ★★★ 追加/変更: Pause / Resume ボタン -------------------------
+
 const pauseBtn  = document.getElementById("pause-button");
 const resumeBtn = document.getElementById("resume-button");
 const resetBtn  = document.getElementById("reset-button");
@@ -259,6 +266,5 @@ if (resetBtn) {
     await sendDSL([{ action: "navigate", target: START_URL }]);
   });
 }
-// ★★★ ここまで --------------------------------------------------
 
 window.executeTask = executeTask;

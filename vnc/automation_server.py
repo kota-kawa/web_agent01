@@ -8,6 +8,8 @@ import traceback
 import sys
 from typing import List, Dict, Union
 
+import base64
+
 from flask import Flask, jsonify, Response, request
 
 import httpx
@@ -239,6 +241,31 @@ async def run_actions(raw: List[Dict]) -> str:
     html = await GLOBAL_PAGE.content()
     return html
 
+
+async def take_screenshot_async():
+    """非同期でスクリーンショットを取得するヘルパー関数"""
+    if GLOBAL_PAGE is None:
+        await init_browser_and_page()
+    # ページのロードが完了し、ネットワークがアイドル状態になるのを待つ
+    await GLOBAL_PAGE.wait_for_load_state("networkidle", timeout=10000)
+    await asyncio.sleep(0.5) # 念のためのレンダリング待機
+    # ページ全体のスクリーンショットをPNG形式で取得
+    return await GLOBAL_PAGE.screenshot(type='png', full_page=True)
+
+@app.get("/screenshot")
+def screenshot():
+    """現在のページのスクリーンショットを Base64 でエンコードして返す"""
+    try:
+        screenshot_bytes = run_sync(take_screenshot_async())
+        encoded_string = base64.b64encode(screenshot_bytes).decode('utf-8')
+        # データURIスキーム形式で返す
+        return Response(f"data:image/png;base64,{encoded_string}", mimetype="text/plain")
+    except Exception as e:
+        log.exception("screenshot fatal")
+        return jsonify(error=str(e)), 500
+    
+    
+    
 # ---------------- Flask ルート -----------------------------------
 @app.get("/source")
 def source():

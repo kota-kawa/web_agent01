@@ -95,6 +95,19 @@ def forward_dsl():
 def vhtml():
     return Response(vnc_html(), mimetype="text/plain")
 
+
+@app.get("/screenshot")
+def get_screenshot():
+    """VNCサーバーからスクリーンショットを取得してブラウザに返す"""
+    try:
+        res = requests.get(f"{VNC_API}/screenshot", timeout=30)
+        res.raise_for_status()
+        return Response(res.text, mimetype="text/plain")
+    except Exception as e:
+        log.error("get_screenshot error: %s", e)
+        return jsonify(error=str(e)), 500
+    
+    
 # --------------- UI エントリポイント ------------------------------
 @app.route("/")
 def outer():
