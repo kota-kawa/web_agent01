@@ -1,8 +1,4 @@
-
-import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import json
 import logging
 import requests
@@ -43,7 +39,7 @@ def download_history():
     if os.path.exists(HIST_FILE):
         return send_from_directory(
             directory=os.path.dirname(HIST_FILE),
-            filename=os.path.basename(HIST_FILE),
+            path=os.path.basename(HIST_FILE),
             mimetype="application/json"
         )
     return jsonify(error="history file not found"), 404
@@ -100,7 +96,7 @@ def vhtml():
 def get_screenshot():
     """VNCサーバーからスクリーンショットを取得してブラウザに返す"""
     try:
-        res = requests.get(f"{VNC_API}/screenshot", timeout=30)
+        res = requests.get(f"{VNC_API}/screenshot", timeout=180)
         res.raise_for_status()
         return Response(res.text, mimetype="text/plain")
     except Exception as e:
@@ -111,6 +107,7 @@ def get_screenshot():
 # --------------- UI エントリポイント ------------------------------
 @app.route("/")
 def outer():
+    # 変更後: index.html をレンダリングするように修正
     return render_template(
         "layout.html",
         vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901",

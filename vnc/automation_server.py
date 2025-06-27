@@ -26,7 +26,7 @@ log = logging.getLogger("auto")
 log.setLevel(logging.INFO)
 
 # 各 Playwright アクションのデフォルトタイムアウト(ms)
-ACTION_TIMEOUT = 20000
+ACTION_TIMEOUT = 30000
 
 # 一貫したイベントループを確保する
 LOOP = asyncio.new_event_loop()
@@ -34,7 +34,7 @@ asyncio.set_event_loop(LOOP)
 
 CDP = "http://localhost:9222"
 # 起動時に開く既定ページ
-WEB = os.getenv("START_URL", "https://www.google.com")
+WEB = os.getenv("START_URL", "https://www.yahoo.co.jp")
 
 PLAYWRIGHT = None        # async_playwright() の戻り値を保持
 GLOBAL_BROWSER = None    # Browser オブジェクト
@@ -178,12 +178,15 @@ async def run_actions(raw: List[Dict]) -> str:
     acts = [await normalize(x) for x in raw]
 
     async def exec_one(act, force=False):
+        await GLOBAL_PAGE.wait_for_load_state("domcontentloaded", timeout=ACTION_TIMEOUT)
+       
         match act["action"]:
             case "navigate":
                 await GLOBAL_PAGE.goto(
                     act["target"],
                     timeout=ACTION_TIMEOUT,
-                    wait_until="load",
+                    #wait_until="load",
+                    wait_until="networkidle",
                 )
             case "click":
                 if sel := act.get("target"):
@@ -247,8 +250,8 @@ async def take_screenshot_async():
     if GLOBAL_PAGE is None:
         await init_browser_and_page()
     # ページのロードが完了し、ネットワークがアイドル状態になるのを待つ
-    await GLOBAL_PAGE.wait_for_load_state("networkidle", timeout=10000)
-    await asyncio.sleep(0.5) # 念のためのレンダリング待機
+    await GLOBAL_PAGE.wait_for_load_state("networkidle", timeout=20000)
+    await asyncio.sleep(1) # 念のためのレンダリング待機
     # ページ全体のスクリーンショットをPNG形式で取得
     return await GLOBAL_PAGE.screenshot(type='png', full_page=True)
 
