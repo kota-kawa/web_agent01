@@ -18,13 +18,16 @@ services:
 
   web:
     build: ./web
-    working_dir: /app/web         
-    command: python -u app.py   
-
+    #working_dir: /app/web         
+    #command: python -u app.py   
+    working_dir: /app/web # ワーキングディレクトリは元のままでも問題ありません
+    command: python -u app.py
+    environment:
+      - PYTHONPATH=/app # Pythonにモジュールを探すパスとして/appを追加します
+      - START_URL=https://www.google.com
     env_file:
       - .env
-    environment:
-      - START_URL=https://www.google.com
+    
     ports:
       - "5000:5000"
     volumes:
