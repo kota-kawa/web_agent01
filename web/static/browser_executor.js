@@ -7,7 +7,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chatArea   = document.getElementById("chat-area");
 const opHistory  = document.getElementById("operation-history");
 let stopRequested   = false;
-const START_URL = window.START_URL || "https://www.google.com";
+const START_URL = window.START_URL || "https://www.yahoo.co.jp";
 
 // screenshot helper
 async function captureScreenshot() {

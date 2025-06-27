@@ -22,8 +22,8 @@ log.setLevel(logging.INFO)
 
 # --------------- VNC / Playwright API ----------------------------
 VNC_API = "http://vnc:7000"          # Playwright 側の API
-START_URL = os.getenv("START_URL", "https://www.google.com")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
+START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp")
+MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
 
 # --------------- Conversation History ----------------------------
 LOG_DIR   = os.getenv("LOG_DIR", "./")

@@ -24,7 +24,7 @@ services:
     command: python -u app.py
     environment:
       - PYTHONPATH=/app # Pythonにモジュールを探すパスとして/appを追加します
-      - START_URL=https://www.google.com
+      - START_URL=https://www.yahoo.co.jp
     env_file:
       - .env
     
