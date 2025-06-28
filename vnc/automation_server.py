@@ -252,8 +252,9 @@ async def take_screenshot_async():
     # ページのロードが完了し、ネットワークがアイドル状態になるのを待つ
     await GLOBAL_PAGE.wait_for_load_state("networkidle", timeout=20000)
     await asyncio.sleep(1) # 念のためのレンダリング待機
-    # ページ全体のスクリーンショットをPNG形式で取得
-    return await GLOBAL_PAGE.screenshot(type='png', full_page=True)
+
+    #return await GLOBAL_PAGE.screenshot(type='png', full_page=True)
+    return await GLOBAL_PAGE.screenshot(type='png')
 
 @app.get("/screenshot")
 def screenshot():

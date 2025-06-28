@@ -36,4 +36,5 @@ services:
 
 networks:
   small_browser_net:
-    name: small_browser_net
+    driver: bridge
+    #name: small_browser_net
