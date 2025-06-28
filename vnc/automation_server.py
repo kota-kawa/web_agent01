@@ -1,310 +1,267 @@
-# automation_server.py (全文)
+# vnc/automation_server.py
+from __future__ import annotations
 
-import os
 import asyncio
-import time
-import logging
-import traceback
-import sys
-from typing import List, Dict, Union
-
 import base64
-
-from flask import Flask, jsonify, Response, request
+import json
+import logging
+import os
+import time
+from typing import Dict, List, Optional, Union
+from vnc.locator_utils import SmartLocator
 
 import httpx
+from flask import Flask, Response, jsonify, request
+from jsonschema import Draft7Validator, ValidationError
+from playwright.async_api import Error as PwError
+from playwright.async_api import async_playwright
 
-# ---- Playwright -------------------------------------------------
-try:
-    from playwright.async_api import async_playwright, Error as PwError
-except Exception:
-    traceback.print_exc()
-    sys.exit(1)
+#from locator_utils import SmartLocator  # 同ディレクトリ
 
+# -----------------------------------------------------------------------------
+# 基本設定
+# -----------------------------------------------------------------------------
 app = Flask(__name__)
 log = logging.getLogger("auto")
-log.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO)
 
-# 各 Playwright アクションのデフォルトタイムアウト(ms)
-ACTION_TIMEOUT = 90000
+ACTION_TIMEOUT = 5_000    # 個別操作の最大待機 (ms)
+EARLY_TIMEOUT = 300       # 存在確認の早期タイムアウト (ms)
+MAX_RETRIES = 3           # 各アクションの試行回数
 
-# 一貫したイベントループを確保する
+CDP_URL = "http://localhost:9222"
+DEFAULT_URL = os.getenv("START_URL", "https://example.com")
+
+# -----------------------------------------------------------------------------
+# JSON Schema: LLM から受け取る DSL 定義
+# -----------------------------------------------------------------------------
+_ACTION_ENUM = [
+    "navigate", "click", "click_text", "type",
+    "wait", "scroll"
+]
+payload_schema = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+        "actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": _ACTION_ENUM},
+                    "target": {"type": "string"},
+                    "value":  {"type": "string"},
+                    "ms":     {"type": "integer", "minimum": 0},
+                    "amount": {"type": "integer"},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down"]
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        "complete": {"type": "boolean"}
+    },
+    "required": ["actions", "complete"],
+    "additionalProperties": False
+}
+validator = Draft7Validator(payload_schema)
+
+
+def validate_payload(data: Dict) -> None:
+    """JSON Schema に従って DSL を検証"""
+    errors = sorted(validator.iter_errors(data), key=lambda e: e.path)
+    if errors:
+        msgs = [e.message for e in errors]
+        raise ValidationError("; ".join(msgs))
+
+
+# -----------------------------------------------------------------------------
+# Playwright ブラウザ管理
+# -----------------------------------------------------------------------------
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
-CDP = "http://localhost:9222"
-# 起動時に開く既定ページ
-WEB = os.getenv("START_URL", "https://www.yahoo.co.jp")
+PLAYWRIGHT = None
+BROWSER = None
+PAGE = None
 
-PLAYWRIGHT = None        # async_playwright() の戻り値を保持
-GLOBAL_BROWSER = None    # Browser オブジェクト
-GLOBAL_PAGE = None       # Page オブジェクト
 
 def run_sync(coro):
-    """Run async coroutine on the global event loop."""
+    """同期関数から非同期関数を呼び出すユーティリティ"""
     return LOOP.run_until_complete(coro)
 
-async def reset_browser():
-    """ブラウザを再起動してページを開き直す（自己修復用）"""
-    global PLAYWRIGHT, GLOBAL_BROWSER, GLOBAL_PAGE
-    try:
-        if GLOBAL_BROWSER:
-            await GLOBAL_BROWSER.close()
-    except Exception:
-        pass
-    GLOBAL_PAGE = None
-    if PLAYWRIGHT:
-        try:
-            await PLAYWRIGHT.stop()
-        except Exception:
-            pass
-    PLAYWRIGHT = None
-    await init_browser_and_page()
 
-async def init_browser_and_page():
-    """
-    初回アクセス時に、ブラウザ／ページを起動してグローバル変数に保持する。
-    """
-    global PLAYWRIGHT, GLOBAL_BROWSER, GLOBAL_PAGE
+async def _wait_cdp_available(timeout_s: int = 15) -> bool:
+    """CDP 起動待ち"""
+    deadline = time.time() + timeout_s
+    async with httpx.AsyncClient(timeout=2) as client:
+        while time.time() < deadline:
+            try:
+                await client.get(f"{CDP_URL}/json/version")
+                return True
+            except httpx.HTTPError:
+                await asyncio.sleep(1)
+    return False
 
-    if GLOBAL_PAGE is not None:
+
+async def init_browser() -> None:
+    global PLAYWRIGHT, BROWSER, PAGE
+    if PAGE:
         return
 
     PLAYWRIGHT = await async_playwright().start()
-
-    async def wait_cdp(t: int = 25) -> bool:
-        dead = time.time() + t
-        async with httpx.AsyncClient(timeout=2) as c:
-            while time.time() < dead:
-                try:
-                    await c.get(f"{CDP}/json/version")
-                    return True
-                except httpx.HTTPError:
-                    await asyncio.sleep(1)
-        return False
-
-    connected = False
-    if await wait_cdp():
+    if await _wait_cdp_available():
         try:
-            GLOBAL_BROWSER = await PLAYWRIGHT.chromium.connect_over_cdp(CDP)
-            context = GLOBAL_BROWSER.contexts[0] if GLOBAL_BROWSER.contexts else None
-            if context:
-                GLOBAL_PAGE = context.pages[0]
-                await GLOBAL_PAGE.bring_to_front()
-            else:
-                GLOBAL_PAGE = await GLOBAL_BROWSER.new_page()
-                await GLOBAL_PAGE.goto(WEB)
-            connected = True
-        except PwError as e:
-            log.error("CDP 接続に失敗しました: %s", e)
-            connected = False
-
-    if not connected:
-        GLOBAL_BROWSER = await PLAYWRIGHT.chromium.launch(headless=True)
-        GLOBAL_PAGE = await GLOBAL_BROWSER.new_page()
-        await GLOBAL_PAGE.goto(WEB)
-
-    log.info("Playwright ブラウザ・ページを初期化しました。")
-
-async def normalize(a: Dict) -> Dict:
-    a = {k.lower(): v for k, v in a.items()}
-    a["action"] = a.get("action", "").lower()
-    if "selector" in a and "target" not in a:
-        a["target"] = a.pop("selector")
-    if a["action"] in ("click_text",) and "text" in a and "target" not in a:
-        a["target"] = a["text"]
-    return a
-
-async def safe_click(loc, timeout: int = ACTION_TIMEOUT, force: bool = False):
-    try:
-        await loc.wait_for(state="visible", timeout=timeout)
-        await loc.wait_for(state="attached", timeout=timeout)
-        await loc.scroll_into_view_if_needed(timeout=timeout)
-        await loc.click(timeout=timeout, force=force)
-    except Exception as e:
-        log.warning("click failed: %s; trying recovery", e)
-        try:
-            await GLOBAL_PAGE.keyboard.press("Escape")
-            await asyncio.sleep(500) # 0.5秒待機
-            await loc.click(timeout=timeout, force=True)
-            log.info("リカバリー成功: Escapeキー + 強制クリック")
-            return
-        except Exception:
+            BROWSER = await PLAYWRIGHT.chromium.connect_over_cdp(CDP_URL)
+            context = BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
+            PAGE = context.pages[0] if context.pages else await context.new_page()
+            await PAGE.bring_to_front()
+        except PwError:
             pass
-        try:
-            await loc.evaluate("el => el.click()")
-            log.info("リカバリー成功: JavaScriptによるクリック")
-        except Exception as e2:
-            log.error(f"最終的なリカバリー（JSクリック）にも失敗しました: {e2}")
-            raise
 
-async def safe_fill(loc, value: str, timeout: int = ACTION_TIMEOUT):
-    try:
-        await loc.wait_for(state="visible", timeout=timeout)
-        await loc.scroll_into_view_if_needed(timeout=timeout)
-        await loc.fill(value, timeout=timeout)
-    except Exception as e:
-        log.warning("fill failed: %s; trying JS value set", e)
-        try:
-            await loc.evaluate(
-                "(el, val) => {el.focus(); el.value = val; el.dispatchEvent(new Event('input', {bubbles: true}));}",
-                value,
-            )
-        except Exception as e2:
-            log.error("fallback fill failed: %s", e2)
-            raise
+    if PAGE is None:  # Fallback: headless launch
+        BROWSER = await PLAYWRIGHT.chromium.launch(headless=True)
+        PAGE = await BROWSER.new_page()
 
-async def safe_click_by_text(page, txt: str, timeout: int = ACTION_TIMEOUT, force: bool = False):
-    link = page.get_by_role("link", name=txt, exact=True)
-    if await link.count():
-        await link.first.wait_for(state="visible", timeout=timeout)
-        await link.first.scroll_into_view_if_needed(timeout=timeout)
-        await safe_click(link.first, timeout=timeout, force=force)
+    await PAGE.goto(DEFAULT_URL, wait_until="load")
+    log.info("Browser initialized")
+
+
+# -----------------------------------------------------------------------------
+# アクション実装
+# -----------------------------------------------------------------------------
+async def _safe_click(loc, force: bool = False) -> None:
+    await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await loc.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+    await loc.first.click(timeout=ACTION_TIMEOUT, force=force)
+
+
+async def _safe_fill(loc, value: str) -> None:
+    await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await loc.first.fill(value, timeout=ACTION_TIMEOUT)
+
+
+async def _apply_action(act: Dict) -> None:
+    global PAGE
+    action = act["action"]
+    target = act.get("target", "")
+    value = act.get("value", "")
+    ms = int(act.get("ms", 0))
+    amount = int(act.get("amount", 400))
+    direction = act.get("direction", "down")
+
+    # ------------------------------------------------------------------
+    # ナビゲーション
+    # ------------------------------------------------------------------
+    if action == "navigate":
+        await PAGE.goto(target, wait_until="load", timeout=ACTION_TIMEOUT)
         return
 
-    exact_loc = page.get_by_text(txt, exact=True)
-    if await exact_loc.count():
-        await exact_loc.first.wait_for(state="visible", timeout=timeout)
-        await exact_loc.first.scroll_into_view_if_needed(timeout=timeout)
-        await safe_click(exact_loc.first, timeout=timeout, force=force)
+    # ------------------------------------------------------------------
+    # 明示 wait
+    # ------------------------------------------------------------------
+    if action == "wait":
+        await PAGE.wait_for_timeout(ms)
         return
 
-    last = page.get_by_text(txt).first
-    await last.wait_for(state="visible", timeout=timeout)
-    await last.scroll_into_view_if_needed(timeout=timeout)
-    await safe_click(last, timeout=timeout, force=force)
+    # ------------------------------------------------------------------
+    # スクロール
+    # ------------------------------------------------------------------
+    if action == "scroll":
+        offset = amount if direction == "down" else -amount
+        if target:
+            loc = PAGE.locator(target)
+            await loc.evaluate("(el, y) => el.scrollBy(0, y)", offset)
+        else:
+            await PAGE.evaluate("(y) => window.scrollBy(0, y)", offset)
+        return
 
-async def run_actions(raw: List[Dict]) -> str:
-    global GLOBAL_PAGE
-    if GLOBAL_PAGE is None:
-        await init_browser_and_page()
+    # ------------------------------------------------------------------
+    # Locator 必要系 (click / click_text / type)
+    # ------------------------------------------------------------------
+    locator: Optional = None
+    if action == "click_text":
+        locator = await SmartLocator(PAGE, f"text={target}").locate()
+    else:
+        locator = await SmartLocator(PAGE, target).locate()
 
-    acts = [await normalize(x) for x in raw]
+    if locator is None:
+        log.warning("Locator not found for target=%s", target)
+        return  # Locator が存在しなければスキップ
 
-    async def exec_one(act, force=False):
-      
-        await GLOBAL_PAGE.wait_for_load_state("load", timeout=ACTION_TIMEOUT)
-        match act["action"]:
-            case "navigate":
-                await GLOBAL_PAGE.goto(
-                    act["target"],
-                    timeout=ACTION_TIMEOUT,
-                    #wait_until="load",
-                    wait_until="load",
-                )
-            case "click":
-                if sel := act.get("target"):
-                    loc = GLOBAL_PAGE.locator(sel).first
-                    await safe_click(loc, timeout=ACTION_TIMEOUT, force=force)
-                elif txt := act.get("text"):
-                    await safe_click_by_text(
-                        GLOBAL_PAGE,
-                        txt,
-                        timeout=ACTION_TIMEOUT,
-                        force=force,
-                    )
-            case "click_text":
-                await safe_click_by_text(
-                    GLOBAL_PAGE,
-                    act["target"],
-                    timeout=ACTION_TIMEOUT,
-                    force=force,
-                )
-            case "type":
-                loc = GLOBAL_PAGE.locator(act["target"]).first
-                await safe_fill(loc, act.get("value", ""), timeout=ACTION_TIMEOUT)
-            case "wait":
-                await GLOBAL_PAGE.wait_for_timeout(int(act.get("ms", 500)))
-            case "scroll":
-                amt = int(act.get("amount", 400))
-                if str(act.get("direction", "down")).lower().startswith("up"):
-                    amt = -amt
-                if tgt := act.get("target"):
-                    await GLOBAL_PAGE.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", amt)
-                else:
-                    await GLOBAL_PAGE.evaluate("(y)=>window.scrollBy(0,y)", amt)
-            case _:
-                log.warning("Unknown action skipped: %s", act)
+    if action == "click" or action == "click_text":
+        await _safe_click(locator)
+        return
 
-    for a in acts:
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
+    if action == "type":
+        await _safe_fill(locator, value)
+        return
+
+    log.warning("Unknown action=%s", action)
+
+
+async def run_actions(actions: List[Dict]) -> str:
+    """DSL 内の actions を順次実行し、最後にページ HTML を返す"""
+    for act in actions:
+        for attempt in range(1, MAX_RETRIES + 1):
             try:
-                await exec_one(a, force=attempt > 1)
+                await _apply_action(act)
                 break
             except Exception as e:
-                log.error(f"Playwright action error (attempt {attempt}/{max_retries}): {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(1)
-                else:
-                    log.error("Max retries reached. Attempting browser reset.")
-                    await reset_browser()
-                    try:
-                        # 最後の試行として、強制フラグを立てて実行
-                        await exec_one(a, force=True)
-                    except Exception as e2:
-                        log.error("Recovery attempt failed: %s", e2)
-                        # ここで例外を再送出するか、エラーを報告して処理を続行するかを選択
-                        # 今回はループを抜ける
-                    break # リセット後、次のアクションに進む
+                log.error("Playwright action error (attempt %d/%d): %s", attempt, MAX_RETRIES, e)
+                if attempt == MAX_RETRIES:
+                    raise
+                await asyncio.sleep(0.5)  # back-off
 
-    html = await GLOBAL_PAGE.content()
-    return html
+    return await PAGE.content()
 
-
-async def take_screenshot_async():
-    """非同期でスクリーンショットを取得するヘルパー関数"""
-    if GLOBAL_PAGE is None:
-        await init_browser_and_page()
-    # ページのロードが完了し、ネットワークがアイドル状態になるのを待つ
-    await GLOBAL_PAGE.wait_for_load_state("load", timeout=40000)
-    await asyncio.sleep(1) # 念のためのレンダリング待機
-
-   
-    return await GLOBAL_PAGE.screenshot(type='png')
-
-@app.get("/screenshot")
-def screenshot():
-    """現在のページのスクリーンショットを Base64 でエンコードして返す"""
+# -----------------------------------------------------------------------------
+# HTTP エンドポイント
+# -----------------------------------------------------------------------------
+@app.post("/execute-dsl")
+def execute_dsl():
     try:
-        screenshot_bytes = run_sync(take_screenshot_async())
-        encoded_string = base64.b64encode(screenshot_bytes).decode('utf-8')
-        # データURIスキーム形式で返す
-        return Response(f"data:image/png;base64,{encoded_string}", mimetype="text/plain")
+        payload = request.get_json(force=True)
+        validate_payload(payload)
+    except ValidationError as ve:
+        return jsonify(error="InvalidDSL", message=str(ve)), 400
     except Exception as e:
-        log.exception("screenshot fatal")
-        return jsonify(error=str(e)), 500
-    
-    
-    
-# ---------------- Flask ルート -----------------------------------
+        return jsonify(error="ParseError", message=str(e)), 400
+
+    try:
+        run_sync(init_browser())
+        html = run_sync(run_actions(payload["actions"]))
+        return Response(html, mimetype="text/plain")
+    except Exception as e:
+        log.exception("DSL execution failed")
+        return jsonify(error="ExecutionError", message=str(e)), 500
+
+
 @app.get("/source")
 def source():
     try:
-        if GLOBAL_PAGE is None:
-            run_sync(init_browser_and_page())
-        html = run_sync(GLOBAL_PAGE.content())
-        return Response(html, mimetype="text/plain")
+        run_sync(init_browser())
+        return Response(run_sync(PAGE.content()), mimetype="text/plain")
     except Exception as e:
-        log.exception("fatal")
         return jsonify(error=str(e)), 500
 
-@app.post("/execute-dsl")
-def exec_dsl():
+
+@app.get("/screenshot")
+def screenshot():
     try:
-        data = request.get_json(force=True)
-        acts: Union[List, Dict] = data.get("actions", data)
-        if isinstance(acts, dict):
-            acts = [acts]
-        html = run_sync(run_actions(acts))
-        return Response(html, mimetype="text/plain")
+        run_sync(init_browser())
+        img = run_sync(PAGE.screenshot(type="png"))
+        return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
-        log.exception("fatal")
         return jsonify(error=str(e)), 500
+
 
 @app.get("/healthz")
 def health():
     return "ok", 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=7000, threaded=False)

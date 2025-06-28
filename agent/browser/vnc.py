@@ -21,7 +21,7 @@ def execute_dsl(payload, timeout=120):
     if not payload.get("actions"):
         return ""
     try:
-        r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=60)
+        r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=None)
         r.raise_for_status()
         return r.text
     except requests.Timeout:
