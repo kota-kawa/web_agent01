@@ -7,40 +7,28 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Union
-from vnc.locator_utils import SmartLocator
+from typing import Dict, List, Optional
 
 import httpx
 from flask import Flask, Response, jsonify, request
 from jsonschema import Draft7Validator, ValidationError
-from playwright.async_api import Error as PwError
-from playwright.async_api import async_playwright
+from playwright.async_api import Error as PwError, async_playwright
 
-#from locator_utils import SmartLocator  # 同ディレクトリ
+from vnc.locator_utils import SmartLocator   # 同ディレクトリ
 
-# -----------------------------------------------------------------------------
-# 基本設定
-# -----------------------------------------------------------------------------
+# -------------------------------------------------- 基本設定
 app = Flask(__name__)
-log = logging.getLogger("auto")
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("auto")
 
-ACTION_TIMEOUT = 5_000    # 個別操作の最大待機 (ms)
-EARLY_TIMEOUT = 300       # 存在確認の早期タイムアウト (ms)
-MAX_RETRIES = 3           # 各アクションの試行回数
-
+ACTION_TIMEOUT = 5_000          # ms  個別アクション猶予
+MAX_RETRIES = 3
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://example.com")
 
-# -----------------------------------------------------------------------------
-# JSON Schema: LLM から受け取る DSL 定義
-# -----------------------------------------------------------------------------
-_ACTION_ENUM = [
-    "navigate", "click", "click_text", "type",
-    "wait", "scroll"
-]
+# -------------------------------------------------- DSL スキーマ
+_ACTIONS = ["navigate", "click", "click_text", "type", "wait", "scroll"]
 payload_schema = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "properties": {
         "actions": {
@@ -48,202 +36,169 @@ payload_schema = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": _ACTION_ENUM},
+                    "action": {"type": "string", "enum": _ACTIONS},
                     "target": {"type": "string"},
                     "value":  {"type": "string"},
                     "ms":     {"type": "integer", "minimum": 0},
                     "amount": {"type": "integer"},
-                    "direction": {
-                        "type": "string",
-                        "enum": ["up", "down"]
-                    }
+                    "direction": {"type": "string", "enum": ["up", "down"]}
                 },
-                "required": ["action"]
+                "required": ["action"],
+                "additionalProperties": True     # ★ 不明キーは許可
             }
         },
-        "complete": {"type": "boolean"}
+        "complete": {"type": "boolean"}          # ★ 任意
     },
-    "required": ["actions", "complete"],
-    "additionalProperties": False
+    "required": ["actions"],
+    "additionalProperties": True                 # ★ ここも許可
 }
 validator = Draft7Validator(payload_schema)
 
 
-def validate_payload(data: Dict) -> None:
-    """JSON Schema に従って DSL を検証"""
-    errors = sorted(validator.iter_errors(data), key=lambda e: e.path)
-    if errors:
-        msgs = [e.message for e in errors]
-        raise ValidationError("; ".join(msgs))
+def _validate(data: Dict) -> None:
+    errs = sorted(validator.iter_errors(data), key=lambda e: e.path)
+    if errs:
+        raise ValidationError("; ".join(err.msg for err in errs))
 
-
-# -----------------------------------------------------------------------------
-# Playwright ブラウザ管理
-# -----------------------------------------------------------------------------
+# -------------------------------------------------- Playwright 管理
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
-PLAYWRIGHT = None
-BROWSER = None
-PAGE = None
+PW = BROWSER = PAGE = None
 
 
-def run_sync(coro):
-    """同期関数から非同期関数を呼び出すユーティリティ"""
+def _run(coro):
     return LOOP.run_until_complete(coro)
 
 
-async def _wait_cdp_available(timeout_s: int = 15) -> bool:
-    """CDP 起動待ち"""
-    deadline = time.time() + timeout_s
-    async with httpx.AsyncClient(timeout=2) as client:
+async def _wait_cdp(t: int = 15) -> bool:
+    deadline = time.time() + t
+    async with httpx.AsyncClient(timeout=2) as c:
         while time.time() < deadline:
             try:
-                await client.get(f"{CDP_URL}/json/version")
+                await c.get(f"{CDP_URL}/json/version")
                 return True
             except httpx.HTTPError:
                 await asyncio.sleep(1)
     return False
 
 
-async def init_browser() -> None:
-    global PLAYWRIGHT, BROWSER, PAGE
+async def _init_browser():
+    global PW, BROWSER, PAGE
     if PAGE:
         return
+    PW = await async_playwright().start()
 
-    PLAYWRIGHT = await async_playwright().start()
-    if await _wait_cdp_available():
+    if await _wait_cdp():
         try:
-            BROWSER = await PLAYWRIGHT.chromium.connect_over_cdp(CDP_URL)
-            context = BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
-            PAGE = context.pages[0] if context.pages else await context.new_page()
+            BROWSER = await PW.chromium.connect_over_cdp(CDP_URL)
+            ctx = BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
+            PAGE = ctx.pages[0] if ctx.pages else await ctx.new_page()
             await PAGE.bring_to_front()
         except PwError:
             pass
 
-    if PAGE is None:  # Fallback: headless launch
-        BROWSER = await PLAYWRIGHT.chromium.launch(headless=True)
+    if PAGE is None:
+        BROWSER = await PW.chromium.launch(headless=True)
         PAGE = await BROWSER.new_page()
 
     await PAGE.goto(DEFAULT_URL, wait_until="load")
-    log.info("Browser initialized")
+    log.info("browser ready")
+
+# -------------------------------------------------- アクション実装
+async def _safe_click(l, force=False):
+    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await l.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+    await l.first.click(timeout=ACTION_TIMEOUT, force=force)
 
 
-# -----------------------------------------------------------------------------
-# アクション実装
-# -----------------------------------------------------------------------------
-async def _safe_click(loc, force: bool = False) -> None:
-    await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await loc.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
-    await loc.first.click(timeout=ACTION_TIMEOUT, force=force)
+async def _safe_fill(l, val: str):
+    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await l.first.fill(val, timeout=ACTION_TIMEOUT)
 
 
-async def _safe_fill(loc, value: str) -> None:
-    await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await loc.first.fill(value, timeout=ACTION_TIMEOUT)
-
-
-async def _apply_action(act: Dict) -> None:
+async def _apply(act: Dict):
     global PAGE
-    action = act["action"]
-    target = act.get("target", "")
-    value = act.get("value", "")
+    a = act["action"]
+    tgt = act.get("target", "")
+    val = act.get("value", "")
     ms = int(act.get("ms", 0))
-    amount = int(act.get("amount", 400))
-    direction = act.get("direction", "down")
+    amt = int(act.get("amount", 400))
+    dir_ = act.get("direction", "down")
 
-    # ------------------------------------------------------------------
-    # ナビゲーション
-    # ------------------------------------------------------------------
-    if action == "navigate":
-        await PAGE.goto(target, wait_until="load", timeout=ACTION_TIMEOUT)
+    # -- navigate / wait / scroll はロケータ不要
+    if a == "navigate":
+        await PAGE.goto(tgt, wait_until="load", timeout=ACTION_TIMEOUT)
         return
-
-    # ------------------------------------------------------------------
-    # 明示 wait
-    # ------------------------------------------------------------------
-    if action == "wait":
+    if a == "wait":
         await PAGE.wait_for_timeout(ms)
         return
-
-    # ------------------------------------------------------------------
-    # スクロール
-    # ------------------------------------------------------------------
-    if action == "scroll":
-        offset = amount if direction == "down" else -amount
-        if target:
-            loc = PAGE.locator(target)
-            await loc.evaluate("(el, y) => el.scrollBy(0, y)", offset)
+    if a == "scroll":
+        offset = amt if dir_ == "down" else -amt
+        if tgt:
+            await PAGE.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", offset)
         else:
-            await PAGE.evaluate("(y) => window.scrollBy(0, y)", offset)
+            await PAGE.evaluate("(y)=>window.scrollBy(0,y)", offset)
         return
 
-    # ------------------------------------------------------------------
-    # Locator 必要系 (click / click_text / type)
-    # ------------------------------------------------------------------
-    locator: Optional = None
-    if action == "click_text":
-        locator = await SmartLocator(PAGE, f"text={target}").locate()
+    # -- ロケータ系
+    loc: Optional = None
+    if a == "click_text":
+        loc = await SmartLocator(PAGE, f"text={tgt}").locate()
     else:
-        locator = await SmartLocator(PAGE, target).locate()
+        loc = await SmartLocator(PAGE, tgt).locate()
 
-    if locator is None:
-        log.warning("Locator not found for target=%s", target)
-        return  # Locator が存在しなければスキップ
-
-    if action == "click" or action == "click_text":
-        await _safe_click(locator)
+    if loc is None:                # 要素が無ければスキップ
+        log.warning("locator not found: %s", tgt)
         return
 
-    if action == "type":
-        await _safe_fill(locator, value)
-        return
+    if a in ("click", "click_text"):
+        await _safe_click(loc)
+    elif a == "type":
+        await _safe_fill(loc, val)
 
-    log.warning("Unknown action=%s", action)
 
-
-async def run_actions(actions: List[Dict]) -> str:
-    """DSL 内の actions を順次実行し、最後にページ HTML を返す"""
+async def _run_actions(actions: List[Dict]) -> str:
     for act in actions:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                await _apply_action(act)
+                await _apply(act)
                 break
             except Exception as e:
-                log.error("Playwright action error (attempt %d/%d): %s", attempt, MAX_RETRIES, e)
+                log.error("action error (%d/%d): %s", attempt, MAX_RETRIES, e)
                 if attempt == MAX_RETRIES:
                     raise
-                await asyncio.sleep(0.5)  # back-off
-
+                await asyncio.sleep(0.5)
     return await PAGE.content()
 
-# -----------------------------------------------------------------------------
-# HTTP エンドポイント
-# -----------------------------------------------------------------------------
+# -------------------------------------------------- HTTP エンドポイント
 @app.post("/execute-dsl")
 def execute_dsl():
     try:
-        payload = request.get_json(force=True)
-        validate_payload(payload)
+        data = request.get_json(force=True)
+        # 配列だけ来た場合の後方互換
+        if isinstance(data, list):
+            data = {"actions": data}
+        _validate(data)
     except ValidationError as ve:
         return jsonify(error="InvalidDSL", message=str(ve)), 400
     except Exception as e:
         return jsonify(error="ParseError", message=str(e)), 400
 
     try:
-        run_sync(init_browser())
-        html = run_sync(run_actions(payload["actions"]))
+        _run(_init_browser())
+        html = _run(_run_actions(data["actions"]))
         return Response(html, mimetype="text/plain")
     except Exception as e:
-        log.exception("DSL execution failed")
+        log.exception("execution failed")
         return jsonify(error="ExecutionError", message=str(e)), 500
 
 
 @app.get("/source")
 def source():
     try:
-        run_sync(init_browser())
-        return Response(run_sync(PAGE.content()), mimetype="text/plain")
+        _run(_init_browser())
+        return Response(_run(PAGE.content()), mimetype="text/plain")
     except Exception as e:
         return jsonify(error=str(e)), 500
 
@@ -251,8 +206,8 @@ def source():
 @app.get("/screenshot")
 def screenshot():
     try:
-        run_sync(init_browser())
-        img = run_sync(PAGE.screenshot(type="png"))
+        _run(_init_browser())
+        img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
         return jsonify(error=str(e)), 500
@@ -264,4 +219,4 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=7000, threaded=False)
+    app.run("0.0.0.0", 7000, threaded=False)

@@ -15,14 +15,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir "playwright[all]==1.44.0" flask httpx jsonschema>=4.0 \
   && playwright install --with-deps chromium
   
-ENV PYTHONPATH=/opt:${PYTHONPATH}
 
-# ---- アプリ本体 --------------------------------------------------------
+
 WORKDIR /opt
-COPY automation_server.py .
-COPY scripts/start-chromium.sh /usr/local/bin/start-chromium.sh
-COPY supervisor/ /etc/supervisor/conf.d/
+
+# ① build-context (= ./vnc) 全体を /opt/vnc へコピー
+COPY . /opt/vnc
+
+# ② 既存パス互換のためエントリポイントにシンボリックリンクを張る
+RUN ln -s /opt/vnc/automation_server.py /opt/automation_server.py
+
+# コンテキストをルート (.) のままにした場合、
+# vnc 配下への相対パスを指定する
+COPY vnc/automation_server.py ./automation_server.py
+COPY vnc/scripts/start-chromium.sh /usr/local/bin/start-chromium.sh
+COPY vnc/supervisor/ /etc/supervisor/conf.d/
+
+# 実行ビットを付与
 RUN chmod +x /usr/local/bin/start-chromium.sh
+
+# ④ Python から /opt 配下をパッケージ検索できるように
+ENV PYTHONPATH=/opt
 
 EXPOSE 6901 9222 7000
 CMD ["/usr/bin/supervisord","-n"]

@@ -1,56 +1,58 @@
 # vnc/locator_utils.py
 """
-汎用スマートロケータユーティリティ
+SmartLocator — どのサイトにも耐える多段フォールバックロケータ
 
-どの Web サイトでも動作可能なように、与えられた target 文字列を多段階で解釈し、
-最初にヒットした Playwright Locator を返す。ヒットしなければ None。
+優先度:
+ 1) data-testid
+ 2) role=button[name="…"] などの ARIA Role
+ 3) <label>／aria-label／placeholder
+ 4) 可視テキスト
+ 5) 明示 css=/text=/role= プレフィクス
+ 6) 裸の CSS セレクタ
+
+各候補を 300 ms 以内に発見できなければ次へ。
 """
 from __future__ import annotations
 import re
 from typing import Optional
 
-from playwright.async_api import Page, Locator
+from playwright.async_api import Locator, Page
 
 
 class SmartLocator:
-    """target 文字列を解釈し、最適な Locator (または None) を非同期に返す"""
+    _ROLE = re.compile(r"^role=(\w+)\[name=['\"](.+?)['\"]]$", re.I)
 
-    _ROLE_PATTERN = re.compile(r"^role=(\w+)\[name=['\"](.+?)['\"]]$", re.I)
+    def __init__(self, page: Page, target: str) -> None:
+        self.page = page
+        self.raw = target.strip()
 
-    def __init__(self, page: Page, target: str):
-        self.page: Page = page
-        self.target: str = target.strip()
-
-    async def _try(self, locator: Locator) -> Optional[Locator]:
-        """0.3 秒以内に要素が見つかればそのロケータを返す"""
+    async def _try(self, loc: Locator) -> Optional[Locator]:
         try:
-            await locator.first.wait_for(state="attached", timeout=300)
-            return locator
+            await loc.first.wait_for(state="attached", timeout=300)
+            return loc
         except Exception:
             return None
 
     async def locate(self) -> Optional[Locator]:
-        t: str = self.target
+        t = self.raw
 
-        # --- 明示プレフィクス (早期判定) ---
+        # 明示プレフィクス
         if t.startswith("css="):
             return await self._try(self.page.locator(t[4:]))
         if t.startswith("text="):
             return await self._try(self.page.get_by_text(t[5:], exact=True))
         if t.startswith("role="):
-            m = self._ROLE_PATTERN.match(t)
+            m = self._ROLE.match(t)
             if m:
                 role, name = m.groups()
-                return await self._try(
-                    self.page.get_by_role(role, name=name, exact=True)
-                )
+                return await self._try(self.page.get_by_role(role, name=name, exact=True))
 
-        # --- data-testid 属性 ---
+        # data-testid
         loc = await self._try(self.page.locator(f"[data-testid='{t}']"))
         if loc:
             return loc
 
-        # --- aria/label/placeholder ---
+        # label / aria-label / placeholder
         loc = await self._try(self.page.get_by_label(t, exact=True))
         if loc:
             return loc
@@ -58,10 +60,10 @@ class SmartLocator:
         if loc:
             return loc
 
-        # --- 可視テキスト ---
+        # 可視テキスト
         loc = await self._try(self.page.get_by_text(t, exact=True))
         if loc:
             return loc
 
-        # --- 最後に裸の CSS として解釈 ---
+        # 最後に裸 CSS
         return await self._try(self.page.locator(t))

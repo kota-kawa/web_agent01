@@ -1,6 +1,8 @@
 services:
   vnc:
-    build: ./vnc
+    build: 
+      context: .           # ← ルートをコンテキストに
+      dockerfile: vnc/Dockerfile
     ports:
       - "6901:6901"     # noVNC
       - "9222:9222"     # Chrome DevTools
