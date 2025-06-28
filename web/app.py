@@ -78,7 +78,7 @@ def forward_dsl():
     if not payload.get("actions"):
         return Response("", 200, mimetype="text/plain")
     try:
-        res_text = execute_dsl(payload)
+        res_text = execute_dsl(payload, timeout=120)
         return Response(res_text, 200, mimetype="text/plain")
     except requests.Timeout:
         log.error("forward_dsl timeout")
@@ -96,7 +96,7 @@ def vhtml():
 def get_screenshot():
     """VNCサーバーからスクリーンショットを取得してブラウザに返す"""
     try:
-        res = requests.get(f"{VNC_API}/screenshot", timeout=180)
+        res = requests.get(f"{VNC_API}/screenshot", timeout=300)
         res.raise_for_status()
         return Response(res.text, mimetype="text/plain")
     except Exception as e:
@@ -107,7 +107,6 @@ def get_screenshot():
 # --------------- UI エントリポイント ------------------------------
 @app.route("/")
 def outer():
-    # 変更後: index.html をレンダリングするように修正
     return render_template(
         "layout.html",
         vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901",

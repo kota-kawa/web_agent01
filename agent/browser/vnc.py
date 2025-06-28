@@ -16,7 +16,7 @@ def get_html() -> str:
         return ""
 
 
-def execute_dsl(payload):
+def execute_dsl(payload, timeout=120):
     """Forward DSL JSON to the automation server."""
     if not payload.get("actions"):
         return ""

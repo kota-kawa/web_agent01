@@ -26,7 +26,7 @@ log = logging.getLogger("auto")
 log.setLevel(logging.INFO)
 
 # 各 Playwright アクションのデフォルトタイムアウト(ms)
-ACTION_TIMEOUT = 30000
+ACTION_TIMEOUT = 90000
 
 # 一貫したイベントループを確保する
 LOOP = asyncio.new_event_loop()
@@ -118,20 +118,24 @@ async def normalize(a: Dict) -> Dict:
 async def safe_click(loc, timeout: int = ACTION_TIMEOUT, force: bool = False):
     try:
         await loc.wait_for(state="visible", timeout=timeout)
+        await loc.wait_for(state="attached", timeout=timeout)
         await loc.scroll_into_view_if_needed(timeout=timeout)
         await loc.click(timeout=timeout, force=force)
     except Exception as e:
         log.warning("click failed: %s; trying recovery", e)
         try:
             await GLOBAL_PAGE.keyboard.press("Escape")
+            await asyncio.sleep(500) # 0.5秒待機
             await loc.click(timeout=timeout, force=True)
+            log.info("リカバリー成功: Escapeキー + 強制クリック")
             return
         except Exception:
             pass
         try:
             await loc.evaluate("el => el.click()")
+            log.info("リカバリー成功: JavaScriptによるクリック")
         except Exception as e2:
-            log.error("fallback JS click failed: %s", e2)
+            log.error(f"最終的なリカバリー（JSクリック）にも失敗しました: {e2}")
             raise
 
 async def safe_fill(loc, value: str, timeout: int = ACTION_TIMEOUT):
@@ -178,15 +182,15 @@ async def run_actions(raw: List[Dict]) -> str:
     acts = [await normalize(x) for x in raw]
 
     async def exec_one(act, force=False):
-        await GLOBAL_PAGE.wait_for_load_state("domcontentloaded", timeout=ACTION_TIMEOUT)
-       
+      
+        await GLOBAL_PAGE.wait_for_load_state("load", timeout=ACTION_TIMEOUT)
         match act["action"]:
             case "navigate":
                 await GLOBAL_PAGE.goto(
                     act["target"],
                     timeout=ACTION_TIMEOUT,
                     #wait_until="load",
-                    wait_until="networkidle",
+                    wait_until="load",
                 )
             case "click":
                 if sel := act.get("target"):
@@ -236,10 +240,13 @@ async def run_actions(raw: List[Dict]) -> str:
                     log.error("Max retries reached. Attempting browser reset.")
                     await reset_browser()
                     try:
+                        # 最後の試行として、強制フラグを立てて実行
                         await exec_one(a, force=True)
                     except Exception as e2:
                         log.error("Recovery attempt failed: %s", e2)
-                    break
+                        # ここで例外を再送出するか、エラーを報告して処理を続行するかを選択
+                        # 今回はループを抜ける
+                    break # リセット後、次のアクションに進む
 
     html = await GLOBAL_PAGE.content()
     return html
@@ -250,10 +257,10 @@ async def take_screenshot_async():
     if GLOBAL_PAGE is None:
         await init_browser_and_page()
     # ページのロードが完了し、ネットワークがアイドル状態になるのを待つ
-    await GLOBAL_PAGE.wait_for_load_state("networkidle", timeout=20000)
+    await GLOBAL_PAGE.wait_for_load_state("load", timeout=40000)
     await asyncio.sleep(1) # 念のためのレンダリング待機
 
-    #return await GLOBAL_PAGE.screenshot(type='png', full_page=True)
+   
     return await GLOBAL_PAGE.screenshot(type='png')
 
 @app.get("/screenshot")
