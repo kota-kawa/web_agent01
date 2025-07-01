@@ -6,11 +6,18 @@ log = logging.getLogger("controller")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
 
 
-def build_prompt(cmd: str, page: str, hist, screenshot: bool = False) -> str:
+def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=None) -> str:
     """Return full system prompt for the LLM."""
     past_conv = "\n".join(f"U:{h['user']}\nA:{h['bot']['explanation']}" for h in hist)
 
     add_img = "現在の状況を把握するために、スクリーンショット画像も与えます。" if screenshot else ""
+    elem_lines = ""
+    if elements:
+        elem_lines = "\n".join(
+            f"[{e.get('index')}] <{e.get('tag')}> {e.get('text')} id={e.get('id')} class={e.get('class')}"
+            for e in elements
+        )
+
     system_prompt = (
     "あなたは、ブラウザタスクを自動化するために反復ループで動作するAIエージェントです。\n"
     "最終的な目標は、ユーザーに命令されたタスクを達成することです。\n\n"
@@ -178,6 +185,9 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False) -> str:
     ========================================================================
     """
     "\n"
+    "---- 操作候補要素一覧 (操作対象は番号で指定) ----\n"
+    f"{elem_lines}\n"
+    "--------------------------------\n"
     "---- 現在のページ HTML(一部) ----\n"
     f"{strip_html(page)}\n"
     "--------------------------------\n"

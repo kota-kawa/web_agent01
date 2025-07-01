@@ -118,6 +118,39 @@ async def _safe_fill(l, val: str):
     await l.first.fill(val, timeout=ACTION_TIMEOUT)
 
 
+async def _list_elements(limit: int = 50) -> List[Dict]:
+    """Return list of clickable/input elements with basic info."""
+    els = []
+    loc = PAGE.locator("a,button,input,textarea,select")
+    count = await loc.count()
+    for i in range(min(count, limit)):
+        el = loc.nth(i)
+        try:
+            if not await el.is_visible():
+                continue
+            tag = await el.evaluate("el => el.tagName.toLowerCase()")
+            text = (await el.inner_text()).strip()[:50]
+            id_attr = await el.get_attribute("id")
+            cls = await el.get_attribute("class")
+            xpath = await el.evaluate(
+                """
+                el => {
+                    function xp(e){
+                        if(e===document.body) return '/html/body';
+                        let ix=0,s=e.previousSibling;
+                        while(s){ if(s.nodeType===1 && s.tagName===e.tagName) ix++; s=s.previousSibling; }
+                        return xp(e.parentNode)+'/'+e.tagName.toLowerCase()+'['+(ix+1)+']';
+                    }
+                    return xp(el);
+                }
+                """
+            )
+            els.append({"index": len(els), "tag": tag, "text": text, "id": id_attr, "class": cls, "xpath": xpath})
+        except Exception:
+            continue
+    return els
+
+
 async def _apply(act: Dict):
     global PAGE
     a = act["action"]
@@ -210,6 +243,16 @@ def screenshot():
         _run(_init_browser())
         img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+@app.get("/elements")
+def elements():
+    try:
+        _run(_init_browser())
+        data = _run(_list_elements())
+        return jsonify(data)
     except Exception as e:
         return jsonify(error=str(e)), 500
 

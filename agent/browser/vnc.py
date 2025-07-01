@@ -27,6 +27,14 @@ def execute_dsl(payload, timeout=120):
     except requests.Timeout:
         log.error("execute_dsl timeout")
         raise
+
+
+def get_elements() -> list:
+    """Get clickable/input elements with index info."""
+    try:
+        res = requests.get(f"{VNC_API}/elements", timeout=30)
+        res.raise_for_status()
+        return res.json()
     except Exception as e:
-        log.error("execute_dsl error: %s", e)
-        raise
+        log.error("get_elements error: %s", e)
+        return []
