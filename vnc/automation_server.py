@@ -25,7 +25,7 @@ log = logging.getLogger("auto")
 ACTION_TIMEOUT = 5_000          # ms  個別アクション猶予
 MAX_RETRIES = 3
 CDP_URL = "http://localhost:9222"
-DEFAULT_URL = os.getenv("START_URL", "https://example.com")
+DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = ["navigate", "click", "click_text", "type", "wait", "scroll"]

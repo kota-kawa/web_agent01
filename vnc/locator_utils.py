@@ -10,7 +10,7 @@ SmartLocator — どのサイトにも耐える多段フォールバックロケ
  5) 明示 css=/text=/role= プレフィクス
  6) 裸の CSS セレクタ
 
-各候補を 300 ms 以内に発見できなければ次へ。
+各候補を 3000 ms 以内に発見できなければ次へ。
 """
 from __future__ import annotations
 import re
@@ -28,7 +28,7 @@ class SmartLocator:
 
     async def _try(self, loc: Locator) -> Optional[Locator]:
         try:
-            await loc.first.wait_for(state="attached", timeout=300)
+            await loc.first.wait_for(state="attached", timeout=3000)
             return loc
         except Exception:
             return None
