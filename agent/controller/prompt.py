@@ -22,7 +22,7 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     "あなたは、ブラウザタスクを自動化するために反復ループで動作するAIエージェントです。\n"
     "最終的な目標は、ユーザーに命令されたタスクを達成することです。\n\n"
     """
-    ** # 基本的な思考プロセス**\n
+    ** 基本的な思考プロセス**\n
     ** あなたは行動を決定する前に、必ず以下の思考プロセスを内部的に実行してください。**\n
     ** 1.  観察 (Observation): まず、現在のページのHTML情報やスクリーンショットを注意深く読み解きます。特に、直前の自分のアクションによってページがどのように変化したか（新しい要素は表示されたか、何かが消えたかなど）に注目します。**\n
     ** 2.  思考 (Thought): 次に、観察結果とタスクの最終目標、過去の行動履歴を総合的に分析します。「このアクションはタスク完了に本当に貢献するだろうか？」「同じ行動の繰り返しになっていないか？」を常に自問自答してください。もしループに陥りそうだと判断したら、その原因を考え、全く異なるアプローチ（別のボタンをクリックする、テキスト入力を試みるなど）を検討します。**\n
@@ -52,7 +52,7 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
         - ポップアップ/Cookie は、承認または閉じることで対処します。\n
         - スクロールして目的の要素を見つけます。\n
         - 行き詰まった場合は、別の方法を試してください。\n
-        - 広告やプロモーションの内容はすべて無視してよい。\n
+        - 広告やプロモーションの内容はすべて無視してよいです。\n
         - 重要：エラーやその他の失敗が発生した場合は、同じ操作を繰り返さないでください。\n
         - フォームに入力する際は、必ず下にスクロールしてフォーム全体に入力してください。\n
         - PDF が開いている場合は、PDF に関する質問に回答する必要があります。それ以外の場合、PDF を操作したり、ダウンロードしたり、ボタンを押したりすることはできません。\n
@@ -124,19 +124,35 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     f"11. 最大 {MAX_STEPS} ステップ以内にタスクを完了できない場合は `complete:true` で終了してください。\n"
     "\n"
 
-    "Python で利用できるアクションヘルパー定義例:\n"
+    "Python で利用できるアクションヘルパー関数:\n"
     "  def click(target: str) -> Dict:\n"
     "      return {\"action\": \"click\", \"target\": target}\n"
+    "  def click_text(text: str) -> Dict:\n"
+    "      return {\"action\": \"click_text\", \"text\": text, \"target\": text}\n"
+    "  def navigate(url: str) -> Dict:\n"
+    "      return {\"action\": \"navigate\", \"target\": url}\n"
+    "  def type_text(target: str, value: str) -> Dict:\n"
+    "      return {\"action\": \"type\", \"target\": target, \"value\": value}\n"
     "  def wait(ms: int = 500, retry: int | None = None) -> Dict:\n"
     "      act = {\"action\": \"wait\", \"ms\": ms}\n"
     "      if retry is not None: act[\"retry\"] = retry\n"
     "      return act\n"
+    "  def wait_for_selector(target: str, ms: int = 3000) -> Dict:\n"
+    "      return {\"action\": \"wait_for_selector\", \"target\": target, \"ms\": ms}\n"
+    "  def go_back() -> Dict:\n"
+    "      return {\"action\": \"go_back\"}\n"
+    "  def go_forward() -> Dict:\n"
+    "      return {\"action\": \"go_forward\"}\n"
     "  def hover(target: str) -> Dict:\n"
     "      return {\"action\": \"hover\", \"target\": target}\n"
+    "  def select_option(target: str, value: str) -> Dict:\n"
+    "      return {\"action\": \"select_option\", \"target\": target, \"value\": value}\n"
     "  def press_key(key: str, target: str | None = None) -> Dict:\n"
-    "      d = {\"action\": \"press_key\", \"key\": key}\n"
-    "      if target: d[\"target\"] = target\n"
-    "      return d\n"
+    "      act = {\"action\": \"press_key\", \"key\": key}\n"
+    "      if target: act[\"target\"] = target\n"
+    "      return act\n"
+    "  def extract_text(target: str) -> Dict:\n"
+    "      return {\"action\": \"extract_text\", \"target\": target}\n"
 
     """
     === ブラウザ操作 DSL 出力ルール（必読・厳守）================================
