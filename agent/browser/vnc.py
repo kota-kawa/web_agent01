@@ -38,3 +38,14 @@ def get_elements() -> list:
     except Exception as e:
         log.error("get_elements error: %s", e)
         return []
+
+
+def get_extracted() -> list:
+    """Retrieve texts captured via extract_text action."""
+    try:
+        res = requests.get(f"{VNC_API}/extracted", timeout=30)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        log.error("get_extracted error: %s", e)
+        return []

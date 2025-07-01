@@ -123,7 +123,21 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     "    - 説明部にページから抽出したテキストを含める（長文は冒頭 200 文字＋\"...\"）。\n"
     f"11. 最大 {MAX_STEPS} ステップ以内にタスクを完了できない場合は `complete:true` で終了してください。\n"
     "\n"
-  
+
+    "Python で利用できるアクションヘルパー定義例:\n"
+    "  def click(target: str) -> Dict:\n"
+    "      return {\"action\": \"click\", \"target\": target}\n"
+    "  def wait(ms: int = 500, retry: int | None = None) -> Dict:\n"
+    "      act = {\"action\": \"wait\", \"ms\": ms}\n"
+    "      if retry is not None: act[\"retry\"] = retry\n"
+    "      return act\n"
+    "  def hover(target: str) -> Dict:\n"
+    "      return {\"action\": \"hover\", \"target\": target}\n"
+    "  def press_key(key: str, target: str | None = None) -> Dict:\n"
+    "      d = {\"action\": \"press_key\", \"key\": key}\n"
+    "      if target: d[\"target\"] = target\n"
+    "      return d\n"
+
     """
     === ブラウザ操作 DSL 出力ルール（必読・厳守）================================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -137,16 +151,23 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     }
     - `actions` だけは必須。追加プロパティは禁止（システムが許可していても出力しない）。
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。\n
+    2. アクションは 13 種のみ
+    | action            | 必須キー                                   | 追加キー            | 説明                 |
+    |-------------------|--------------------------------------------|--------------------|----------------------|
+    | navigate          | target (URL)                              | —                  | URL へ遷移           |
+    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |
+    | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |
+    | type              | target, value                             | —                  | テキスト入力         |
+    | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |
+    | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |
+    | go_back           | —                                         | —                  | ブラウザ戻る         |
+    | go_forward        | —                                         | —                  | ブラウザ進む         |
+    | hover             | target                                    | —                  | ホバー               |
+    | select_option     | target, value                             | —                  | ドロップダウン選択   |
+    | press_key         | key                                       | target (任意)      | キー送信             |
+    | wait_for_selector | target, ms                                | —                  | 要素待機             |
+    | extract_text      | target                                    | attr (任意)        | テキスト取得         |
 
-    2. アクションは 6 種のみ
-    | action       | 必須キー                | 追加キー                                       | 説明            |
-    |--------------|------------------------|------------------------------------------------|-----------------|
-    | navigate     | target (URL)           | —                                              | URL へ遷移      |
-    | click        | target (CSS/XPath)     | —                                              | 要素クリック     |
-    | click_text   | target (完全一致文字列) | —                                              | 可視文字列クリック|
-    | type         | target, value          | —                                              | テキスト入力     |
-    | wait         | ms (整数≥0)            | —                                              | 指定 ms 待機     |
-    | scroll       | amount (整数), direction (\"up\"/\"down\") | target (任意) | スクロール       |
 
     **上記以外の action 名・キーは絶対に出力しない。**\n
 
