@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 import httpx
 from flask import Flask, Response, jsonify, request
+from services.indexer import ElementInfo, draw_boxes
 from jsonschema import Draft7Validator, ValidationError
 from playwright.async_api import Error as PwError, async_playwright
 
@@ -85,6 +86,7 @@ asyncio.set_event_loop(LOOP)
 PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 
+INDEXED_ELEMENTS: List[ElementInfo] = []
 
 def _run(coro):
     return LOOP.run_until_complete(coro)
@@ -122,6 +124,7 @@ async def _init_browser():
         PAGE = await BROWSER.new_page()
 
     await PAGE.goto(DEFAULT_URL, wait_until="load")
+    await _index_dom()
     log.info("browser ready")
 
 # -------------------------------------------------- アクション実装
@@ -151,38 +154,38 @@ async def _safe_press(l, key: str):
     await l.first.press(key, timeout=ACTION_TIMEOUT)
 
 
-async def _list_elements(limit: int = 50) -> List[Dict]:
-    """Return list of clickable/input elements with basic info."""
-    els = []
-    loc = PAGE.locator("a,button,input,textarea,select")
-    count = await loc.count()
-    for i in range(min(count, limit)):
-        el = loc.nth(i)
-        try:
-            if not await el.is_visible():
-                continue
-            tag = await el.evaluate("el => el.tagName.toLowerCase()")
-            text = (await el.inner_text()).strip()[:50]
-            id_attr = await el.get_attribute("id")
-            cls = await el.get_attribute("class")
-            xpath = await el.evaluate(
-                """
-                el => {
-                    function xp(e){
-                        if(e===document.body) return '/html/body';
-                        let ix=0,s=e.previousSibling;
-                        while(s){ if(s.nodeType===1 && s.tagName===e.tagName) ix++; s=s.previousSibling; }
-                        return xp(e.parentNode)+'/'+e.tagName.toLowerCase()+'['+(ix+1)+']';
-                    }
-                    return xp(el);
-                }
-                """
-            )
-            els.append({"index": len(els), "tag": tag, "text": text, "id": id_attr, "class": cls, "xpath": xpath})
-        except Exception:
-            continue
-    return els
 
+
+async def _index_dom(limit: int = 50) -> List[ElementInfo]:
+    script = """
+    (() => {
+        const res = [];
+        const els = document.querySelectorAll('a,button,input,textarea,select');
+        for (let i = 0; i < els.length && res.length < limit; i++) {
+            const el = els[i];
+            if (!el.offsetParent) continue;
+            const r = el.getBoundingClientRect();
+            el.setAttribute('data-bu-index', res.length);
+            res.push({
+                index: res.length,
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || el.value || '').trim().slice(0,50),
+                x: Math.round(r.x),
+                y: Math.round(r.y),
+                width: Math.round(r.width),
+                height: Math.round(r.height)
+            });
+        }
+        return res;
+    })();
+    """
+    data = await PAGE.evaluate(script)
+    return [ElementInfo(**d) for d in data]
+
+async def _list_elements(limit: int = 50) -> List[Dict]:
+    global INDEXED_ELEMENTS
+    INDEXED_ELEMENTS = await _index_dom(limit)
+    return [e.__dict__ for e in INDEXED_ELEMENTS]
 
 async def _apply(act: Dict):
     global PAGE
@@ -196,6 +199,7 @@ async def _apply(act: Dict):
     # -- navigate / wait / scroll はロケータ不要
     if a == "navigate":
         await PAGE.goto(tgt, wait_until="load", timeout=ACTION_TIMEOUT)
+    await _index_dom()
         return
     if a == "go_back":
         await PAGE.go_back(wait_until="load")
@@ -255,9 +259,11 @@ async def _run_actions(actions: List[Dict]) -> str:
         for attempt in range(1, retries + 1):
             try:
                 await _apply(act)
+                await _list_elements()
                 break
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
+                await _list_elements()
                 if attempt == retries:
                     raise
                 await asyncio.sleep(0.5)
@@ -299,11 +305,12 @@ def source():
 def screenshot():
     try:
         _run(_init_browser())
+        elems = _run(_list_elements())
         img = _run(PAGE.screenshot(type="png"))
-        return Response(base64.b64encode(img), mimetype="text/plain")
+        boxed = draw_boxes(img, [ElementInfo(**e) for e in elems])
+        return Response(base64.b64encode(boxed), mimetype="text/plain")
     except Exception as e:
         return jsonify(error=str(e)), 500
-
 
 @app.get("/elements")
 def elements():
