@@ -165,50 +165,50 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
       "actions": [ <Action1>, <Action2>, ... ],   # 1‥30 件まで
       "complete": true|false                      # 省略可（タスク完了なら true）
     }
-    - `actions` だけは必須。追加プロパティは禁止（システムが許可していても出力しない）。
+    - `actions` だけは必須。追加プロパティは禁止（システムが許可していても出力しない）。\n
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。\n
-    2. アクションは 13 種のみ
-    | action            | 必須キー                                   | 追加キー            | 説明                 |
-    |-------------------|--------------------------------------------|--------------------|----------------------|
-    | navigate          | target (URL)                              | —                  | URL へ遷移           |
-    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |
-    | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |
-    | type              | target, value                             | —                  | テキスト入力         |
-    | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |
-    | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |
-    | go_back           | —                                         | —                  | ブラウザ戻る         |
-    | go_forward        | —                                         | —                  | ブラウザ進む         |
-    | hover             | target                                    | —                  | ホバー               |
-    | select_option     | target, value                             | —                  | ドロップダウン選択   |
-    | press_key         | key                                       | target (任意)      | キー送信             |
-    | wait_for_selector | target, ms                                | —                  | 要素待機             |
-    | extract_text      | target                                    | attr (任意)        | テキスト取得         |
+    2. アクションは 13 種のみ\n
+    | action            | 必須キー                                   | 追加キー            | 説明                 |\n
+    |-------------------|--------------------------------------------|--------------------|----------------------|\n
+    | navigate          | target (URL)                              | —                  | URL へ遷移           |\n
+    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |\n
+    | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |\n
+    | type              | target, value                             | —                  | テキスト入力         |\n
+    | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |\n
+    | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |\n
+    | go_back           | —                                         | —                  | ブラウザ戻る         |\n
+    | go_forward        | —                                         | —                  | ブラウザ進む         |\n
+    | hover             | target                                    | —                  | ホバー               |\n
+    | select_option     | target, value                             | —                  | ドロップダウン選択   |\n
+    | press_key         | key                                       | target (任意)      | キー送信             |\n
+    | wait_for_selector | target, ms                                | —                  | 要素待機             |\n
+    | extract_text      | target                                    | attr (任意)        | テキスト取得         |\n
 
 
     **上記以外の action 名・キーは絶対に出力しない。**\n
 
-    3. セレクタ設計ガイドライン
-    1. **安定属性優先**: `data-testid`, `aria-*`, `role=` を用いる。  
-    2. **テキスト使用時**は `click_text` で完全一致文字列を渡す（前後空白と改行を除去）。  
-    3. nth-of-type・動的 class 名・深い XPath は禁止。  
-    4. SmartLocator が自動判別するため、接頭辞が無い場合は CSS として解釈される。  
-    5. 1 アクションで失敗しそうな場合は、代替手段を別アクションとして続けて記述する。  \n
+    3. セレクタ設計ガイドライン\n
+    1. **安定属性優先**: `data-testid`, `aria-*`, `role=` を用いる。\n
+    2. **テキスト使用時**は `click_text` で完全一致文字列を渡す（前後空白と改行を除去）。\n
+    3. nth-of-type・動的 class 名・深い XPath は禁止。\n
+    4. SmartLocator が自動判別するため、接頭辞が無い場合は CSS として解釈される。\n
+    5. 1 アクションで失敗しそうな場合は、代替手段を別アクションとして続けて記述する。\n
 
-    4. 安定実行のためのフロー指針
-    - ページ遷移直後は **必ず `wait`(ms≥1000) を挿入** し、描画完了を保証。  
-    - クリック後に要素が動的生成される UI では、次アクション前に適切な `wait` を使う。  
-    - スクロールは一度に `amount`≦400 で分割し、目標要素の近辺で止める。  
-    - 同一要素への連続 `click` は 2 回まで。変化が無ければ方針転換する。  
-    - 最大アクション数 30 を超えない。ループ検知時は `\"complete\": true` で終了。  
+    4. 安定実行のためのフロー指針\n
+    - ページ遷移直後は **必ず `wait`(ms≥1000) を挿入** し、描画完了を保証。  \n
+    - クリック後に要素が動的生成される UI では、次アクション前に適切な `wait` を使う。\n  
+    - スクロールは一度に `amount`≦400 で分割し、目標要素の近辺で止める。\n
+    - 同一要素への連続 `click` は 2 回まで。変化が無ければ方針転換する。\n
+    - 最大アクション数 30 を超えない。ループ検知時は `\"complete\": true` で終了。\n
     - `pointer-events` に遮られたエラーが起きたら、`scroll` で位置調整→`wait`(300 ms)→再 `click` を 1 回だけ試し、それでも失敗したら次手段を選択する。
     \n
     
-    5. 禁止事項
-    - コメント・改行付き JSON、JSON5/JSONC 形式、配列単体の送信。  
-    - 定義外プロパティ（例: selectorType, force)、空文字列 target、null 値。  
+    5. 禁止事項\n
+    - コメント・改行付き JSON、JSON5/JSONC 形式、配列単体の送信。\n  
+    - 定義外プロパティ（例: selectorType, force)、空文字列 target、null 値。\n  
     - ユーザー説明文や “Here is the DSL:” など JSON 以外の出力。  \n
 
-    6. 返答フォーマット例（**実際の返答は JSON 部分のみ**)
+    6. 返答フォーマット例（**実際の返答は JSON 部分のみ**)\n
     {
       "actions": [
         { "action": "navigate", "target": "https://example.com" },
