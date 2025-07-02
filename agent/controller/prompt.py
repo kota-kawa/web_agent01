@@ -125,32 +125,55 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     "\n"
 
     "Python で利用できるアクションヘルパー関数:\n"
+    "#click: 指定したターゲットをクリックするアクション\n"
     "  def click(target: str) -> Dict:\n"
     "      return {\"action\": \"click\", \"target\": target}\n"
+    
+    "#click_text: 指定したテキストを持つ要素をクリックするアクション\n"
     "  def click_text(text: str) -> Dict:\n"
     "      return {\"action\": \"click_text\", \"text\": text, \"target\": text}\n"
+    
+    "# navigate: 指定した URL へナビゲートするアクション\n"
     "  def navigate(url: str) -> Dict:\n"
     "      return {\"action\": \"navigate\", \"target\": url}\n"
+    
+    "# type_text: 指定したターゲットにテキストを入力するアクション\n"
     "  def type_text(target: str, value: str) -> Dict:\n"
     "      return {\"action\": \"type\", \"target\": target, \"value\": value}\n"
+    
+    "# wait: 一定時間待機するアクション\n"
     "  def wait(ms: int = 500, retry: int | None = None) -> Dict:\n"
     "      act = {\"action\": \"wait\", \"ms\": ms}\n"
     "      if retry is not None: act[\"retry\"] = retry\n"
     "      return act\n"
+    
+    "# wait_for_selector: 指定したセレクタが出現するまで待機するアクション\n"
     "  def wait_for_selector(target: str, ms: int = 3000) -> Dict:\n"
     "      return {\"action\": \"wait_for_selector\", \"target\": target, \"ms\": ms}\n"
+    
+    "# go_back: ブラウザの「戻る」操作を行うアクション\n"
     "  def go_back() -> Dict:\n"
     "      return {\"action\": \"go_back\"}\n"
+    
+    "# go_forward: ブラウザの「進む」操作を行うアクション\n"
     "  def go_forward() -> Dict:\n"
     "      return {\"action\": \"go_forward\"}\n"
+    
+    "# hover: 指定したターゲットにマウスカーソルを移動させるアクション\n"
     "  def hover(target: str) -> Dict:\n"
     "      return {\"action\": \"hover\", \"target\": target}\n"
+    
+    "# select_option: セレクト要素から指定した値を選択するアクション\n"
     "  def select_option(target: str, value: str) -> Dict:\n"
     "      return {\"action\": \"select_option\", \"target\": target, \"value\": value}\n"
+    
+    "# press_key: 指定したキーを押下するアクション\n"
     "  def press_key(key: str, target: str | None = None) -> Dict:\n"
     "      act = {\"action\": \"press_key\", \"key\": key}\n"
     "      if target: act[\"target\"] = target\n"
     "      return act\n"
+    
+    "# extract_text: 指定したターゲットからテキストを抽出するアクション\n"
     "  def extract_text(target: str) -> Dict:\n"
     "      return {\"action\": \"extract_text\", \"target\": target}\n"
 

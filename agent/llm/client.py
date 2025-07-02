@@ -123,8 +123,6 @@ def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
         content = [{"type": "text", "text": prompt}]
         if screenshot:
             
-            
-            
             img_b64 = screenshot.split(",", 1)[-1]
             img_bytes = base64.b64decode(img_b64)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -132,7 +130,6 @@ def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
             with open(ss_path, "wb") as f:
                 f.write(img_bytes)
             log.info(f"Screenshot saved to {ss_path}")
-            
             
             content.append({"type": "image_url", "image_url": {"url": screenshot}})
         res = _groq_client.chat.completions.create(
