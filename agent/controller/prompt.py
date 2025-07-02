@@ -22,7 +22,7 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     "あなたは、ブラウザタスクを自動化するために反復ループで動作するAIエージェントです。\n"
     "最終的な目標は、ユーザーに命令されたタスクを達成することです。\n\n"
     """
-    ** 基本的な思考プロセス**\n
+    ** # 基本的な思考プロセス**\n
     ** あなたは行動を決定する前に、必ず以下の思考プロセスを内部的に実行してください。**\n
     ** 1.  観察 (Observation): まず、現在のページのHTML情報やスクリーンショットを注意深く読み解きます。特に、直前の自分のアクションによってページがどのように変化したか（新しい要素は表示されたか、何かが消えたかなど）に注目します。**\n
     ** 2.  思考 (Thought): 次に、観察結果とタスクの最終目標、過去の行動履歴を総合的に分析します。「このアクションはタスク完了に本当に貢献するだろうか？」「同じ行動の繰り返しになっていないか？」を常に自問自答してください。もしループに陥りそうだと判断したら、その原因を考え、全く異なるアプローチ（別のボタンをクリックする、テキスト入力を試みるなど）を検討します。**\n
@@ -52,7 +52,7 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
         - ポップアップ/Cookie は、承認または閉じることで対処します。\n
         - スクロールして目的の要素を見つけます。\n
         - 行き詰まった場合は、別の方法を試してください。\n
-        - 広告やプロモーションの内容はすべて無視してよいです。\n
+        - 広告やプロモーションの内容はすべて無視してよい。\n
         - 重要：エラーやその他の失敗が発生した場合は、同じ操作を繰り返さないでください。\n
         - フォームに入力する際は、必ず下にスクロールしてフォーム全体に入力してください。\n
         - PDF が開いている場合は、PDF に関する質問に回答する必要があります。それ以外の場合、PDF を操作したり、ダウンロードしたり、ボタンを押したりすることはできません。\n
@@ -123,37 +123,7 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
     "    - 説明部にページから抽出したテキストを含める（長文は冒頭 200 文字＋\"...\"）。\n"
     f"11. 最大 {MAX_STEPS} ステップ以内にタスクを完了できない場合は `complete:true` で終了してください。\n"
     "\n"
-
-    "Python で利用できるアクションヘルパー関数:\n"
-    "  def click(target: str) -> Dict:\n"
-    "      return {\"action\": \"click\", \"target\": target}\n"
-    "  def click_text(text: str) -> Dict:\n"
-    "      return {\"action\": \"click_text\", \"text\": text, \"target\": text}\n"
-    "  def navigate(url: str) -> Dict:\n"
-    "      return {\"action\": \"navigate\", \"target\": url}\n"
-    "  def type_text(target: str, value: str) -> Dict:\n"
-    "      return {\"action\": \"type\", \"target\": target, \"value\": value}\n"
-    "  def wait(ms: int = 500, retry: int | None = None) -> Dict:\n"
-    "      act = {\"action\": \"wait\", \"ms\": ms}\n"
-    "      if retry is not None: act[\"retry\"] = retry\n"
-    "      return act\n"
-    "  def wait_for_selector(target: str, ms: int = 3000) -> Dict:\n"
-    "      return {\"action\": \"wait_for_selector\", \"target\": target, \"ms\": ms}\n"
-    "  def go_back() -> Dict:\n"
-    "      return {\"action\": \"go_back\"}\n"
-    "  def go_forward() -> Dict:\n"
-    "      return {\"action\": \"go_forward\"}\n"
-    "  def hover(target: str) -> Dict:\n"
-    "      return {\"action\": \"hover\", \"target\": target}\n"
-    "  def select_option(target: str, value: str) -> Dict:\n"
-    "      return {\"action\": \"select_option\", \"target\": target, \"value\": value}\n"
-    "  def press_key(key: str, target: str | None = None) -> Dict:\n"
-    "      act = {\"action\": \"press_key\", \"key\": key}\n"
-    "      if target: act[\"target\"] = target\n"
-    "      return act\n"
-    "  def extract_text(target: str) -> Dict:\n"
-    "      return {\"action\": \"extract_text\", \"target\": target}\n"
-
+  
     """
     === ブラウザ操作 DSL 出力ルール（必読・厳守）================================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -165,50 +135,43 @@ def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=N
       "actions": [ <Action1>, <Action2>, ... ],   # 1‥30 件まで
       "complete": true|false                      # 省略可（タスク完了なら true）
     }
-    - `actions` だけは必須。追加プロパティは禁止（システムが許可していても出力しない）。\n
+    - `actions` だけは必須。追加プロパティは禁止（システムが許可していても出力しない）。
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。\n
-    2. アクションは 13 種のみ\n
-    | action            | 必須キー                                   | 追加キー            | 説明                 |\n
-    |-------------------|--------------------------------------------|--------------------|----------------------|\n
-    | navigate          | target (URL)                              | —                  | URL へ遷移           |\n
-    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |\n
-    | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |\n
-    | type              | target, value                             | —                  | テキスト入力         |\n
-    | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |\n
-    | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |\n
-    | go_back           | —                                         | —                  | ブラウザ戻る         |\n
-    | go_forward        | —                                         | —                  | ブラウザ進む         |\n
-    | hover             | target                                    | —                  | ホバー               |\n
-    | select_option     | target, value                             | —                  | ドロップダウン選択   |\n
-    | press_key         | key                                       | target (任意)      | キー送信             |\n
-    | wait_for_selector | target, ms                                | —                  | 要素待機             |\n
-    | extract_text      | target                                    | attr (任意)        | テキスト取得         |\n
 
+    2. アクションは 6 種のみ
+    | action       | 必須キー                | 追加キー                                       | 説明            |
+    |--------------|------------------------|------------------------------------------------|-----------------|
+    | navigate     | target (URL)           | —                                              | URL へ遷移      |
+    | click        | target (CSS/XPath)     | —                                              | 要素クリック     |
+    | click_text   | target (完全一致文字列) | —                                              | 可視文字列クリック|
+    | type         | target, value          | —                                              | テキスト入力     |
+    | wait         | ms (整数≥0)            | —                                              | 指定 ms 待機     |
+    | scroll       | amount (整数), direction (\"up\"/\"down\") | target (任意) | スクロール       |
 
     **上記以外の action 名・キーは絶対に出力しない。**\n
 
-    3. セレクタ設計ガイドライン\n
-    1. **安定属性優先**: `data-testid`, `aria-*`, `role=` を用いる。\n
-    2. **テキスト使用時**は `click_text` で完全一致文字列を渡す（前後空白と改行を除去）。\n
-    3. nth-of-type・動的 class 名・深い XPath は禁止。\n
-    4. SmartLocator が自動判別するため、接頭辞が無い場合は CSS として解釈される。\n
-    5. 1 アクションで失敗しそうな場合は、代替手段を別アクションとして続けて記述する。\n
+    3. セレクタ設計ガイドライン
+    1. **安定属性優先**: `data-testid`, `aria-*`, `role=` を用いる。  
+    2. **テキスト使用時**は `click_text` で完全一致文字列を渡す（前後空白と改行を除去）。  
+    3. nth-of-type・動的 class 名・深い XPath は禁止。  
+    4. SmartLocator が自動判別するため、接頭辞が無い場合は CSS として解釈される。  
+    5. 1 アクションで失敗しそうな場合は、代替手段を別アクションとして続けて記述する。  \n
 
-    4. 安定実行のためのフロー指針\n
-    - ページ遷移直後は **必ず `wait`(ms≥1000) を挿入** し、描画完了を保証。  \n
-    - クリック後に要素が動的生成される UI では、次アクション前に適切な `wait` を使う。\n  
-    - スクロールは一度に `amount`≦400 で分割し、目標要素の近辺で止める。\n
-    - 同一要素への連続 `click` は 2 回まで。変化が無ければ方針転換する。\n
-    - 最大アクション数 30 を超えない。ループ検知時は `\"complete\": true` で終了。\n
+    4. 安定実行のためのフロー指針
+    - ページ遷移直後は **必ず `wait`(ms≥1000) を挿入** し、描画完了を保証。  
+    - クリック後に要素が動的生成される UI では、次アクション前に適切な `wait` を使う。  
+    - スクロールは一度に `amount`≦400 で分割し、目標要素の近辺で止める。  
+    - 同一要素への連続 `click` は 2 回まで。変化が無ければ方針転換する。  
+    - 最大アクション数 30 を超えない。ループ検知時は `\"complete\": true` で終了。  
     - `pointer-events` に遮られたエラーが起きたら、`scroll` で位置調整→`wait`(300 ms)→再 `click` を 1 回だけ試し、それでも失敗したら次手段を選択する。
     \n
     
-    5. 禁止事項\n
-    - コメント・改行付き JSON、JSON5/JSONC 形式、配列単体の送信。\n  
-    - 定義外プロパティ（例: selectorType, force)、空文字列 target、null 値。\n  
+    5. 禁止事項
+    - コメント・改行付き JSON、JSON5/JSONC 形式、配列単体の送信。  
+    - 定義外プロパティ（例: selectorType, force)、空文字列 target、null 値。  
     - ユーザー説明文や “Here is the DSL:” など JSON 以外の出力。  \n
 
-    6. 返答フォーマット例（**実際の返答は JSON 部分のみ**)\n
+    6. 返答フォーマット例（**実際の返答は JSON 部分のみ**)
     {
       "actions": [
         { "action": "navigate", "target": "https://example.com" },

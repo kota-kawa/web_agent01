@@ -57,12 +57,6 @@ def _normalize_action(a: Dict) -> Dict:
     if act["action"] == "wait" and "ms" not in act:
         act["ms"] = 500
 
-    if act["action"] == "wait_for_selector" and "ms" not in act:
-        act["ms"] = 3000
-
-    if act["action"] == "press_key" and "key" not in act:
-        act["key"] = "Enter"
-
     return act
 
 

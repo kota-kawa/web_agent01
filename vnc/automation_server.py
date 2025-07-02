@@ -12,7 +12,6 @@ from typing import Dict, List, Optional
 
 import httpx
 from flask import Flask, Response, jsonify, request
-from services.indexer import ElementInfo, draw_boxes
 from jsonschema import Draft7Validator, ValidationError
 from playwright.async_api import Error as PwError, async_playwright
 
@@ -29,21 +28,7 @@ CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 
 # -------------------------------------------------- DSL スキーマ
-_ACTIONS = [
-    "navigate",
-    "click",
-    "click_text",
-    "type",
-    "wait",
-    "scroll",
-    "go_back",
-    "go_forward",
-    "hover",
-    "select_option",
-    "press_key",
-    "wait_for_selector",
-    "extract_text",
-]
+_ACTIONS = ["navigate", "click", "click_text", "type", "wait", "scroll"]
 payload_schema = {
     "type": "object",
     "properties": {
@@ -57,10 +42,7 @@ payload_schema = {
                     "value":  {"type": "string"},
                     "ms":     {"type": "integer", "minimum": 0},
                     "amount": {"type": "integer"},
-                    "direction": {"type": "string", "enum": ["up", "down"]},
-                    "key": {"type": "string"},
-                    "retry": {"type": "integer", "minimum": 1},
-                    "attr": {"type": "string"}
+                    "direction": {"type": "string", "enum": ["up", "down"]}
                 },
                 "required": ["action"],
                 "additionalProperties": True     # ★ 不明キーは許可
@@ -84,9 +66,7 @@ LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
 PW = BROWSER = PAGE = None
-EXTRACTED_TEXTS: List[str] = []
 
-INDEXED_ELEMENTS: List[ElementInfo] = []
 
 def _run(coro):
     return LOOP.run_until_complete(coro)
@@ -124,7 +104,6 @@ async def _init_browser():
         PAGE = await BROWSER.new_page()
 
     await PAGE.goto(DEFAULT_URL, wait_until="load")
-    await _index_dom()
     log.info("browser ready")
 
 # -------------------------------------------------- アクション実装
@@ -139,53 +118,38 @@ async def _safe_fill(l, val: str):
     await l.first.fill(val, timeout=ACTION_TIMEOUT)
 
 
-async def _safe_hover(l):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await l.first.hover(timeout=ACTION_TIMEOUT)
-
-
-async def _safe_select(l, val: str):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await l.first.select_option(val, timeout=ACTION_TIMEOUT)
-
-
-async def _safe_press(l, key: str):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await l.first.press(key, timeout=ACTION_TIMEOUT)
-
-
-
-
-async def _index_dom(limit: int = 50) -> List[ElementInfo]:
-    script = """
-    (() => {
-        const res = [];
-        const els = document.querySelectorAll('a,button,input,textarea,select');
-        for (let i = 0; i < els.length && res.length < limit; i++) {
-            const el = els[i];
-            if (!el.offsetParent) continue;
-            const r = el.getBoundingClientRect();
-            el.setAttribute('data-bu-index', res.length);
-            res.push({
-                index: res.length,
-                tag: el.tagName.toLowerCase(),
-                text: (el.innerText || el.value || '').trim().slice(0,50),
-                x: Math.round(r.x),
-                y: Math.round(r.y),
-                width: Math.round(r.width),
-                height: Math.round(r.height)
-            });
-        }
-        return res;
-    })();
-    """
-    data = await PAGE.evaluate(script)
-    return [ElementInfo(**d) for d in data]
-
 async def _list_elements(limit: int = 50) -> List[Dict]:
-    global INDEXED_ELEMENTS
-    INDEXED_ELEMENTS = await _index_dom(limit)
-    return [e.__dict__ for e in INDEXED_ELEMENTS]
+    """Return list of clickable/input elements with basic info."""
+    els = []
+    loc = PAGE.locator("a,button,input,textarea,select")
+    count = await loc.count()
+    for i in range(min(count, limit)):
+        el = loc.nth(i)
+        try:
+            if not await el.is_visible():
+                continue
+            tag = await el.evaluate("el => el.tagName.toLowerCase()")
+            text = (await el.inner_text()).strip()[:50]
+            id_attr = await el.get_attribute("id")
+            cls = await el.get_attribute("class")
+            xpath = await el.evaluate(
+                """
+                el => {
+                    function xp(e){
+                        if(e===document.body) return '/html/body';
+                        let ix=0,s=e.previousSibling;
+                        while(s){ if(s.nodeType===1 && s.tagName===e.tagName) ix++; s=s.previousSibling; }
+                        return xp(e.parentNode)+'/'+e.tagName.toLowerCase()+'['+(ix+1)+']';
+                    }
+                    return xp(el);
+                }
+                """
+            )
+            els.append({"index": len(els), "tag": tag, "text": text, "id": id_attr, "class": cls, "xpath": xpath})
+        except Exception:
+            continue
+    return els
+
 
 async def _apply(act: Dict):
     global PAGE
@@ -199,19 +163,9 @@ async def _apply(act: Dict):
     # -- navigate / wait / scroll はロケータ不要
     if a == "navigate":
         await PAGE.goto(tgt, wait_until="load", timeout=ACTION_TIMEOUT)
-    await _index_dom()
-        return
-    if a == "go_back":
-        await PAGE.go_back(wait_until="load")
-        return
-    if a == "go_forward":
-        await PAGE.go_forward(wait_until="load")
         return
     if a == "wait":
         await PAGE.wait_for_timeout(ms)
-        return
-    if a == "wait_for_selector":
-        await PAGE.wait_for_selector(tgt, state="visible", timeout=ms)
         return
     if a == "scroll":
         offset = amt if dir_ == "down" else -amt
@@ -228,7 +182,7 @@ async def _apply(act: Dict):
     else:
         loc = await SmartLocator(PAGE, tgt).locate()
 
-    if loc is None:
+    if loc is None:                # 要素が無ければスキップ
         log.warning("locator not found: %s", tgt)
         return
 
@@ -236,35 +190,17 @@ async def _apply(act: Dict):
         await _safe_click(loc)
     elif a == "type":
         await _safe_fill(loc, val)
-    elif a == "hover":
-        await _safe_hover(loc)
-    elif a == "select_option":
-        await _safe_select(loc, val)
-    elif a == "press_key":
-        key = act.get("key", "")
-        if key:
-            await _safe_press(loc, key)
-    elif a == "extract_text":
-        attr = act.get("attr")
-        if attr:
-            text = await loc.get_attribute(attr)
-        else:
-            text = await loc.inner_text()
-        EXTRACTED_TEXTS.append(text)
 
 
 async def _run_actions(actions: List[Dict]) -> str:
     for act in actions:
-        retries = int(act.get("retry", MAX_RETRIES))
-        for attempt in range(1, retries + 1):
+        for attempt in range(1, MAX_RETRIES + 1):
             try:
                 await _apply(act)
-                await _list_elements()
                 break
             except Exception as e:
-                log.error("action error (%d/%d): %s", attempt, retries, e)
-                await _list_elements()
-                if attempt == retries:
+                log.error("action error (%d/%d): %s", attempt, MAX_RETRIES, e)
+                if attempt == MAX_RETRIES:
                     raise
                 await asyncio.sleep(0.5)
     return await PAGE.content()
@@ -305,12 +241,11 @@ def source():
 def screenshot():
     try:
         _run(_init_browser())
-        elems = _run(_list_elements())
         img = _run(PAGE.screenshot(type="png"))
-        boxed = draw_boxes(img, [ElementInfo(**e) for e in elems])
-        return Response(base64.b64encode(boxed), mimetype="text/plain")
+        return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
         return jsonify(error=str(e)), 500
+
 
 @app.get("/elements")
 def elements():
@@ -320,11 +255,6 @@ def elements():
         return jsonify(data)
     except Exception as e:
         return jsonify(error=str(e)), 500
-
-
-@app.get("/extracted")
-def extracted():
-    return jsonify(EXTRACTED_TEXTS)
 
 
 @app.get("/healthz")
