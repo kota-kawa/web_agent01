@@ -28,7 +28,21 @@ CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 
 # -------------------------------------------------- DSL スキーマ
-_ACTIONS = ["navigate", "click", "click_text", "type", "wait", "scroll"]
+_ACTIONS = [
+    "navigate",
+    "click",
+    "click_text",
+    "type",
+    "wait",
+    "scroll",
+    "go_back",
+    "go_forward",
+    "hover",
+    "select_option",
+    "press_key",
+    "wait_for_selector",
+    "extract_text",
+]
 payload_schema = {
     "type": "object",
     "properties": {
@@ -42,7 +56,10 @@ payload_schema = {
                     "value":  {"type": "string"},
                     "ms":     {"type": "integer", "minimum": 0},
                     "amount": {"type": "integer"},
-                    "direction": {"type": "string", "enum": ["up", "down"]}
+                    "direction": {"type": "string", "enum": ["up", "down"]},
+                    "key": {"type": "string"},
+                    "retry": {"type": "integer", "minimum": 1},
+                    "attr": {"type": "string"}
                 },
                 "required": ["action"],
                 "additionalProperties": True     # ★ 不明キーは許可
@@ -66,6 +83,7 @@ LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
 PW = BROWSER = PAGE = None
+EXTRACTED_TEXTS: List[str] = []
 
 
 def _run(coro):
@@ -118,6 +136,21 @@ async def _safe_fill(l, val: str):
     await l.first.fill(val, timeout=ACTION_TIMEOUT)
 
 
+async def _safe_hover(l):
+    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await l.first.hover(timeout=ACTION_TIMEOUT)
+
+
+async def _safe_select(l, val: str):
+    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await l.first.select_option(val, timeout=ACTION_TIMEOUT)
+
+
+async def _safe_press(l, key: str):
+    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await l.first.press(key, timeout=ACTION_TIMEOUT)
+
+
 async def _list_elements(limit: int = 50) -> List[Dict]:
     """Return list of clickable/input elements with basic info."""
     els = []
@@ -164,8 +197,17 @@ async def _apply(act: Dict):
     if a == "navigate":
         await PAGE.goto(tgt, wait_until="load", timeout=ACTION_TIMEOUT)
         return
+    if a == "go_back":
+        await PAGE.go_back(wait_until="load")
+        return
+    if a == "go_forward":
+        await PAGE.go_forward(wait_until="load")
+        return
     if a == "wait":
         await PAGE.wait_for_timeout(ms)
+        return
+    if a == "wait_for_selector":
+        await PAGE.wait_for_selector(tgt, state="visible", timeout=ms)
         return
     if a == "scroll":
         offset = amt if dir_ == "down" else -amt
@@ -182,7 +224,7 @@ async def _apply(act: Dict):
     else:
         loc = await SmartLocator(PAGE, tgt).locate()
 
-    if loc is None:                # 要素が無ければスキップ
+    if loc is None:
         log.warning("locator not found: %s", tgt)
         return
 
@@ -190,17 +232,33 @@ async def _apply(act: Dict):
         await _safe_click(loc)
     elif a == "type":
         await _safe_fill(loc, val)
+    elif a == "hover":
+        await _safe_hover(loc)
+    elif a == "select_option":
+        await _safe_select(loc, val)
+    elif a == "press_key":
+        key = act.get("key", "")
+        if key:
+            await _safe_press(loc, key)
+    elif a == "extract_text":
+        attr = act.get("attr")
+        if attr:
+            text = await loc.get_attribute(attr)
+        else:
+            text = await loc.inner_text()
+        EXTRACTED_TEXTS.append(text)
 
 
 async def _run_actions(actions: List[Dict]) -> str:
     for act in actions:
-        for attempt in range(1, MAX_RETRIES + 1):
+        retries = int(act.get("retry", MAX_RETRIES))
+        for attempt in range(1, retries + 1):
             try:
                 await _apply(act)
                 break
             except Exception as e:
-                log.error("action error (%d/%d): %s", attempt, MAX_RETRIES, e)
-                if attempt == MAX_RETRIES:
+                log.error("action error (%d/%d): %s", attempt, retries, e)
+                if attempt == retries:
                     raise
                 await asyncio.sleep(0.5)
     return await PAGE.content()
@@ -255,6 +313,11 @@ def elements():
         return jsonify(data)
     except Exception as e:
         return jsonify(error=str(e)), 500
+
+
+@app.get("/extracted")
+def extracted():
+    return jsonify(EXTRACTED_TEXTS)
 
 
 @app.get("/healthz")
