@@ -183,6 +183,15 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
             continue
     return els
 
+# SPA 安定化関数 ----------------------------------------
+async def _stabilize_page():
+    """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
+    try:
+        # ネットワーク要求が終わるまで待機
+        await PAGE.wait_for_load_state("networkidle", timeout=SPA_STABILIZE_TIMEOUT)
+    except Exception:
+        # それでも発火しないルータ実装 (完全 CSR) 向けに少しだけ待機
+        await PAGE.wait_for_timeout(300)
 
 async def _apply(act: Dict):
     global PAGE
@@ -255,12 +264,15 @@ async def _run_actions(actions: List[Dict]) -> str:
         for attempt in range(1, retries + 1):
             try:
                 await _apply(act)
+                # ここで SPA の描画完了を待つ
+                await _stabilize_page()
                 break
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
                 if attempt == retries:
                     raise
-                await asyncio.sleep(0.5)
+        # 小休止（連打防止）
+        await asyncio.sleep(0.5)
     return await PAGE.content()
 
 # -------------------------------------------------- HTTP エンドポイント

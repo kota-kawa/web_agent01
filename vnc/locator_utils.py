@@ -13,11 +13,12 @@ SmartLocator — どのサイトにも耐える多段フォールバックロケ
 各候補を 3000 ms 以内に発見できなければ次へ。
 """
 from __future__ import annotations
-import re
+import re, os
 from typing import Optional
 
 from playwright.async_api import Locator, Page
 
+LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "5000"))  # ms
 
 class SmartLocator:
     _ROLE = re.compile(r"^role=(\w+)\[name=['\"](.+?)['\"]]$", re.I)
