@@ -34,3 +34,27 @@ class DOMElementNode:
             highlightIndex=data.get("highlightIndex"),
             children=children,
         )
+
+    def to_lines(self, depth: int = 0, max_lines: int = 200, _lines=None) -> List[str]:
+        """Return indented text representation of the DOM tree."""
+        if _lines is None:
+            _lines = []
+        if len(_lines) >= max_lines:
+            return _lines
+        indent = "  " * depth
+        if self.tagName == "#text":
+            if self.text and self.text.strip():
+                _lines.append(f"{indent}{self.text.strip()}")
+            return _lines
+        attr = " ".join(f"{k}={v}" for k, v in self.attributes.items() if v)
+        idx = f" [{self.highlightIndex}]" if self.highlightIndex is not None else ""
+        line = f"{indent}<{self.tagName}{(' ' + attr) if attr else ''}>{idx}"
+        _lines.append(line)
+        for ch in self.children:
+            if len(_lines) >= max_lines:
+                break
+            ch.to_lines(depth + 1, max_lines, _lines)
+        return _lines
+
+    def to_text(self, max_lines: int = 200) -> str:
+        return "\n".join(self.to_lines(max_lines=max_lines))

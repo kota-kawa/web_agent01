@@ -2,7 +2,14 @@ import os
 import json
 import logging
 import requests
-from flask import Flask, request, jsonify, render_template, Response, send_from_directory
+from flask import (
+    Flask,
+    request,
+    jsonify,
+    render_template,
+    Response,
+    send_from_directory,
+)
 
 # --------------- Agent modules -----------------------------------
 from agent.llm.client import call_llm
@@ -22,14 +29,15 @@ log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
 
 # --------------- VNC / Playwright API ----------------------------
-VNC_API = "http://vnc:7000"          # Playwright 側の API
+VNC_API = "http://vnc:7000"  # Playwright 側の API
 START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
 
 # --------------- Conversation History ----------------------------
-LOG_DIR   = os.getenv("LOG_DIR", "./")
+LOG_DIR = os.getenv("LOG_DIR", "./")
 os.makedirs(LOG_DIR, exist_ok=True)
 HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
+
 
 @app.get("/history")
 def get_history():
@@ -39,15 +47,17 @@ def get_history():
         log.error("get_history error: %s", e)
         return jsonify(error=str(e)), 500
 
+
 @app.get("/history.json")
 def download_history():
     if os.path.exists(HIST_FILE):
         return send_from_directory(
             directory=os.path.dirname(HIST_FILE),
             path=os.path.basename(HIST_FILE),
-            mimetype="application/json"
+            mimetype="application/json",
         )
     return jsonify(error="history file not found"), 404
+
 
 # ----- Memory endpoint -----
 @app.get("/memory")
@@ -58,25 +68,27 @@ def memory():
         log.error("memory error: %s", e)
         return jsonify(error=str(e)), 500
 
+
 # --------------- API ---------------------------------------------
 @app.post("/execute")
 def execute():
     data = request.get_json(force=True)
-    cmd  = data.get("command", "").strip()
+    cmd = data.get("command", "").strip()
     if not cmd:
         return jsonify(error="command empty"), 400
 
-    page  = data.get("pageSource") or vnc_html()
-    shot  = data.get("screenshot")
+    page = data.get("pageSource") or vnc_html()
+    shot = data.get("screenshot")
     model = data.get("model", "gemini")
-    hist  = load_hist()
+    hist = load_hist()
     elements = vnc_dom_tree(highlight=True)
-    prompt = build_prompt(cmd, strip_html(page), hist, bool(shot), elements)
-    res   = call_llm(prompt, model, shot)
+    prompt = build_prompt(cmd, page, hist, bool(shot), elements)
+    res = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})
     save_hist(hist)
     return jsonify(res)
+
 
 @app.post("/automation/execute-dsl")
 def forward_dsl():
@@ -93,6 +105,7 @@ def forward_dsl():
         log.error("forward_dsl error: %s", e)
         return jsonify(error=str(e)), 500
 
+
 @app.get("/vnc-source")
 def vhtml():
     return Response(vnc_html(), mimetype="text/plain")
@@ -108,8 +121,8 @@ def get_screenshot():
     except Exception as e:
         log.error("get_screenshot error: %s", e)
         return jsonify(error=str(e)), 500
-    
-    
+
+
 # --------------- UI エントリポイント ------------------------------
 @app.route("/")
 def outer():
@@ -119,6 +132,7 @@ def outer():
         start_url=START_URL,
         max_steps=MAX_STEPS,
     )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
