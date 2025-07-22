@@ -15,17 +15,18 @@ from flask import Flask, Response, jsonify, request
 from jsonschema import Draft7Validator, ValidationError
 from playwright.async_api import Error as PwError, async_playwright
 
-from vnc.locator_utils import SmartLocator   # 同ディレクトリ
+from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("auto")
 
-ACTION_TIMEOUT = 5_000          # ms  個別アクション猶予
+ACTION_TIMEOUT = 5_000  # ms  個別アクション猶予
 MAX_RETRIES = 3
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
+SPA_STABILIZE_TIMEOUT = 3_000  # ms  SPA描画安定待ち
 
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = [
@@ -53,22 +54,22 @@ payload_schema = {
                 "properties": {
                     "action": {"type": "string", "enum": _ACTIONS},
                     "target": {"type": "string"},
-                    "value":  {"type": "string"},
-                    "ms":     {"type": "integer", "minimum": 0},
+                    "value": {"type": "string"},
+                    "ms": {"type": "integer", "minimum": 0},
                     "amount": {"type": "integer"},
                     "direction": {"type": "string", "enum": ["up", "down"]},
                     "key": {"type": "string"},
                     "retry": {"type": "integer", "minimum": 1},
-                    "attr": {"type": "string"}
+                    "attr": {"type": "string"},
                 },
                 "required": ["action"],
-                "additionalProperties": True     # ★ 不明キーは許可
-            }
+                "additionalProperties": True,  # ★ 不明キーは許可
+            },
         },
-        "complete": {"type": "boolean"}          # ★ 任意
+        "complete": {"type": "boolean"},  # ★ 任意
     },
     "required": ["actions"],
-    "additionalProperties": True                 # ★ ここも許可
+    "additionalProperties": True,  # ★ ここも許可
 }
 validator = Draft7Validator(payload_schema)
 
@@ -77,6 +78,7 @@ def _validate(data: Dict) -> None:
     errs = sorted(validator.iter_errors(data), key=lambda e: e.path)
     if errs:
         raise ValidationError("; ".join(err.msg for err in errs))
+
 
 # -------------------------------------------------- Playwright 管理
 LOOP = asyncio.new_event_loop()
@@ -111,7 +113,9 @@ async def _init_browser():
     if await _wait_cdp():
         try:
             BROWSER = await PW.chromium.connect_over_cdp(CDP_URL)
-            ctx = BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
+            ctx = (
+                BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
+            )
             PAGE = ctx.pages[0] if ctx.pages else await ctx.new_page()
             await PAGE.bring_to_front()
         except PwError:
@@ -123,6 +127,7 @@ async def _init_browser():
 
     await PAGE.goto(DEFAULT_URL, wait_until="load")
     log.info("browser ready")
+
 
 # -------------------------------------------------- アクション実装
 async def _safe_click(l, force=False):
@@ -178,7 +183,16 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
                 }
                 """
             )
-            els.append({"index": len(els), "tag": tag, "text": text, "id": id_attr, "class": cls, "xpath": xpath})
+            els.append(
+                {
+                    "index": len(els),
+                    "tag": tag,
+                    "text": text,
+                    "id": id_attr,
+                    "class": cls,
+                    "xpath": xpath,
+                }
+            )
         except Exception:
             continue
     return els
@@ -189,7 +203,14 @@ async def _build_dom_tree(highlight: bool = False):
     script_path = os.path.join(os.path.dirname(__file__), "buildDomTree.js")
     with open(script_path, encoding="utf-8") as f:
         script = f.read()
-    return await PAGE.evaluate(f"(opts) => {{ {script}\n }}", {"highlight": highlight})
+    try:
+        return await PAGE.evaluate(
+            f"(opts) => {{ {script}\n }}", {"highlight": highlight}
+        )
+    except Exception as e:
+        log.error("dom_tree evaluate failed: %s", e)
+        return None
+
 
 # SPA 安定化関数 ----------------------------------------
 async def _stabilize_page():
@@ -200,6 +221,7 @@ async def _stabilize_page():
     except Exception:
         # それでも発火しないルータ実装 (完全 CSR) 向けに少しだけ待機
         await PAGE.wait_for_timeout(300)
+
 
 async def _apply(act: Dict):
     global PAGE
@@ -282,6 +304,7 @@ async def _run_actions(actions: List[Dict]) -> str:
         # 小休止（連打防止）
         await asyncio.sleep(0.5)
     return await PAGE.content()
+
 
 # -------------------------------------------------- HTTP エンドポイント
 @app.post("/execute-dsl")
