@@ -44,7 +44,5 @@ GROQ_API_KEY=<Your Groq API Key>
 - `web/app.py` — LLM からの指示を受けて DSL 生成や履歴管理を行う Flask アプリ
 - `agent/` — ブラウザ連携や LLM ラッパー、コントローラーなど機能別モジュール群
 
-Playwright の API を直接呼び出すのではなく、LLM で生成した JSON DSL を `automation_server.py` に転送することでブラウザ操作を行う設計になっています。詳細なディレクトリ構成は `Structure.txt` も参照してください。
-
-
+Playwright の API を直接呼び出すのではなく、LLM で生成した JSON DSL を `automation_server.py` に転送することでブラウザ操作を行う設計になっています。
 
