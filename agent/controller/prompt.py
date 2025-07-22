@@ -1,21 +1,36 @@
 import os
 import logging
 from ..utils.html import strip_html
+from ..browser.dom import DOMElementNode
 
 log = logging.getLogger("controller")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
 
 
-def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements=None) -> str:
+def _collect_interactive(node: DOMElementNode, lst: list):
+    if node.highlightIndex is not None:
+        lst.append(node)
+    for ch in getattr(node, "children", []):
+        _collect_interactive(ch, lst)
+
+
+def build_prompt(cmd: str, page: str, hist, screenshot: bool = False, elements: DOMElementNode | list | None = None) -> str:
     """Return full system prompt for the LLM."""
     past_conv = "\n".join(f"U:{h['user']}\nA:{h['bot']['explanation']}" for h in hist)
 
     add_img = "現在の状況を把握するために、スクリーンショット画像も与えます。" if screenshot else ""
     elem_lines = ""
     if elements:
+        nodes: list[DOMElementNode] = []
+        if isinstance(elements, DOMElementNode):
+            _collect_interactive(elements, nodes)
+        elif isinstance(elements, list):
+            for n in elements:
+                if isinstance(n, DOMElementNode):
+                    _collect_interactive(n, nodes)
         elem_lines = "\n".join(
-            f"[{e.get('index')}] <{e.get('tag')}> {e.get('text')} id={e.get('id')} class={e.get('class')}"
-            for e in elements
+            f"[{n.highlightIndex}] <{n.tagName}> {n.text or ''} id={n.attributes.get('id')} class={n.attributes.get('class')}"
+            for n in nodes
         )
 
     system_prompt = (

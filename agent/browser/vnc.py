@@ -1,5 +1,6 @@
 import requests
 import logging
+from .dom import DOMElementNode
 
 VNC_API = "http://vnc:7000"
 log = logging.getLogger(__name__)
@@ -49,3 +50,16 @@ def get_extracted() -> list:
     except Exception as e:
         log.error("get_extracted error: %s", e)
         return []
+
+
+def get_dom_tree(highlight: bool = False) -> DOMElementNode | None:
+    """Retrieve full DOM tree structure."""
+    try:
+        params = {"highlight": "1"} if highlight else {}
+        res = requests.get(f"{VNC_API}/dom-tree", params=params, timeout=30)
+        res.raise_for_status()
+        data = res.json()
+        return DOMElementNode.from_json(data)
+    except Exception as e:
+        log.error("get_dom_tree error: %s", e)
+        return None

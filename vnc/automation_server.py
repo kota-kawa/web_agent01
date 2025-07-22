@@ -183,6 +183,14 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
             continue
     return els
 
+
+async def _build_dom_tree(highlight: bool = False):
+    """Return DOM tree JSON by injecting custom script."""
+    script_path = os.path.join(os.path.dirname(__file__), "buildDomTree.js")
+    with open(script_path, encoding="utf-8") as f:
+        script = f.read()
+    return await PAGE.evaluate(f"(opts) => {{ {script}\n }}", {"highlight": highlight})
+
 # SPA 安定化関数 ----------------------------------------
 async def _stabilize_page():
     """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
@@ -322,6 +330,17 @@ def elements():
     try:
         _run(_init_browser())
         data = _run(_list_elements())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+@app.get("/dom-tree")
+def dom_tree():
+    try:
+        _run(_init_browser())
+        highlight = request.args.get("highlight") == "1"
+        data = _run(_build_dom_tree(highlight))
         return jsonify(data)
     except Exception as e:
         return jsonify(error=str(e)), 500

@@ -235,6 +235,20 @@ if (stopBtn) {
   stopBtn.addEventListener("click", () => { stopRequested = true; });
 }
 
+let highlightOn = false;
+const highlightBtn = document.getElementById("highlight-toggle");
+if (highlightBtn) {
+  highlightBtn.addEventListener("click", async () => {
+    highlightOn = !highlightOn;
+    highlightBtn.textContent = highlightOn ? "ハイライトOFF" : "ハイライト";
+    try {
+      await fetch(`/dom-tree?highlight=${highlightOn ? 1 : 0}`);
+    } catch (e) {
+      console.error("highlight toggle error", e);
+    }
+  });
+}
+
 
 const pauseBtn  = document.getElementById("pause-button");
 const resumeBtn = document.getElementById("resume-button");

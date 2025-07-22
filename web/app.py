@@ -6,7 +6,12 @@ from flask import Flask, request, jsonify, render_template, Response, send_from_
 
 # --------------- Agent modules -----------------------------------
 from agent.llm.client import call_llm
-from agent.browser.vnc import get_html as vnc_html, execute_dsl, get_elements as vnc_elements
+from agent.browser.vnc import (
+    get_html as vnc_html,
+    execute_dsl,
+    get_elements as vnc_elements,
+    get_dom_tree as vnc_dom_tree,
+)
 from agent.controller.prompt import build_prompt
 from agent.utils.history import load_hist, save_hist
 from agent.utils.html import strip_html
@@ -65,7 +70,7 @@ def execute():
     shot  = data.get("screenshot")
     model = data.get("model", "gemini")
     hist  = load_hist()
-    elements = vnc_elements()
+    elements = vnc_dom_tree(highlight=True)
     prompt = build_prompt(cmd, strip_html(page), hist, bool(shot), elements)
     res   = call_llm(prompt, model, shot)
 
