@@ -18,7 +18,7 @@ from typing import Optional
 
 from playwright.async_api import Locator, Page
 
-LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "5000"))  # ms
+LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "8000"))  # ms
 
 class SmartLocator:
     _ROLE = re.compile(r"^role=(\w+)\[name=['\"](.+?)['\"]]$", re.I)
@@ -29,7 +29,7 @@ class SmartLocator:
 
     async def _try(self, loc: Locator) -> Optional[Locator]:
         try:
-            await loc.first.wait_for(state="attached", timeout=3000)
+            await loc.first.wait_for(state="attached", timeout=LOCATOR_TIMEOUT)
             return loc
         except Exception:
             return None

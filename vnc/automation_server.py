@@ -22,11 +22,11 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("auto")
 
-ACTION_TIMEOUT = 5_000  # ms  個別アクション猶予
+ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
 MAX_RETRIES = 3
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
-SPA_STABILIZE_TIMEOUT = 3_000  # ms  SPA描画安定待ち
+SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
 
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = [
@@ -212,15 +212,47 @@ async def _build_dom_tree(highlight: bool = False):
         return None
 
 
+async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
+    """Wait until DOM mutations stop for a short period."""
+    script = """
+        (timeoutMs) => new Promise(resolve => {
+            const threshold = 300;
+            let last = Date.now();
+            const ob = new MutationObserver(() => (last = Date.now()));
+            ob.observe(document, {subtree: true, childList: true, attributes: true});
+            const start = Date.now();
+            (function check() {
+                if (Date.now() - last > threshold) {
+                    ob.disconnect();
+                    resolve(true);
+                    return;
+                }
+                if (Date.now() - start > timeoutMs) {
+                    ob.disconnect();
+                    resolve(false);
+                    return;
+                }
+                setTimeout(check, 50);
+            })();
+        })
+    """
+    try:
+        await PAGE.evaluate(script, timeout_ms)
+    except Exception:
+        await PAGE.wait_for_timeout(300)
+
+
 # SPA 安定化関数 ----------------------------------------
 async def _stabilize_page():
     """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
     try:
         # ネットワーク要求が終わるまで待機
-        await PAGE.wait_for_load_state("networkidle", timeout=SPA_STABILIZE_TIMEOUT)
+        await PAGE.wait_for_load_state(
+            "networkidle", timeout=SPA_STABILIZE_TIMEOUT
+        )
     except Exception:
-        # それでも発火しないルータ実装 (完全 CSR) 向けに少しだけ待機
-        await PAGE.wait_for_timeout(300)
+        pass
+    await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
 
 
 async def _apply(act: Dict):
