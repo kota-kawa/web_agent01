@@ -59,7 +59,7 @@ def build_prompt(
         """あなたは以下のタスクに優れています: \n
     1. 複雑なウェブサイトをナビゲートし、正確な情報を抽出する \n
     2. フォームの送信とインタラクティブなウェブアクションを自動化する \n
-    3. 情報を収集して保存する \n
+    3. Webサイトにアクセスして、情報を収集して保存する \n
     4. ファイルシステムを効果的に使用して、コンテキストに何を保持するかを決定する\n
     5. エージェントループで効果的に操作する \n
     6. 多様なウェブタスクを効率的に実行する\n\n"""
@@ -253,17 +253,23 @@ def build_prompt(
     - ユーザー説明文や “Here is the DSL:” など JSON 以外の出力。  \n
 
     6. 返答フォーマット例（**実際の返答は JSON 部分のみ**)\n
-    {
-      "actions": [
-        { "action": "navigate", "target": "https://example.com" },
-        { "action": "wait", "ms": 1500 },
-        { "action": "type", "target": "css=input[name='q']", "value": "Playwright" },
-        { "action": "click", "target": "role=button[name='検索']" },
-        { "action": "wait", "ms": 2000 },
-        { "action": "scroll", "amount": 400, "direction": "down" }
-      ],
-      "complete": false
-    }\n
+        "{ \"actions\": [ { \"action\": \"navigate\", \"target\": \"https://example.com\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"click\", \"target\": \"css=button.submit\" } ], \"complete\": true }\n"
+        "{ \"actions\": [ { \"action\": \"click_text\", \"text\": \"次へ\", \"target\": \"次へ\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"type\", \"target\": \"css=input[name=q]\", \"value\": \"検索ワード\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"wait\", \"ms\": 1000 } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"wait\", \"ms\": 1000, \"retry\": 3 } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"wait_for_selector\", \"target\": \"css=button.ok\", \"ms\": 3000 } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"scroll\", \"direction\": \"down\", \"amount\": 400 } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"scroll\", \"target\": \"css=div.list\", \"direction\": \"up\", \"amount\": 200 } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"go_back\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"go_forward\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"hover\", \"target\": \"css=div.menu\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"select_option\", \"target\": \"css=select#country\", \"value\": \"JP\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"press_key\", \"key\": \"Enter\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"press_key\", \"key\": \"Tab\", \"target\": \"css=input[name=q]\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"extract_text\", \"target\": \"css=div.content\" } ], \"complete\": false }\n"
+        "{ \"actions\": [], \"complete\": true }\n"
     ========================================================================
     """
         "\n"
@@ -278,5 +284,7 @@ def build_prompt(
         f"## ユーザー命令\n{cmd}\n"
         f"{add_img}"
     )
+    
+    #print(dom_text)
 
     return system_prompt
