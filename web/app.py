@@ -80,11 +80,9 @@ def execute():
     page = data.get("pageSource") or vnc_html()
     shot = data.get("screenshot")
     model = data.get("model", "gemini")
-    server_err = data.get("error") or ""
     hist = load_hist()
     elements, dom_err = vnc_dom_tree()
-    err_msg = "\n".join(e for e in (dom_err, server_err) if e)
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg or None)
+    prompt = build_prompt(cmd, page, hist, bool(shot), elements, dom_err)
     res = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})
@@ -96,10 +94,10 @@ def execute():
 def forward_dsl():
     payload = request.get_json(force=True)
     if not payload.get("actions"):
-        return jsonify(html="", error="")
+        return Response("", 200, mimetype="text/plain")
     try:
-        html, err = execute_dsl(payload, timeout=120)
-        return jsonify(html=html, error=err)
+        res_text = execute_dsl(payload, timeout=120)
+        return Response(res_text, 200, mimetype="text/plain")
     except requests.Timeout:
         log.error("forward_dsl timeout")
         return jsonify(error="timeout"), 504

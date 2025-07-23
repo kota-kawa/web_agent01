@@ -24,10 +24,10 @@ log = logging.getLogger("auto")
 
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
 MAX_RETRIES = 3
-LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "1"))
+LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
-SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "8000"))  # ms  SPA描画安定待ち
+SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
 
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = [
@@ -87,8 +87,6 @@ asyncio.set_event_loop(LOOP)
 
 PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
-LAST_WARNINGS: List[str] = []
-DOM_CACHE = None  # 最新の DOM ツリーキャッシュ
 
 
 def _run(coro):
@@ -220,8 +218,7 @@ async def _build_dom_tree():
         script = f.read()
     try:
         await _stabilize_page()
-        data = await PAGE.evaluate(f"(() => {{ {script}\n }})()")
-        return data
+        return await PAGE.evaluate(f"(() => {{ {script}\n }})()")
     except Exception as e:
         log.error("dom_tree evaluate failed: %s", e)
         return None
@@ -316,9 +313,7 @@ async def _apply(act: Dict):
         await PAGE.wait_for_timeout(500)
 
     if loc is None:
-        msg = f"locator not found: {tgt}"
-        log.warning(msg)
-        LAST_WARNINGS.append(msg)
+        log.warning("locator not found: %s", tgt)
         return
 
     if a in ("click", "click_text"):
@@ -343,8 +338,6 @@ async def _apply(act: Dict):
 
 
 async def _run_actions(actions: List[Dict]) -> str:
-    global LAST_WARNINGS, DOM_CACHE
-    LAST_WARNINGS.clear()
     for act in actions:
         retries = int(act.get("retry", MAX_RETRIES))
         for attempt in range(1, retries + 1):
@@ -356,17 +349,10 @@ async def _run_actions(actions: List[Dict]) -> str:
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
                 if attempt == retries:
-                    LAST_WARNINGS.append(str(e))
                     raise
         # 小休止（連打防止）
         await asyncio.sleep(0.5)
-    html = await PAGE.content()
-    # DOM ツリーを最新化してキャッシュ
-    try:
-        DOM_CACHE = await _build_dom_tree()
-    except Exception:
-        DOM_CACHE = None
-    return html
+    return await PAGE.content()
 
 
 # -------------------------------------------------- HTTP エンドポイント
@@ -386,15 +372,10 @@ def execute_dsl():
     try:
         _run(_init_browser())
         html = _run(_run_actions(data["actions"]))
-        warns = LAST_WARNINGS.copy()
-        LAST_WARNINGS.clear()
-        return jsonify(html=html, error="\n".join(warns))
+        return Response(html, mimetype="text/plain")
     except Exception as e:
         log.exception("execution failed")
-        warns = LAST_WARNINGS.copy()
-        LAST_WARNINGS.clear()
-        warns.append(str(e))
-        return jsonify(error="ExecutionError", message="\n".join(warns)), 500
+        return jsonify(error="ExecutionError", message=str(e)), 500
 
 
 @app.get("/source")
@@ -430,10 +411,8 @@ def elements():
 def dom_tree():
     try:
         _run(_init_browser())
-        global DOM_CACHE
-        if DOM_CACHE is None:
-            DOM_CACHE = _run(_build_dom_tree())
-        return jsonify(DOM_CACHE)
+        data = _run(_build_dom_tree())
+        return jsonify(data)
     except Exception as e:
         return jsonify(error=str(e)), 500
 

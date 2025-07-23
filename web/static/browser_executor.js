@@ -69,23 +69,18 @@ async function sendDSL(acts) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ actions: acts })
     });
-    const ct = r.headers.get("content-type") || "";
     if (!r.ok) {
-      const msg = await r.text();
-      console.error("execute-dsl failed:", r.status, msg);
+      console.error("execute-dsl failed:", r.status, await r.text());
       showSystemMessage(`DSL 実行エラー: ${r.status}`);
-      return { html: "", error: msg };
+      return "";
     } else {
       appendHistory(acts);
-      if (ct.includes("application/json")) {
-        return await r.json();
-      }
-      return { html: await r.text(), error: "" };
+      return await r.text();
     }
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
     showSystemMessage(`通信エラー: ${e}`);
-    return { html: "", error: String(e) };
+    return "";
   }
 }
 
@@ -117,7 +112,7 @@ function showSystemMessage(msg) {
 /* ======================================
    Execute one turn
    ====================================== */
-async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemini", placeholder = null, serverMsg = "") {
+async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemini", placeholder = null) {
   let html = pageHtml;
   if (!html) {
     html = await fetch("/vnc-source")
@@ -128,7 +123,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     screenshot = await captureScreenshot();
   }
 
-  const res = await sendCommand(cmd, html, screenshot, model, serverMsg);
+  const res = await sendCommand(cmd, html, screenshot, model);
 
   if (showInUI && res.explanation) {
     if (placeholder) {
@@ -149,15 +144,13 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 
   let newHtml = html;
   let newShot = screenshot;
-  let nextMsg = "";
   if (acts.length) {
     const ret = await sendDSL(acts);
-    if (ret && ret.html) newHtml = ret.html;
-    if (ret && ret.error) nextMsg = ret.error;
+    if (ret) newHtml = ret;
     newShot = await captureScreenshot();
   }
 
-  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml, screenshot: newShot, error: nextMsg };
+  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml, screenshot: newShot };
 }
 
 /* ======================================
@@ -177,7 +170,6 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   const MAX_REP = 1;
   stopRequested   = false;
   pausedRequested = false;  // 毎タスク開始時にリセット
-  let serverMsg    = "";
 
   while (keepLoop && stepCount < MAX_STEPS) {
     if (stopRequested) break;
@@ -191,10 +183,9 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
     }
 
     try {
-      const { cont, explanation, html, screenshot: shot, error } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null, serverMsg);
+      const { cont, explanation, html, screenshot: shot } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null);
       if (shot) screenshot = shot;
       if (html) pageHtml = html;
-      serverMsg = error || "";
 
       if (explanation === lastMsg) {
         repeatCnt += 1;
