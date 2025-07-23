@@ -125,4 +125,4 @@ function buildDomTree(opts) {
   return tree;
 }
 
-return buildDomTree(arguments[0]);
+return buildDomTree(opts);
