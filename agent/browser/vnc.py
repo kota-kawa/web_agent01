@@ -52,11 +52,10 @@ def get_extracted() -> list:
         return []
 
 
-def get_dom_tree(highlight: bool = False) -> DOMElementNode | None:
+def get_dom_tree() -> DOMElementNode | None:
     """Retrieve full DOM tree structure."""
     try:
-        params = {"highlight": "1"} if highlight else {}
-        res = requests.get(f"{VNC_API}/dom-tree", params=params, timeout=30)
+        res = requests.get(f"{VNC_API}/dom-tree", timeout=30)
         res.raise_for_status()
         data = res.json()
         return DOMElementNode.from_json(data)

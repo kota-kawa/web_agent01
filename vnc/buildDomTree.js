@@ -1,12 +1,5 @@
-function buildDomTree(opts) {
-  const highlight = opts && opts.highlight;
-  const H_ATTR = 'browser-user-highlight-id';
-  const PREFIX = 'playwright-highlight-';
+function buildDomTree() {
   let counter = 1;
-
-  function removeOverlays() {
-    document.querySelectorAll('.playwright-highlight-overlay').forEach(el => el.remove());
-  }
 
   function isElementAccepted(el) {
     const tag = (el.tagName || '').toLowerCase();
@@ -24,7 +17,8 @@ function buildDomTree(opts) {
   function isVisible(el) {
     const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    return rect.width > 0 && rect.height > 0 &&
+           style.visibility !== 'hidden' && style.display !== 'none';
   }
 
   function isInteractive(el) {
@@ -32,7 +26,8 @@ function buildDomTree(opts) {
     const role = el.getAttribute('role') || '';
     const tags = ['a','button','input','select','textarea','option'];
     const roles = ['button','link','checkbox','radio','textbox','tab','option','menuitem'];
-    return tags.includes(tag) || roles.includes(role) || typeof el.onclick === 'function' || typeof el.onchange === 'function';
+    return tags.includes(tag) || roles.includes(role) ||
+           typeof el.onclick === 'function' || typeof el.onchange === 'function';
   }
 
   function isTopElement(el) {
@@ -54,29 +49,6 @@ function buildDomTree(opts) {
       sib = sib.previousSibling;
     }
     return buildXPath(el.parentNode) + '/' + el.tagName.toLowerCase() + '[' + ix + ']';
-  }
-
-  function addOverlay(el, idx) {
-    const rect = el.getBoundingClientRect();
-    const o = document.createElement('div');
-    o.className = 'playwright-highlight-overlay';
-    o.textContent = idx;
-    o.style.position = 'absolute';
-    o.style.pointerEvents = 'none';
-    o.style.zIndex = '2147483647';
-    o.style.border = '2px solid red';
-    o.style.color = 'red';
-    o.style.fontSize = '12px';
-    o.style.background = 'rgba(255,0,0,0.1)';
-    o.style.left = (rect.left + window.scrollX) + 'px';
-    o.style.top = (rect.top + window.scrollY) + 'px';
-    o.style.width = rect.width + 'px';
-    o.style.height = rect.height + 'px';
-    o.style.display = 'flex';
-    o.style.alignItems = 'flex-start';
-    o.style.justifyContent = 'flex-end';
-    o.style.padding = '2px';
-    document.body.appendChild(o);
   }
 
   function traverse(node) {
@@ -102,8 +74,6 @@ function buildDomTree(opts) {
     let hIdx = null;
     if (interactive) {
       hIdx = counter++;
-      el.setAttribute(H_ATTR, PREFIX + hIdx);
-      if (highlight) addOverlay(el, hIdx);
     }
 
     return {
@@ -119,10 +89,7 @@ function buildDomTree(opts) {
     };
   }
 
-  removeOverlays();
-  const tree = traverse(document.body);
-  if (!highlight) removeOverlays();
-  return tree;
+  return traverse(document.body);
 }
 
-return buildDomTree(opts);
+return buildDomTree();

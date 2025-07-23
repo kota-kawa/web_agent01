@@ -24,6 +24,7 @@ log = logging.getLogger("auto")
 
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
 MAX_RETRIES = 3
+LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
@@ -131,14 +132,26 @@ async def _init_browser():
 
 # -------------------------------------------------- アクション実装
 async def _safe_click(l, force=False):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await l.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
-    await l.first.click(timeout=ACTION_TIMEOUT, force=force)
+    try:
+        await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+        await l.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+        await l.first.click(timeout=ACTION_TIMEOUT, force=force)
+    except Exception as e:
+        if not force:
+            log.error("click retry with force due to: %s", e)
+            await l.first.click(timeout=ACTION_TIMEOUT, force=True)
+        else:
+            raise
 
 
 async def _safe_fill(l, val: str):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-    await l.first.fill(val, timeout=ACTION_TIMEOUT)
+    try:
+        await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+        await l.first.fill(val, timeout=ACTION_TIMEOUT)
+    except Exception as e:
+        log.error("fill retry due to: %s", e)
+        await _safe_click(l)
+        await l.first.fill(val, timeout=ACTION_TIMEOUT)
 
 
 async def _safe_hover(l):
@@ -198,15 +211,13 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
     return els
 
 
-async def _build_dom_tree(highlight: bool = False):
+async def _build_dom_tree():
     """Return DOM tree JSON by injecting custom script."""
     script_path = os.path.join(os.path.dirname(__file__), "buildDomTree.js")
     with open(script_path, encoding="utf-8") as f:
         script = f.read()
     try:
-        return await PAGE.evaluate(
-            f"(opts) => {{ {script}\n }}", {"highlight": highlight}
-        )
+        return await PAGE.evaluate(f"(() => {{ {script}\n }})()")
     except Exception as e:
         log.error("dom_tree evaluate failed: %s", e)
         return None
@@ -290,10 +301,15 @@ async def _apply(act: Dict):
 
     # -- ロケータ系
     loc: Optional = None
-    if a == "click_text":
-        loc = await SmartLocator(PAGE, f"text={tgt}").locate()
-    else:
-        loc = await SmartLocator(PAGE, tgt).locate()
+    for _ in range(LOCATOR_RETRIES):
+        if a == "click_text":
+            loc = await SmartLocator(PAGE, f"text={tgt}").locate()
+        else:
+            loc = await SmartLocator(PAGE, tgt).locate()
+        if loc is not None:
+            break
+        await _stabilize_page()
+        await PAGE.wait_for_timeout(500)
 
     if loc is None:
         log.warning("locator not found: %s", tgt)
@@ -394,8 +410,7 @@ def elements():
 def dom_tree():
     try:
         _run(_init_browser())
-        highlight = request.args.get("highlight") == "1"
-        data = _run(_build_dom_tree(highlight))
+        data = _run(_build_dom_tree())
         return jsonify(data)
     except Exception as e:
         return jsonify(error=str(e)), 500
