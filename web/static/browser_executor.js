@@ -235,18 +235,7 @@ if (stopBtn) {
   stopBtn.addEventListener("click", () => { stopRequested = true; });
 }
 
-let highlightOn = false;
-const highlightSwitch = document.getElementById("highlight-switch");
-if (highlightSwitch) {
-  highlightSwitch.addEventListener("change", async () => {
-    highlightOn = highlightSwitch.checked;
-    try {
-      await fetch(`/dom-tree?highlight=${highlightOn ? 1 : 0}`);
-    } catch (e) {
-      console.error("highlight toggle error", e);
-    }
-  });
-}
+
 
 
 const pauseBtn  = document.getElementById("pause-button");
