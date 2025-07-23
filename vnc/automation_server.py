@@ -217,6 +217,7 @@ async def _build_dom_tree():
     with open(script_path, encoding="utf-8") as f:
         script = f.read()
     try:
+        await _stabilize_page()
         return await PAGE.evaluate(f"(() => {{ {script}\n }})()")
     except Exception as e:
         log.error("dom_tree evaluate failed: %s", e)

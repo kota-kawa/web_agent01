@@ -81,8 +81,8 @@ def execute():
     shot = data.get("screenshot")
     model = data.get("model", "gemini")
     hist = load_hist()
-    elements = vnc_dom_tree()
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements)
+    elements, dom_err = vnc_dom_tree()
+    prompt = build_prompt(cmd, page, hist, bool(shot), elements, dom_err)
     res = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})

@@ -20,6 +20,7 @@ def build_prompt(
     hist,
     screenshot: bool = False,
     elements: DOMElementNode | list | None = None,
+    error: str | None = None,
 ) -> str:
     """Return full system prompt for the LLM."""
     past_conv = "\n".join(f"U:{h['user']}\nA:{h['bot']['explanation']}" for h in hist)
@@ -30,6 +31,7 @@ def build_prompt(
         else ""
     )
     elem_lines = ""
+    error_line = f"## サーバーエラー\n{error}\n--------------------------------\n" if error else ""
     dom_text = strip_html(page)
     if elements:
         nodes: list[DOMElementNode] = []
@@ -287,6 +289,7 @@ def build_prompt(
         "--------------------------------\n"
         f"## ユーザー命令\n{cmd}\n"
         f"{add_img}"
+        f"{error_line}"
     )
     
     #print(dom_text)

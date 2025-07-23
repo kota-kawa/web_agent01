@@ -52,13 +52,16 @@ def get_extracted() -> list:
         return []
 
 
-def get_dom_tree() -> DOMElementNode | None:
-    """Retrieve full DOM tree structure."""
+def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
+    """Retrieve full DOM tree structure.
+
+    Returns a tuple of (DOM tree or None, error message or None).
+    """
     try:
         res = requests.get(f"{VNC_API}/dom-tree", timeout=30)
         res.raise_for_status()
         data = res.json()
-        return DOMElementNode.from_json(data)
+        return DOMElementNode.from_json(data), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
-        return None
+        return None, str(e)
