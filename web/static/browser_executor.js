@@ -236,11 +236,10 @@ if (stopBtn) {
 }
 
 let highlightOn = false;
-const highlightBtn = document.getElementById("highlight-toggle");
-if (highlightBtn) {
-  highlightBtn.addEventListener("click", async () => {
-    highlightOn = !highlightOn;
-    highlightBtn.textContent = highlightOn ? "ハイライトOFF" : "ハイライト";
+const highlightSwitch = document.getElementById("highlight-switch");
+if (highlightSwitch) {
+  highlightSwitch.addEventListener("change", async () => {
+    highlightOn = highlightSwitch.checked;
     try {
       await fetch(`/dom-tree?highlight=${highlightOn ? 1 : 0}`);
     } catch (e) {
