@@ -27,7 +27,7 @@ MAX_RETRIES = 3
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "1"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
-SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
+SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "8000"))  # ms  SPA描画安定待ち
 
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = [
@@ -88,6 +88,7 @@ asyncio.set_event_loop(LOOP)
 PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 LAST_WARNINGS: List[str] = []
+DOM_CACHE = None  # 最新の DOM ツリーキャッシュ
 
 
 def _run(coro):
@@ -219,7 +220,8 @@ async def _build_dom_tree():
         script = f.read()
     try:
         await _stabilize_page()
-        return await PAGE.evaluate(f"(() => {{ {script}\n }})()")
+        data = await PAGE.evaluate(f"(() => {{ {script}\n }})()")
+        return data
     except Exception as e:
         log.error("dom_tree evaluate failed: %s", e)
         return None
@@ -341,7 +343,7 @@ async def _apply(act: Dict):
 
 
 async def _run_actions(actions: List[Dict]) -> str:
-    global LAST_WARNINGS
+    global LAST_WARNINGS, DOM_CACHE
     LAST_WARNINGS.clear()
     for act in actions:
         retries = int(act.get("retry", MAX_RETRIES))
@@ -358,7 +360,13 @@ async def _run_actions(actions: List[Dict]) -> str:
                     raise
         # 小休止（連打防止）
         await asyncio.sleep(0.5)
-    return await PAGE.content()
+    html = await PAGE.content()
+    # DOM ツリーを最新化してキャッシュ
+    try:
+        DOM_CACHE = await _build_dom_tree()
+    except Exception:
+        DOM_CACHE = None
+    return html
 
 
 # -------------------------------------------------- HTTP エンドポイント
@@ -422,8 +430,10 @@ def elements():
 def dom_tree():
     try:
         _run(_init_browser())
-        data = _run(_build_dom_tree())
-        return jsonify(data)
+        global DOM_CACHE
+        if DOM_CACHE is None:
+            DOM_CACHE = _run(_build_dom_tree())
+        return jsonify(DOM_CACHE)
     except Exception as e:
         return jsonify(error=str(e)), 500
 

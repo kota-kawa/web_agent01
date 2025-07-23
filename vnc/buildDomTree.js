@@ -1,4 +1,4 @@
-function buildDomTree() {
+function buildDomTree(win = window, frameOffset = {x: 0, y: 0}) {
   let counter = 1;
 
   function isElementAccepted(el) {
@@ -51,7 +51,7 @@ function buildDomTree() {
     return buildXPath(el.parentNode) + '/' + el.tagName.toLowerCase() + '[' + ix + ']';
   }
 
-  function traverse(node) {
+  function traverse(node, offset) {
     if (node.nodeType === Node.TEXT_NODE) {
       if (!isTextNodeVisible(node)) return null;
       return { nodeType: 'text', text: node.nodeValue.trim() };
@@ -64,9 +64,26 @@ function buildDomTree() {
     for (const a of el.attributes) attrs[a.name] = a.value;
 
     const children = [];
-    el.childNodes.forEach(c => { const r = traverse(c); if (r) children.push(r); });
+    el.childNodes.forEach(c => { const r = traverse(c, offset); if (r) children.push(r); });
     if (el.shadowRoot) {
-      el.shadowRoot.childNodes.forEach(c => { const r = traverse(c); if (r) children.push(r); });
+      el.shadowRoot.childNodes.forEach(c => { const r = traverse(c, offset); if (r) children.push(r); });
+    }
+
+    // iframe 対応 - クロスオリジンは無視
+    if (el.tagName.toLowerCase() === 'iframe') {
+      try {
+        const doc = el.contentDocument;
+        if (doc && doc.body) {
+          const rect = el.getBoundingClientRect();
+          const iframeOffset = {
+            x: offset.x + rect.left,
+            y: offset.y + rect.top,
+          };
+          doc.body.childNodes.forEach(c => { const r = traverse(c, iframeOffset); if (r) children.push(r); });
+        }
+      } catch (e) {
+        // ignore cross origin iframe
+      }
     }
 
     const visible = isVisible(el);
@@ -75,6 +92,14 @@ function buildDomTree() {
     if (interactive) {
       hIdx = counter++;
     }
+
+    const rect = el.getBoundingClientRect();
+    const bounding = {
+      x: offset.x + rect.left,
+      y: offset.y + rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
 
     return {
       nodeType: 'element',
@@ -85,11 +110,12 @@ function buildDomTree() {
       isInteractive: interactive,
       isTopElement: isTopElement(el),
       highlightIndex: hIdx,
+      boundingRect: bounding,
       children: children
     };
   }
 
-  return traverse(document.body);
+  return traverse(win.document.body, frameOffset);
 }
 
 return buildDomTree();
