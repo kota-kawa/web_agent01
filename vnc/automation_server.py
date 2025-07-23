@@ -24,7 +24,7 @@ log = logging.getLogger("auto")
 
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
 MAX_RETRIES = 3
-LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
+LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "1"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
@@ -87,6 +87,7 @@ asyncio.set_event_loop(LOOP)
 
 PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
+LAST_WARNINGS: List[str] = []
 
 
 def _run(coro):
@@ -313,7 +314,9 @@ async def _apply(act: Dict):
         await PAGE.wait_for_timeout(500)
 
     if loc is None:
-        log.warning("locator not found: %s", tgt)
+        msg = f"locator not found: {tgt}"
+        log.warning(msg)
+        LAST_WARNINGS.append(msg)
         return
 
     if a in ("click", "click_text"):
@@ -338,6 +341,8 @@ async def _apply(act: Dict):
 
 
 async def _run_actions(actions: List[Dict]) -> str:
+    global LAST_WARNINGS
+    LAST_WARNINGS.clear()
     for act in actions:
         retries = int(act.get("retry", MAX_RETRIES))
         for attempt in range(1, retries + 1):
@@ -349,6 +354,7 @@ async def _run_actions(actions: List[Dict]) -> str:
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
                 if attempt == retries:
+                    LAST_WARNINGS.append(str(e))
                     raise
         # 小休止（連打防止）
         await asyncio.sleep(0.5)
@@ -372,10 +378,15 @@ def execute_dsl():
     try:
         _run(_init_browser())
         html = _run(_run_actions(data["actions"]))
-        return Response(html, mimetype="text/plain")
+        warns = LAST_WARNINGS.copy()
+        LAST_WARNINGS.clear()
+        return jsonify(html=html, error="\n".join(warns))
     except Exception as e:
         log.exception("execution failed")
-        return jsonify(error="ExecutionError", message=str(e)), 500
+        warns = LAST_WARNINGS.copy()
+        LAST_WARNINGS.clear()
+        warns.append(str(e))
+        return jsonify(error="ExecutionError", message="\n".join(warns)), 500
 
 
 @app.get("/source")
