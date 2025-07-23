@@ -289,7 +289,8 @@ def build_prompt(
         "--------------------------------\n"
         f"## ユーザー命令\n{cmd}\n"
         f"{add_img}"
-        f"{error_line}"
+        #"## 現在のエラーメッセージ\n"
+        #f"{error_line}"
     )
     
     #print(dom_text)
