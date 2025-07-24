@@ -21,13 +21,30 @@ function buildDomTree() {
            style.visibility !== 'hidden' && style.display !== 'none';
   }
 
+  function hasAnyHandler(el) {
+    for (const key in el) {
+      if (key.startsWith('on') && typeof el[key] === 'function') {
+        return true;
+      }
+    }
+    for (const a of el.attributes) {
+      if (a.name.startsWith('on')) return true;
+    }
+    if (typeof getEventListeners === 'function') {
+      const listeners = getEventListeners(el);
+      for (const k in listeners) {
+        if (listeners[k] && listeners[k].length > 0) return true;
+      }
+    }
+    return false;
+  }
+
   function isInteractive(el) {
     const tag = el.tagName.toLowerCase();
     const role = el.getAttribute('role') || '';
     const tags = ['a','button','input','select','textarea','option'];
     const roles = ['button','link','checkbox','radio','textbox','tab','option','menuitem'];
-    return tags.includes(tag) || roles.includes(role) ||
-           typeof el.onclick === 'function' || typeof el.onchange === 'function';
+    return tags.includes(tag) || roles.includes(role) || hasAnyHandler(el);
   }
 
   function isTopElement(el) {
