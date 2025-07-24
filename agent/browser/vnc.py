@@ -66,4 +66,11 @@ def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
         return DOMElementNode.from_json(data), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
+        # Fallback to parsing raw HTML so that the caller still gets a DOM tree
+        try:
+            html = get_html()
+            if html:
+                return DOMElementNode.from_html(html), str(e)
+        except Exception as fe:
+            log.error("fallback dom_tree parse error: %s", fe)
         return None, str(e)
