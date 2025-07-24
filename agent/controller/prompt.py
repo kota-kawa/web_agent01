@@ -285,14 +285,18 @@ def build_prompt(
         "---- 現在のページ DOM ----\n"
         f"{dom_text}\n"
         "--------------------------------\n"
-        f"## これまでの会話履歴\n{past_conv}\n"
+        f"## これまでの会話履歴\n"
+        f"{past_conv}\n"
         "--------------------------------\n"
-        f"## ユーザー命令\n{cmd}\n"
+        f"## ユーザー命令\n"
+        f"{cmd}\n"
+        "--------------------------------\n"
+        f"## 現在のブラウザの状況の画像\n"
         f"{add_img}"
         #"## 現在のエラーメッセージ\n"
         #f"{error_line}"
     )
     
-    #print(dom_text)
+    print(dom_text)
 
     return system_prompt
