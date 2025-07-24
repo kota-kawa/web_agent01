@@ -29,6 +29,9 @@ CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
 
+# Event listener tracker script will be injected on every page load
+_WATCHER_SCRIPT = None
+
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = [
     "navigate",
@@ -125,6 +128,17 @@ async def _init_browser():
     if PAGE is None:
         BROWSER = await PW.chromium.launch(headless=True)
         PAGE = await BROWSER.new_page()
+
+    # Inject event listener tracking script on every navigation
+    global _WATCHER_SCRIPT
+    if _WATCHER_SCRIPT is None:
+        path = os.path.join(os.path.dirname(__file__), "eventWatcher.js")
+        with open(path, encoding="utf-8") as f:
+            _WATCHER_SCRIPT = f.read()
+    try:
+        await PAGE.add_init_script(_WATCHER_SCRIPT)
+    except Exception as e:
+        log.error("add_init_script failed: %s", e)
 
     await PAGE.goto(DEFAULT_URL, wait_until="load")
     log.info("browser ready")

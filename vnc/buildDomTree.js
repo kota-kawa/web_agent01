@@ -36,6 +36,10 @@ function buildDomTree() {
         if (listeners[k] && listeners[k].length > 0) return true;
       }
     }
+    if (typeof window.__ag_get_events === 'function') {
+      const evs = window.__ag_get_events(el);
+      if (evs && evs.length > 0) return true;
+    }
     return false;
   }
 
