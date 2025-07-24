@@ -1,7 +1,7 @@
 import os
-import json
 import logging
 import requests
+import sys
 from flask import (
     Flask,
     request,
@@ -12,17 +12,29 @@ from flask import (
 )
 
 # --------------- Agent modules -----------------------------------
-from agent.llm.client import call_llm
-from agent.browser.vnc import (
-    get_html as vnc_html,
-    execute_dsl,
-    get_elements as vnc_elements,
-    get_dom_tree as vnc_dom_tree,
-)
-from agent.browser.dom import DOMElementNode
-from agent.controller.prompt import build_prompt
-from agent.utils.history import load_hist, save_hist
-from agent.utils.html import strip_html
+try:
+    from agent.llm.client import call_llm
+    from agent.browser.vnc import (
+        get_html as vnc_html,
+        execute_dsl,
+        get_elements as vnc_elements,
+        get_dom_tree as vnc_dom_tree,
+    )
+    from agent.browser.dom import DOMElementNode
+    from agent.controller.prompt import build_prompt
+    from agent.utils.history import load_hist, save_hist
+except ModuleNotFoundError:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from agent.llm.client import call_llm
+    from agent.browser.vnc import (
+        get_html as vnc_html,
+        execute_dsl,
+        get_elements as vnc_elements,
+        get_dom_tree as vnc_dom_tree,
+    )
+    from agent.browser.dom import DOMElementNode
+    from agent.controller.prompt import build_prompt
+    from agent.utils.history import load_hist, save_hist
 
 # --------------- Flask & Logger ----------------------------------
 app = Flask(__name__)
