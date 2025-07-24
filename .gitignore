@@ -21,7 +21,7 @@ __pycache__/
 *.jpg
 *.jpeg
 
-
+env.txt
 # OSやIDEの一時ファイルを無視
 .DS_Store
 Thumbs.db
