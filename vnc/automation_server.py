@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import time
@@ -236,10 +235,92 @@ async def _build_dom_tree():
         # Evaluate the wrapped script which returns the generated tree.
         return await PAGE.evaluate(js)
     except Exception as e:
-        # Log stack trace for easier debugging and return None so that the
-        # caller can fall back to other methods.
+        # Log stack trace for easier debugging and use a Python based
+        # fallback to guarantee some DOM output.
         log.exception("dom_tree evaluate failed: %s", e)
-        return None
+        try:
+            html = await PAGE.content()
+            return _build_dom_tree_from_html(html)
+        except Exception as fe:
+            log.exception("fallback dom build failed: %s", fe)
+            return None
+
+
+def _build_dom_tree_from_html(html: str):
+    """Simple DOM tree builder using html.parser for fallback."""
+    from html.parser import HTMLParser
+
+    interactive_tags = {
+        "a",
+        "button",
+        "input",
+        "select",
+        "textarea",
+        "option",
+    }
+
+    class Parser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.root = {"children": [], "tagName": "document"}
+            self.stack = [self.root]
+            self.counter = 0
+
+        def handle_starttag(self, tag, attrs):
+            node = {
+                "nodeType": "element",
+                "tagName": tag.lower(),
+                "attributes": {k: v for k, v in attrs},
+                "text": None,
+                "xpath": "",
+                "isVisible": True,
+                "isInteractive": tag.lower() in interactive_tags,
+                "isTopElement": False,
+                "highlightIndex": None,
+                "children": [],
+            }
+            if node["isInteractive"]:
+                node["highlightIndex"] = self.counter
+                self.counter += 1
+            self.stack[-1]["children"].append(node)
+            self.stack.append(node)
+
+        def handle_endtag(self, tag):
+            if len(self.stack) > 1:
+                self.stack.pop()
+
+        def handle_data(self, data):
+            text = data.strip()
+            if not text:
+                return
+            node = {"nodeType": "text", "text": text}
+            self.stack[-1]["children"].append(node)
+
+    parser = Parser()
+    parser.feed(html)
+
+    def assign_xpath(node, path=""):
+        if node.get("nodeType") == "text":
+            return
+        tag = node.get("tagName", "")
+        idx = path_counts.get((path, tag), 0) + 1
+        path_counts[(path, tag)] = idx
+        node["xpath"] = f"{path}/{tag}[{idx}]" if path else f"/{tag}[{idx}]"
+        for ch in node.get("children", []):
+            assign_xpath(ch, node["xpath"])
+
+    path_counts = {}
+    for ch in parser.root.get("children", []):
+        assign_xpath(ch, "")
+
+    # Prefer body element if present
+    for ch in parser.root.get("children", []):
+        if ch.get("tagName") == "html":
+            for bc in ch.get("children", []):
+                if bc.get("tagName") == "body":
+                    return bc
+            return ch
+    return parser.root.get("children", [None])[0]
 
 
 async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
