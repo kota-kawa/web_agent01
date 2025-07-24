@@ -19,6 +19,7 @@ from agent.browser.vnc import (
     get_elements as vnc_elements,
     get_dom_tree as vnc_dom_tree,
 )
+from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
 from agent.utils.history import load_hist, save_hist
 from agent.utils.html import strip_html
@@ -82,6 +83,30 @@ def execute():
     model = data.get("model", "gemini")
     hist = load_hist()
     elements, dom_err = vnc_dom_tree()
+    if elements is None:
+        try:
+            fallback = vnc_elements()
+            elements = [
+                DOMElementNode(
+                    tagName=e.get("tag", ""),
+                    attributes={
+                        k: v
+                        for k, v in {
+                            "id": e.get("id"),
+                            "class": e.get("class"),
+                        }.items()
+                        if v
+                    },
+                    text=e.get("text"),
+                    xpath=e.get("xpath", ""),
+                    highlightIndex=e.get("index"),
+                    isVisible=True,
+                    isInteractive=True,
+                )
+                for e in fallback
+            ]
+        except Exception as fbe:
+            log.error("fallback elements error: %s", fbe)
     prompt = build_prompt(cmd, page, hist, bool(shot), elements, dom_err)
     res = call_llm(prompt, model, shot)
 

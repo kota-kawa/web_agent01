@@ -218,9 +218,13 @@ async def _build_dom_tree():
         script = f.read()
     try:
         await _stabilize_page()
-        return await PAGE.evaluate(f"(() => {{ {script}\n }})()")
+        # Evaluate the script directly.  The JS file already returns the
+        # generated tree, so we simply execute it in the page context.
+        return await PAGE.evaluate(script)
     except Exception as e:
-        log.error("dom_tree evaluate failed: %s", e)
+        # Log stack trace for easier debugging and return None so that the
+        # caller can fall back to other methods.
+        log.exception("dom_tree evaluate failed: %s", e)
         return None
 
 

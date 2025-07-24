@@ -61,6 +61,8 @@ def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
         res = requests.get(f"{VNC_API}/dom-tree", timeout=30)
         res.raise_for_status()
         data = res.json()
+        if not data:
+            raise ValueError("empty dom tree")
         return DOMElementNode.from_json(data), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
