@@ -230,11 +230,11 @@ async def _build_dom_tree():
     script_path = os.path.join(os.path.dirname(__file__), "buildDomTree.js")
     with open(script_path, encoding="utf-8") as f:
         script = f.read()
-    js = f"(function(){{{script}}})()"
     try:
         await _stabilize_page()
-        # Evaluate the wrapped script which returns the generated tree.
-        return await PAGE.evaluate(js)
+        # Evaluate the script directly.  The JS file already returns the
+        # generated tree, so we simply execute it in the page context.
+        return await PAGE.evaluate(script)
     except Exception as e:
         # Log stack trace for easier debugging and return None so that the
         # caller can fall back to other methods.
