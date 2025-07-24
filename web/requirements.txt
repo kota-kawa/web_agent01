@@ -2,4 +2,5 @@ Flask
 flask-cors
 requests
 groq
-google-generativeai 
+google-generativeai
+beautifulsoup4

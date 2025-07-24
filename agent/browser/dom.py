@@ -35,6 +35,71 @@ class DOMElementNode:
             children=children,
         )
 
+    @classmethod
+    def from_html(cls, html: str) -> "DOMElementNode":
+        """Parse raw HTML into a simplified DOMElementNode tree."""
+        from bs4 import BeautifulSoup, NavigableString, Tag
+
+        soup = BeautifulSoup(html, "html.parser")
+        counter = 1
+        interactive_tags = {
+            "a",
+            "button",
+            "input",
+            "select",
+            "textarea",
+            "option",
+        }
+
+        def get_xpath(el: Tag) -> str:
+            parts = []
+            while el and isinstance(el, Tag):
+                idx = 1
+                sib = el.previous_sibling
+                while sib:
+                    if isinstance(sib, Tag) and sib.name == el.name:
+                        idx += 1
+                    sib = sib.previous_sibling
+                parts.append(f"{el.name}[{idx}]")
+                el = el.parent
+            return "/" + "/".join(reversed(parts))
+
+        def traverse(node) -> Optional[DOMElementNode]:
+            nonlocal counter
+            if isinstance(node, NavigableString):
+                text = str(node).strip()
+                if not text:
+                    return None
+                return cls(tagName="#text", text=text)
+            if not isinstance(node, Tag):
+                return None
+
+            children = [c for c in (traverse(ch) for ch in node.children) if c]
+            attrs = {
+                k: (" ".join(v) if isinstance(v, list) else str(v))
+                for k, v in node.attrs.items()
+            }
+
+            xpath = get_xpath(node)
+            interactive = node.name in interactive_tags
+            hidx = counter if interactive else None
+            if interactive:
+                counter += 1
+
+            return cls(
+                tagName=node.name,
+                attributes=attrs,
+                xpath=xpath,
+                isVisible=True,
+                isInteractive=interactive,
+                isTopElement=interactive,
+                highlightIndex=hidx,
+                children=children,
+            )
+
+        root = soup.body or soup
+        return traverse(root)
+
     def to_lines(self, depth: int = 0, max_lines: int = 200, _lines=None) -> List[str]:
         """Return indented text representation of the DOM tree."""
         if _lines is None:
