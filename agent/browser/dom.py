@@ -41,6 +41,10 @@ class DOMElementNode:
         from bs4 import BeautifulSoup, NavigableString, Tag
 
         soup = BeautifulSoup(html, "html.parser")
+        # Remove <script> and <style> tags entirely to keep the DOM concise
+        for t in soup.find_all(["script", "style"]):
+            t.decompose()
+
         counter = 1
         interactive_tags = {
             "a",
@@ -72,6 +76,8 @@ class DOMElementNode:
                     return None
                 return cls(tagName="#text", text=text)
             if not isinstance(node, Tag):
+                return None
+            if node.name in {"script", "style"}:
                 return None
 
             children = [c for c in (traverse(ch) for ch in node.children) if c]
