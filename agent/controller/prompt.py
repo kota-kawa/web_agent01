@@ -298,6 +298,6 @@ def build_prompt(
         #f"{error_line}"
     )
     
-    print(dom_text)
+    print(elem_lines)
 
     return system_prompt
