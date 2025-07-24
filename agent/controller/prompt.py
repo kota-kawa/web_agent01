@@ -42,6 +42,7 @@ def build_prompt(
             for n in elements:
                 if isinstance(n, DOMElementNode):
                     _collect_interactive(n, nodes)
+        nodes.sort(key=lambda x: x.highlightIndex or 0)
         elem_lines = "\n".join(
             f"[{n.highlightIndex}] <{n.tagName}> {n.text or ''} id={n.attributes.get('id')} class={n.attributes.get('class')}"
             for n in nodes
