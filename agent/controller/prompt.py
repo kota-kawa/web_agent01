@@ -282,7 +282,9 @@ def build_prompt(
         "\n"
         "---- 操作候補要素一覧 (操作対象は番号で指定) ----\n"
         f"{elem_lines}\n"
-        "--------------------------------\n"
+        "--------------------------------\n"   
+        "---- 現在のページ DOM ----\n"
+        f"{dom_text}\n"
 
         "--------------------------------\n"
         f"## これまでの会話履歴\n"
@@ -298,6 +300,6 @@ def build_prompt(
     )
     #"---- 現在のページ DOM ----\n"
     #f"{dom_text}\n"
-    print(elem_lines)
+    print(dom_text)
 
     return system_prompt
