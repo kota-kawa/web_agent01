@@ -37,7 +37,7 @@ def build_prompt(
         nodes: list[DOMElementNode] = []
         if isinstance(elements, DOMElementNode):
             _collect_interactive(elements, nodes)
-            dom_text = elements.to_text()
+            dom_text = elements.to_text(max_lines=None)
         elif isinstance(elements, list):
             for n in elements:
                 if isinstance(n, DOMElementNode):
