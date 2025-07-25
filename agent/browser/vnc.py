@@ -53,24 +53,15 @@ def get_extracted() -> list:
 
 
 def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
-    """Retrieve full DOM tree structure.
+    """Retrieve the DOM tree by parsing the current page HTML.
 
     Returns a tuple of (DOM tree or None, error message or None).
     """
     try:
-        res = requests.get(f"{VNC_API}/dom-tree", timeout=30)
-        res.raise_for_status()
-        data = res.json()
-        if not data:
-            raise ValueError("empty dom tree")
-        return DOMElementNode.from_json(data), None
+        html = get_html()
+        if not html:
+            raise ValueError("empty html")
+        return DOMElementNode.from_html(html), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
-        # Fallback to parsing raw HTML so that the caller still gets a DOM tree
-        try:
-            html = get_html()
-            if html:
-                return DOMElementNode.from_html(html), str(e)
-        except Exception as fe:
-            log.error("fallback dom_tree parse error: %s", fe)
         return None, str(e)
