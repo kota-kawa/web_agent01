@@ -225,21 +225,6 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
     return els
 
 
-async def _build_dom_tree():
-    """Return DOM tree JSON by injecting custom script."""
-    script_path = os.path.join(os.path.dirname(__file__), "buildDomTree.js")
-    with open(script_path, encoding="utf-8") as f:
-        script = f.read()
-    try:
-        await _stabilize_page()
-        # Evaluate the script directly.  The JS file already returns the
-        # generated tree, so we simply execute it in the page context.
-        return await PAGE.evaluate(script)
-    except Exception as e:
-        # Log stack trace for easier debugging and return None so that the
-        # caller can fall back to other methods.
-        log.exception("dom_tree evaluate failed: %s", e)
-        return None
 
 
 async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
@@ -425,14 +410,6 @@ def elements():
         return jsonify(error=str(e)), 500
 
 
-@app.get("/dom-tree")
-def dom_tree():
-    try:
-        _run(_init_browser())
-        data = _run(_build_dom_tree())
-        return jsonify(data)
-    except Exception as e:
-        return jsonify(error=str(e)), 500
 
 
 @app.get("/extracted")
