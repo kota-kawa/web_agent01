@@ -106,11 +106,13 @@ class DOMElementNode:
         root = soup.body or soup
         return traverse(root)
 
-    def to_lines(self, depth: int = 0, max_lines: int = 200, _lines=None) -> List[str]:
+    def to_lines(
+        self, depth: int = 0, max_lines: int | None = 200, _lines=None
+    ) -> List[str]:
         """Return indented text representation of the DOM tree."""
         if _lines is None:
             _lines = []
-        if len(_lines) >= max_lines:
+        if max_lines is not None and len(_lines) >= max_lines:
             return _lines
         indent = "  " * depth
         if self.tagName == "#text":
@@ -122,10 +124,10 @@ class DOMElementNode:
         line = f"{indent}<{self.tagName}{(' ' + attr) if attr else ''}>{idx}"
         _lines.append(line)
         for ch in self.children:
-            if len(_lines) >= max_lines:
+            if max_lines is not None and len(_lines) >= max_lines:
                 break
             ch.to_lines(depth + 1, max_lines, _lines)
         return _lines
 
-    def to_text(self, max_lines: int = 200) -> str:
+    def to_text(self, max_lines: int | None = 200) -> str:
         return "\n".join(self.to_lines(max_lines=max_lines))
