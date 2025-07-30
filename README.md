@@ -46,3 +46,10 @@ GROQ_API_KEY=<Your Groq API Key>
 
 Playwright の API を直接呼び出すのではなく、LLM で生成した JSON DSL を `automation_server.py` に転送することでブラウザ操作を行う設計になっています。
 
+### セレクタのフォールバック
+
+DSL の `target` には `css=#login || text=ログイン` のように `||` 区切りで複数の
+セレクタを指定できます。左から順に `data-testid` や ARIA role、テキスト、CSS など
+を自動判別して探索し、見つからない場合は次の候補へフォールバックするため、動的 UI
+でも壊れにくい操作が可能です。
+

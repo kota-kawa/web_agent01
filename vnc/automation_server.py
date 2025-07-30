@@ -274,6 +274,8 @@ async def _apply(act: Dict):
     global PAGE
     a = act["action"]
     tgt = act.get("target", "")
+    if isinstance(tgt, list):
+        tgt = " || ".join(str(s).strip() for s in tgt if s)
     val = act.get("value", "")
     ms = int(act.get("ms", 0))
     amt = int(act.get("amount", 400))
