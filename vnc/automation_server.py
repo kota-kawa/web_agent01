@@ -47,6 +47,7 @@ _ACTIONS = [
     "press_key",
     "wait_for_selector",
     "extract_text",
+    "eval_js",
 ]
 payload_schema = {
     "type": "object",
@@ -311,6 +312,11 @@ async def _apply(act: Dict):
             await PAGE.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", offset)
         else:
             await PAGE.evaluate("(y)=>window.scrollBy(0,y)", offset)
+        return
+    if a == "eval_js":
+        script = act.get("script") or val
+        if script:
+            await PAGE.evaluate(script)
         return
 
     # -- ロケータ系

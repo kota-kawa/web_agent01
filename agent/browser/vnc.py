@@ -52,6 +52,12 @@ def get_extracted() -> list:
         return []
 
 
+def eval_js(script: str) -> None:
+    """Send a JavaScript snippet to be executed in the browser."""
+    payload = {"actions": [{"action": "eval_js", "script": script}]}
+    execute_dsl(payload)
+
+
 def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
     """Retrieve the DOM tree by parsing the current page HTML.
 

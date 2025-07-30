@@ -55,3 +55,8 @@ def press_key(key: str, target: str | None = None) -> Dict:
 
 def extract_text(target: str) -> Dict:
     return {"action": "extract_text", "target": target}
+
+
+def eval_js(script: str) -> Dict:
+    """Execute arbitrary JavaScript in the page context."""
+    return {"action": "eval_js", "script": script}
