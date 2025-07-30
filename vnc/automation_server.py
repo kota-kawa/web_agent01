@@ -145,10 +145,18 @@ async def _init_browser():
 
 
 # -------------------------------------------------- アクション実装
+async def _prepare_element(loc):
+    """Ensure the element is visible, enabled and ready for interaction."""
+    await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await loc.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+    await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    if not await loc.first.is_enabled():
+        raise Exception("element not enabled")
+
+
 async def _safe_click(l, force=False):
     try:
-        await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
-        await l.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
+        await _prepare_element(l)
         await l.first.click(timeout=ACTION_TIMEOUT, force=force)
     except Exception as e:
         if not force:
@@ -160,7 +168,7 @@ async def _safe_click(l, force=False):
 
 async def _safe_fill(l, val: str):
     try:
-        await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+        await _prepare_element(l)
         await l.first.fill(val, timeout=ACTION_TIMEOUT)
     except Exception as e:
         log.error("fill retry due to: %s", e)
@@ -169,17 +177,17 @@ async def _safe_fill(l, val: str):
 
 
 async def _safe_hover(l):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await _prepare_element(l)
     await l.first.hover(timeout=ACTION_TIMEOUT)
 
 
 async def _safe_select(l, val: str):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await _prepare_element(l)
     await l.first.select_option(val, timeout=ACTION_TIMEOUT)
 
 
 async def _safe_press(l, key: str):
-    await l.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    await _prepare_element(l)
     await l.first.press(key, timeout=ACTION_TIMEOUT)
 
 
