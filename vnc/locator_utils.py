@@ -27,16 +27,8 @@ class SmartLocator:
         self.page = page
         self.raw = target.strip()
 
-    async def _try(self, loc: Locator) -> Optional[Locator]:
-        try:
-            await loc.first.wait_for(state="attached", timeout=LOCATOR_TIMEOUT)
-            return loc
-        except Exception:
-            return None
-
-    async def locate(self) -> Optional[Locator]:
-        t = self.raw
-
+    async def _locate_one(self, t: str) -> Optional[Locator]:
+        """Return first matching locator for a single selector string."""
         # 明示プレフィクス
         if t.startswith("css="):
             return await self._try(self.page.locator(t[4:]))
@@ -80,3 +72,20 @@ class SmartLocator:
 
         # 最後に裸 CSS
         return await self._try(self.page.locator(t))
+
+    async def _try(self, loc: Locator) -> Optional[Locator]:
+        try:
+            await loc.first.wait_for(state="attached", timeout=LOCATOR_TIMEOUT)
+            return loc
+        except Exception:
+            return None
+
+    async def locate(self) -> Optional[Locator]:
+        for part in self.raw.split("||"):
+            t = part.strip()
+            if not t:
+                continue
+            loc = await self._locate_one(t)
+            if loc:
+                return loc
+        return None
