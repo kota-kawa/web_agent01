@@ -298,8 +298,6 @@ def build_prompt(
         #"## 現在のエラーメッセージ\n"
         #f"{error_line}"
     )
-    #"---- 現在のページ DOM ----\n"
-    #f"{dom_text}\n"
-    print(dom_text)
+    #print(dom_text)
 
     return system_prompt
