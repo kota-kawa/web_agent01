@@ -11,6 +11,9 @@ SmartLocator — どのサイトにも耐える多段フォールバックロケ
  6) 裸の CSS セレクタ
 
 各候補を 3000 ms 以内に発見できなければ次へ。
+
+target に "css=btn || text=Next" のように "||" 区切りで複数の
+候補を与えると、左から順に試行する。
 """
 from __future__ import annotations
 import re, os
@@ -36,6 +39,14 @@ class SmartLocator:
 
     async def locate(self) -> Optional[Locator]:
         t = self.raw
+
+        # Multiple fallbacks separated by "||"
+        if "||" in t:
+            for cand in [c.strip() for c in t.split("||") if c.strip()]:
+                loc = await SmartLocator(self.page, cand).locate()
+                if loc:
+                    return loc
+            return None
 
         # 明示プレフィクス
         if t.startswith("css="):
