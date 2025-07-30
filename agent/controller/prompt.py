@@ -145,7 +145,8 @@ def build_prompt(
         '  { "action": "select_option",   "target": "css=select", "value": "option1" }\n'
         '  { "action": "press_key",      "key": "Enter", "target": "css=input" }\n'
         '  { "action": "wait_for_selector", "target": "css=button.ok", "ms": 3000 }\n'
-        '  { "action": "extract_text",    "target": "css=div.content" }\n\n\n'
+        '  { "action": "extract_text",    "target": "css=div.content" }\n'
+        '  { "action": "eval_js",        "script": "document.title" }\n\n\n'
         "\n\n"
         "|ルール|\n"
         "1. 現ページで表示されている要素のみ操作してよい。ページ遷移後の要素の操作は、次のステップで生成しなくてはいけない。つまりページ遷移が必要かつ、複数のアクションがあった場合には、ページ遷移が最後のアクションである必要がある。\n"
@@ -203,6 +204,9 @@ def build_prompt(
         "# extract_text: 指定したターゲットからテキストを抽出するアクション\n"
         "  def extract_text(target: str) -> Dict:\n"
         '      return {"action": "extract_text", "target": target}\n'
+        "# eval_js: 任意の JavaScript を実行するアクション\n"
+        "  def eval_js(script: str) -> Dict:\n"
+        '      return {"action": "eval_js", "script": script}\n'
         """
     === ブラウザ操作 DSL 出力ルール（必読・厳守）================================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -218,7 +222,7 @@ def build_prompt(
     - `actions` だけは必須。追加プロパティは禁止（システムが許可していても出力しない）。\n
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。\n
     ========================================================================
-    2. アクションは 13 種のみ\n
+    2. アクションは 14 種のみ\n
     | action            | 必須キー                                   | 追加キー            | 説明                 |\n
     |-------------------|--------------------------------------------|--------------------|----------------------|\n
     | navigate          | target (URL)                              | —                  | URL へ遷移           |\n
@@ -233,7 +237,7 @@ def build_prompt(
     | select_option     | target, value                             | —                  | ドロップダウン選択   |\n
     | press_key         | key                                       | target (任意)      | キー送信             |\n
     | wait_for_selector | target, ms                                | —                  | 要素待機             |\n
-    | extract_text      | target                                    | attr (任意)        | テキスト取得         |\n
+    | extract_text      | target                                    | attr (任意)        | テキスト取得         |\n    | eval_js          | script                                   | —         | JavaScript 実行      |\n
 
 
     **上記以外の action 名・キーは絶対に出力しない。**\n
@@ -276,6 +280,7 @@ def build_prompt(
         "{ \"actions\": [ { \"action\": \"press_key\", \"key\": \"Enter\" } ], \"complete\": false }\n"
         "{ \"actions\": [ { \"action\": \"press_key\", \"key\": \"Tab\", \"target\": \"css=input[name=q]\" } ], \"complete\": false }\n"
         "{ \"actions\": [ { \"action\": \"extract_text\", \"target\": \"css=div.content\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"eval_js\", \"script\": \"document.title\" } ], \"complete\": false }\n"
         "{ \"actions\": [], \"complete\": true }\n"
     ========================================================================
     """
