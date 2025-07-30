@@ -81,6 +81,7 @@ def execute():
     page = data.get("pageSource") or vnc_html()
     shot = data.get("screenshot")
     model = data.get("model", "gemini")
+    prev_error = data.get("error")
     hist = load_hist()
     elements, dom_err = vnc_dom_tree()
     if elements is None:
@@ -107,7 +108,8 @@ def execute():
             ]
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements, dom_err)
+    err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
+    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg)
     res = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})
