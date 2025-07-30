@@ -342,11 +342,13 @@ async def _apply(act: Dict):
 
 async def _run_actions(actions: List[Dict]) -> str:
     for act in actions:
+        # DOM の更新が落ち着くまで待ってから次のアクションを実行する
+        await _stabilize_page()
         retries = int(act.get("retry", MAX_RETRIES))
         for attempt in range(1, retries + 1):
             try:
                 await _apply(act)
-                # ここで SPA の描画完了を待つ
+                # アクション実行後も DOM 安定化を待つ
                 await _stabilize_page()
                 break
             except Exception as e:
