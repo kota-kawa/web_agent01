@@ -52,10 +52,23 @@ def get_extracted() -> list:
         return []
 
 
-def eval_js(script: str) -> None:
-    """Send a JavaScript snippet to be executed in the browser."""
+def get_eval_results() -> list:
+    """Retrieve results of the most recent eval_js calls."""
+    try:
+        res = requests.get(f"{VNC_API}/eval_results", timeout=30)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        log.error("get_eval_results error: %s", e)
+        return []
+
+
+def eval_js(script: str):
+    """Execute JavaScript and return its result if any."""
     payload = {"actions": [{"action": "eval_js", "script": script}]}
     execute_dsl(payload)
+    res = get_eval_results()
+    return res[-1] if res else None
 
 
 def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:

@@ -53,3 +53,22 @@ DSL の `target` には `css=#login || text=ログイン` のように `||` 区�
 を自動判別して探索し、見つからない場合は次の候補へフォールバックするため、動的 UI
 でも壊れにくい操作が可能です。
 
+### eval_js アクションの使い方
+
+`eval_js` はページ内で任意の JavaScript を実行したい場合に利用します。例えば、
+組み込みアクションだけでは取得できない動的な値の確認や、SPA 特有の関数呼び出しを
+行いたいときに便利です。実行結果は自動的に記録され、`/eval_results` エンドポイント
+もしくは `agent.browser.vnc.get_eval_results()` から取得できます。値を取得して条件
+分岐したい場合は次のようにします。
+
+```python
+from agent.browser import vnc
+
+# ボタン数を数えて2個以上ならクリック
+count = vnc.eval_js("document.querySelectorAll('button').length")
+if count and int(count) > 1:
+    vnc.execute_dsl({"actions": [{"action": "click", "target": "css=button"}]})
+```
+
+上記のように、ページ状態を細かく把握してから次の操作を決定することが可能です。
+
