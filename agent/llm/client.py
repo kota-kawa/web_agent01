@@ -17,7 +17,7 @@ SCREENSHOT_DIR = os.path.join(LOG_DIR, "screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 #gemini-2.5-flash-lite
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -92,7 +92,7 @@ def _post_process(raw: str) -> Dict:
 
 def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
     try:
-        model_name = GEMINI_MODEL if not screenshot else "models/gemini-2.5-flash-lite"
+        model_name = GEMINI_MODEL if not screenshot else "models/gemini-2.5-flash"
         model = genai.GenerativeModel(model_name)
         if screenshot:
             img_b64 = screenshot.split(",", 1)[-1]
