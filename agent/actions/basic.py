@@ -58,5 +58,10 @@ def extract_text(target: str) -> Dict:
 
 
 def eval_js(script: str) -> Dict:
-    """Execute arbitrary JavaScript in the page context."""
+    """Execute JavaScript in the page and store the result.
+
+    Use this when built-in actions cannot express a complex operation or when
+    page state must be inspected via DOM APIs.  The returned value is recorded
+    by the automation server and can be fetched with :func:`get_eval_results`.
+    """
     return {"action": "eval_js", "script": script}

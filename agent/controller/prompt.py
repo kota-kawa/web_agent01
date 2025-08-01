@@ -31,7 +31,11 @@ def build_prompt(
         else ""
     )
     elem_lines = ""
-    error_line = f"## サーバーエラー\n{error}\n--------------------------------\n" if error else ""
+    error_line = (
+        f"## サーバーエラー\n{error}\n--------------------------------\n"
+        if error
+        else ""
+    )
     dom_text = strip_html(page)
     if elements:
         nodes: list[DOMElementNode] = []
@@ -205,9 +209,10 @@ def build_prompt(
         "# extract_text: 指定したターゲットからテキストを抽出するアクション\n"
         "  def extract_text(target: str) -> Dict:\n"
         '      return {"action": "extract_text", "target": target}\n'
-        "# eval_js: 任意の JavaScript を実行するアクション\n"
+        "# eval_js: 任意の JavaScript を実行して結果を保存するアクション\n"
         "  def eval_js(script: str) -> Dict:\n"
         '      return {"action": "eval_js", "script": script}\n'
+        "#   DOM 状態の確認や動的値の取得に使い、戻り値は後から取得可能\n"
         """
     === ブラウザ操作 DSL 出力ルール（必読・厳守）================================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -290,10 +295,9 @@ def build_prompt(
         "\n"
         "---- 操作候補要素一覧 (操作対象は番号で指定) ----\n"
         f"{elem_lines}\n"
-        "--------------------------------\n"   
+        "--------------------------------\n"
         "---- 現在のページ DOM ----\n"
         f"{dom_text}\n"
-
         "--------------------------------\n"
         "## これまでの会話履歴\n"
         f"{past_conv}\n"
@@ -306,6 +310,6 @@ def build_prompt(
         "## 現在のエラー状況\n"
         f"{error_line}"
     )
-    #print(dom_text)
+    # print(dom_text)
 
     return system_prompt

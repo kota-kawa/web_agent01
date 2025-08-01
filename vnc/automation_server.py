@@ -27,7 +27,9 @@ MAX_RETRIES = 3
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
-SPA_STABILIZE_TIMEOUT = int(os.getenv("SPA_STABILIZE_TIMEOUT", "5000"))  # ms  SPA描画安定待ち
+SPA_STABILIZE_TIMEOUT = int(
+    os.getenv("SPA_STABILIZE_TIMEOUT", "5000")
+)  # ms  SPA描画安定待ち
 
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
@@ -91,6 +93,7 @@ asyncio.set_event_loop(LOOP)
 
 PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
+EVAL_RESULTS: List[str] = []
 
 
 def _run(coro):
@@ -234,8 +237,6 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
     return els
 
 
-
-
 async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
     """Wait until DOM mutations stop for a short period."""
     script = """
@@ -271,9 +272,7 @@ async def _stabilize_page():
     """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
     try:
         # ネットワーク要求が終わるまで待機
-        await PAGE.wait_for_load_state(
-            "networkidle", timeout=SPA_STABILIZE_TIMEOUT
-        )
+        await PAGE.wait_for_load_state("networkidle", timeout=SPA_STABILIZE_TIMEOUT)
     except Exception:
         pass
     await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
@@ -316,7 +315,11 @@ async def _apply(act: Dict):
     if a == "eval_js":
         script = act.get("script") or val
         if script:
-            await PAGE.evaluate(script)
+            try:
+                result = await PAGE.evaluate(script)
+                EVAL_RESULTS.append(result)
+            except Exception as e:
+                log.error("eval_js error: %s", e)
         return
 
     # -- ロケータ系
@@ -428,11 +431,14 @@ def elements():
         return jsonify(error=str(e)), 500
 
 
-
-
 @app.get("/extracted")
 def extracted():
     return jsonify(EXTRACTED_TEXTS)
+
+
+@app.get("/eval_results")
+def eval_results():
+    return jsonify(EVAL_RESULTS)
 
 
 @app.get("/healthz")
