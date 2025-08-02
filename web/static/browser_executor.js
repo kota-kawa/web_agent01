@@ -215,10 +215,10 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
 
       keepLoop  = cont;
       firstIter = false;
-      if (keepLoop) await sleep(1000);
+      if (keepLoop) await sleep(200);
     } catch (e) {
       console.error("runTurn error:", e);
-      await sleep(1000);
+      await sleep(200);
     }
     stepCount += 1;
   }

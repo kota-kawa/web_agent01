@@ -28,7 +28,7 @@ LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(
-    os.getenv("SPA_STABILIZE_TIMEOUT", "5000")
+    os.getenv("SPA_STABILIZE_TIMEOUT", "2000")
 )  # ms  SPA描画安定待ち
 
 # Event listener tracker script will be injected on every page load
@@ -109,7 +109,7 @@ async def _wait_cdp(t: int = 15) -> bool:
                 await c.get(f"{CDP_URL}/json/version")
                 return True
             except httpx.HTTPError:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
     return False
 
 
@@ -265,7 +265,7 @@ async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
     try:
         await PAGE.evaluate(script, timeout_ms)
     except Exception:
-        await PAGE.wait_for_timeout(300)
+        await PAGE.wait_for_timeout(100)
 
 
 # SPA 安定化関数 ----------------------------------------
@@ -333,7 +333,6 @@ async def _apply(act: Dict):
         if loc is not None:
             break
         await _stabilize_page()
-        await PAGE.wait_for_timeout(500)
 
     if loc is None:
         msg = f"locator not found: {tgt}"
@@ -378,8 +377,6 @@ async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
                 if attempt == retries:
                     raise
-        # 小休止（連打防止）
-        await asyncio.sleep(0.5)
     return await PAGE.content(), WARNINGS.copy()
 
 
