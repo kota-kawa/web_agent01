@@ -39,7 +39,7 @@ def build_prompt(
             lines = [e for e in str(error).splitlines() if "locator not found" in e]
         if lines:
             error_line = (
-                "## 現在のエラー状況\n" + "\n".join(lines) + "\n--------------------------------\n"
+                 "\n".join(lines) + "\n--------------------------------\n"
             )
     dom_text = strip_html(page)
     if elements:
