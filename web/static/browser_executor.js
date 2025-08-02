@@ -82,8 +82,9 @@ async function sendDSL(acts) {
       return { html: "", error: msg || `status ${r.status}` };
     } else {
       appendHistory(acts);
-      const text = await r.text();
-      return { html: text, error: null };
+      const j = await r.json();
+      const err = j.warnings && j.warnings.length ? j.warnings.join("\n") : null;
+      return { html: j.html || "", error: err };
     }
   } catch (e) {
     console.error("execute-dsl fetch error:", e);

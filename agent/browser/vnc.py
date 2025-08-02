@@ -20,11 +20,11 @@ def get_html() -> str:
 def execute_dsl(payload, timeout=120):
     """Forward DSL JSON to the automation server."""
     if not payload.get("actions"):
-        return ""
+        return {"html": "", "warnings": []}
     try:
         r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=None)
         r.raise_for_status()
-        return r.text
+        return r.json()
     except requests.Timeout:
         log.error("execute_dsl timeout")
         raise
