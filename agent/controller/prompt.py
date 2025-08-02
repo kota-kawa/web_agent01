@@ -34,13 +34,15 @@ def build_prompt(
     error_line = ""
     if error:
         if isinstance(error, list):
-            lines = [e for e in error if "locator not found" in e]
+            err_lines: list[str] = []
+            for e in error:
+                err_lines.extend(str(e).splitlines())
         else:
-            lines = [e for e in str(error).splitlines() if "locator not found" in e]
+            err_lines = str(error).splitlines()
+        keywords = ("error", "timeout", "not found", "traceback", "visible")
+        lines = [l for l in err_lines if any(k in l.lower() for k in keywords)]
         if lines:
-            error_line = (
-                 "\n".join(lines) + "\n--------------------------------\n"
-            )
+            error_line = "\n".join(lines[-10:]) + "\n--------------------------------\n"
     dom_text = strip_html(page)
     if elements:
         nodes: list[DOMElementNode] = []
