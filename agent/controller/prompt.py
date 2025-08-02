@@ -39,7 +39,21 @@ def build_prompt(
                 err_lines.extend(str(e).splitlines())
         else:
             err_lines = str(error).splitlines()
-        keywords = ("error", "timeout", "not found", "traceback", "visible")
+        # Extract only meaningful error lines. Previously the keyword list
+        # contained "visible" which caused verbose Playwright logs such as
+        # "waiting for locator ... to be visible" to be captured and drown out
+        # actual error messages (e.g. timeouts).  Narrowing the keywords to
+        # genuine error indicators ensures `error_line` reflects real
+        # failures like "Timeout exceeded" or "Element is not visible".
+        keywords = (
+            "error",
+            "timeout",
+            "not found",
+            "traceback",
+            "exception",
+            "warning",
+            "not visible",
+        )
         lines = [l for l in err_lines if any(k in l.lower() for k in keywords)]
         if lines:
             error_line = "\n".join(lines[-10:]) + "\n--------------------------------\n"
