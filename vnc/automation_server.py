@@ -332,7 +332,7 @@ async def _apply(act: Dict):
             loc = await SmartLocator(PAGE, tgt).locate()
         if loc is not None:
             break
-        #await _stabilize_page()
+        await _stabilize_page()
 
     if loc is None:
         msg = f"locator not found: {tgt}"
@@ -365,13 +365,13 @@ async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
     WARNINGS.clear()
     for act in actions:
         # DOM の更新が落ち着くまで待ってから次のアクションを実行する
-        #await _stabilize_page()
+        await _stabilize_page()
         retries = int(act.get("retry", MAX_RETRIES))
         for attempt in range(1, retries + 1):
             try:
                 await _apply(act)
                 # アクション実行後も DOM 安定化を待つ
-                #await _stabilize_page()
+                await _stabilize_page()
                 break
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
