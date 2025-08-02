@@ -94,6 +94,7 @@ asyncio.set_event_loop(LOOP)
 PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 EVAL_RESULTS: List[str] = []
+WARNINGS: List[str] = []
 
 
 def _run(coro):
@@ -335,7 +336,9 @@ async def _apply(act: Dict):
         await PAGE.wait_for_timeout(500)
 
     if loc is None:
-        log.warning("locator not found: %s", tgt)
+        msg = f"locator not found: {tgt}"
+        log.warning(msg)
+        WARNINGS.append(f"WARNING:auto:{msg}")
         return
 
     if a in ("click", "click_text"):
@@ -359,7 +362,8 @@ async def _apply(act: Dict):
         EXTRACTED_TEXTS.append(text)
 
 
-async def _run_actions(actions: List[Dict]) -> str:
+async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
+    WARNINGS.clear()
     for act in actions:
         # DOM の更新が落ち着くまで待ってから次のアクションを実行する
         await _stabilize_page()
@@ -376,7 +380,7 @@ async def _run_actions(actions: List[Dict]) -> str:
                     raise
         # 小休止（連打防止）
         await asyncio.sleep(0.5)
-    return await PAGE.content()
+    return await PAGE.content(), WARNINGS.copy()
 
 
 # -------------------------------------------------- HTTP エンドポイント
@@ -395,8 +399,8 @@ def execute_dsl():
 
     try:
         _run(_init_browser())
-        html = _run(_run_actions(data["actions"]))
-        return Response(html, mimetype="text/plain")
+        html, warns = _run(_run_actions(data["actions"]))
+        return jsonify({"html": html, "warnings": warns})
     except Exception as e:
         log.exception("execution failed")
         return jsonify(error="ExecutionError", message=str(e)), 500

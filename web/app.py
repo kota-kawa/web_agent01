@@ -121,10 +121,10 @@ def execute():
 def forward_dsl():
     payload = request.get_json(force=True)
     if not payload.get("actions"):
-        return Response("", 200, mimetype="text/plain")
+        return jsonify({"html": "", "warnings": []})
     try:
-        res_text = execute_dsl(payload, timeout=120)
-        return Response(res_text, 200, mimetype="text/plain")
+        res_obj = execute_dsl(payload, timeout=120)
+        return jsonify(res_obj)
     except requests.Timeout:
         log.error("forward_dsl timeout")
         return jsonify(error="timeout"), 504

@@ -31,11 +31,16 @@ def build_prompt(
         else ""
     )
     elem_lines = ""
-    error_line = (
-        f"## サーバーエラー\n{error}\n--------------------------------\n"
-        if error
-        else ""
-    )
+    error_line = ""
+    if error:
+        if isinstance(error, list):
+            lines = [e for e in error if "locator not found" in e]
+        else:
+            lines = [e for e in str(error).splitlines() if "locator not found" in e]
+        if lines:
+            error_line = (
+                "## 現在のエラー状況\n" + "\n".join(lines) + "\n--------------------------------\n"
+            )
     dom_text = strip_html(page)
     if elements:
         nodes: list[DOMElementNode] = []
