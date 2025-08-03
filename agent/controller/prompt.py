@@ -39,6 +39,7 @@ def build_prompt(
                 err_lines.extend(str(e).splitlines())
         else:
             err_lines = str(error).splitlines()
+
         # Extract only meaningful error lines. Previously the keyword list
         # contained "visible" which caused verbose Playwright logs such as
         # "waiting for locator ... to be visible" to be captured and drown out
@@ -54,7 +55,23 @@ def build_prompt(
             "warning",
             "not visible",
         )
-        lines = [l for l in err_lines if any(k in l.lower() for k in keywords)]
+
+        # Collect lines containing the above keywords and also retain a few
+        # subsequent lines to capture Playwright call logs that often follow
+        # the initial error line (e.g. locator details).  This provides the
+        # LLM with richer context about the failure.
+        lines: list[str] = []
+        i = 0
+        while i < len(err_lines):
+            line = err_lines[i]
+            if any(k in line.lower() for k in keywords):
+                lines.append(line)
+                # include up to five following lines for additional context
+                lines.extend(err_lines[i + 1 : i + 6])
+                i += 6
+            else:
+                i += 1
+
         if lines:
             error_line = "\n".join(lines[-10:]) + "\n--------------------------------\n"
     dom_text = strip_html(page)
