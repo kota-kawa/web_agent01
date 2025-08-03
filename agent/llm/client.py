@@ -73,8 +73,9 @@ def _post_process(raw: str) -> Dict:
         js = extract_json(raw)
     except Exception as e:
         log.error("JSON parse error: %s", e)
-        return {"explanation": expl or "JSON 抽出失敗", "actions": [], "raw": raw, "complete": True}
-
+        #return {"explanation": expl or "JSON 抽出失敗", "actions": [], "raw": raw, "complete": True}
+        return {"explanation": expl or "JSON 抽出失敗", "actions": [], "complete": True} 
+    
     acts = []
     for act in js.get("actions", []):
         if isinstance(act, dict) and "commands" in act:
@@ -86,7 +87,7 @@ def _post_process(raw: str) -> Dict:
     return {
         "explanation": expl,
         "actions": acts,
-        "raw": raw,
+        #"raw": raw,
         "complete": js.get("complete", True),
     }
 
