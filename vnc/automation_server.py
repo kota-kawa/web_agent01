@@ -327,7 +327,10 @@ async def _apply(act: Dict):
     loc: Optional = None
     for _ in range(LOCATOR_RETRIES):
         if a == "click_text":
-            loc = await SmartLocator(PAGE, f"text={tgt}").locate()
+            if "||" in tgt or tgt.strip().startswith(("css=", "text=", "role=", "xpath=")):
+                loc = await SmartLocator(PAGE, tgt).locate()
+            else:
+                loc = await SmartLocator(PAGE, f"text={tgt}").locate()
         else:
             loc = await SmartLocator(PAGE, tgt).locate()
         if loc is not None:
