@@ -8,6 +8,7 @@ import google.generativeai as genai
 from groq import Groq
 import datetime
 import base64
+import time
 
 log = logging.getLogger("llm")
 
@@ -91,28 +92,41 @@ def _post_process(raw: str) -> Dict:
 
 
 def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
-    try:
-        model_name = GEMINI_MODEL if not screenshot else "models/gemini-2.5-flash"
-        model = genai.GenerativeModel(model_name)
-        if screenshot:
-            img_b64 = screenshot.split(",", 1)[-1]
-            img_bytes = base64.b64decode(img_b64)
-            
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            ss_path = os.path.join(SCREENSHOT_DIR, f"ss_{timestamp}.png")
-            with open(ss_path, "wb") as f:
-                f.write(img_bytes)
-            log.info(f"Screenshot saved to {ss_path}")
-            
-            raw = model.generate_content([prompt, {"mime_type": "image/png", "data": img_bytes}]).text
-        else:
-            raw = model.start_chat(history=[]).send_message(prompt).text
-    except Exception as e:
-        log.error("Gemini call failed: %s", e)
-        return {"explanation": "Gemini 呼び出し失敗", "actions": [], "raw": "", "complete": True}
+    model_name = GEMINI_MODEL if not screenshot else "models/gemini-2.5-flash"
 
-    log.info("◆ GEMINI RAW ◆\n%s\n◆ END RAW ◆", raw)
-    return _post_process(raw)
+    img_bytes = None
+    if screenshot:
+        img_b64 = screenshot.split(",", 1)[-1]
+        img_bytes = base64.b64decode(img_b64)
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        ss_path = os.path.join(SCREENSHOT_DIR, f"ss_{timestamp}.png")
+        with open(ss_path, "wb") as f:
+            f.write(img_bytes)
+        log.info(f"Screenshot saved to {ss_path}")
+
+    for attempt in range(2):
+        try:
+            model = genai.GenerativeModel(model_name)
+            if screenshot:
+                raw = model.generate_content([prompt, {"mime_type": "image/png", "data": img_bytes}]).text
+            else:
+                raw = model.start_chat(history=[]).send_message(prompt).text
+            log.info("◆ GEMINI RAW ◆\n%s\n◆ END RAW ◆", raw)
+            return _post_process(raw)
+        except Exception as e:
+            is_rate_limit = (
+                getattr(getattr(e, "response", None), "status_code", None) == 429
+                or "429" in str(e)
+            )
+            if is_rate_limit and attempt == 0:
+                log.warning("Gemini rate limit exceeded: %s. Retrying in 60 seconds...", e)
+                time.sleep(60)
+                continue
+            log.error("Gemini call failed: %s", e)
+            return {"explanation": "Gemini 呼び出し失敗", "actions": [], "raw": "", "complete": True}
+
+    return {"explanation": "Gemini 呼び出し失敗", "actions": [], "raw": "", "complete": True}
 
 
 def call_groq(prompt: str, screenshot: str | None = None) -> Dict:
