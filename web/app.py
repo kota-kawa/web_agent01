@@ -161,5 +161,35 @@ def outer():
     )
 
 
+@app.route("/create_room")
+def create_room():
+    """ルーム作成フォーム - 深緑テーマ"""
+    return render_template("create_room.html")
+
+
+@app.route("/search_room")
+def search_room():
+    """ルーム検索フォーム - 深緑テーマ"""
+    return render_template("search_room.html")
+
+
+@app.route("/kensaku")
+def kensaku():
+    """検索フォーム - 水色テーマ"""
+    return render_template("kensaku.html")
+
+
+@app.route("/create_note_room")
+def create_note_room():
+    """ノートルーム作成フォーム - 黄緑テーマ"""
+    return render_template("create_note_room.html")
+
+
+@app.route("/search_note_room")
+def search_note_room():
+    """ノートルーム検索フォーム - 黄緑テーマ"""
+    return render_template("search_note_room.html")
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

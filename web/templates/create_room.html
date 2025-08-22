@@ -1,0 +1,97 @@
+{% extends "layout.html" %}
+{% block title %}ルーム作成 - AI Agent{% endblock %}
+
+{% block content %}
+<div class="form-container dark-green-theme">
+    <div class="form-card">
+        <div class="form-header">
+            <h2><i class="icon">🏠</i>ルーム作成</h2>
+            <p class="form-subtitle">新しいルームを作成します</p>
+        </div>
+        
+        <form class="sophisticated-form" action="/create_room" method="post">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="room_name">ルーム名 <span class="required">*</span></label>
+                    <input type="text" id="room_name" name="room_name" required 
+                           placeholder="ルーム名を入力してください">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="room_type">ルームタイプ</label>
+                    <select id="room_type" name="room_type">
+                        <option value="">選択してください</option>
+                        <option value="public">パブリック</option>
+                        <option value="private">プライベート</option>
+                        <option value="group">グループ</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="max_users">最大ユーザー数</label>
+                    <input type="number" id="max_users" name="max_users" min="2" max="100" 
+                           placeholder="10" value="10">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="description">ルーム説明</label>
+                    <textarea id="description" name="description" rows="4" 
+                              placeholder="ルームの詳細説明を入力してください（任意）"></textarea>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="password_protected" name="password_protected">
+                        <span class="checkmark"></span>
+                        パスワード保護
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row password-section" style="display: none;">
+                <div class="form-group">
+                    <label for="password">パスワード</label>
+                    <input type="password" id="password" name="password" 
+                           placeholder="パスワードを入力してください">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">
+                    <span class="btn-icon">✓</span>
+                    ルームを作成
+                </button>
+                <button type="reset" class="btn-secondary">
+                    <span class="btn-icon">↻</span>
+                    リセット
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+document.getElementById('password_protected').addEventListener('change', function() {
+    const passwordSection = document.querySelector('.password-section');
+    if (this.checked) {
+        passwordSection.style.display = 'block';
+        passwordSection.querySelector('#password').required = true;
+    } else {
+        passwordSection.style.display = 'none';
+        passwordSection.querySelector('#password').required = false;
+        passwordSection.querySelector('#password').value = '';
+    }
+});
+</script>
+{% endblock %}

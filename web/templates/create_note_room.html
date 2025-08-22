@@ -1,0 +1,158 @@
+{% extends "layout.html" %}
+{% block title %}ノートルーム作成 - AI Agent{% endblock %}
+
+{% block content %}
+<div class="form-container yellow-green-theme">
+    <div class="form-card">
+        <div class="form-header">
+            <h2><i class="icon">📝</i>ノートルーム作成</h2>
+            <p class="form-subtitle">共同編集可能なノートルームを作成します</p>
+        </div>
+        
+        <form class="sophisticated-form" action="/create_note_room" method="post">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="note_room_name">ノートルーム名 <span class="required">*</span></label>
+                    <input type="text" id="note_room_name" name="note_room_name" required 
+                           placeholder="ノートルーム名を入力してください">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="template_type">テンプレート</label>
+                    <select id="template_type" name="template_type">
+                        <option value="blank">空白ページ</option>
+                        <option value="meeting">会議メモ</option>
+                        <option value="project">プロジェクト計画</option>
+                        <option value="brainstorm">ブレインストーミング</option>
+                        <option value="todo">ToDo リスト</option>
+                        <option value="study">学習ノート</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="collaboration_mode">編集モード</label>
+                    <select id="collaboration_mode" name="collaboration_mode">
+                        <option value="realtime">リアルタイム編集</option>
+                        <option value="turn_based">順番編集</option>
+                        <option value="section_based">セクション別編集</option>
+                        <option value="comment_only">コメントのみ</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="description">ノートルーム概要</label>
+                    <textarea id="description" name="description" rows="4" 
+                              placeholder="このノートルームの目的や内容について説明してください"></textarea>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="max_editors">最大編集者数</label>
+                    <input type="number" id="max_editors" name="max_editors" min="1" max="50" 
+                           placeholder="10" value="10">
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="auto_save_interval">自動保存間隔（秒）</label>
+                    <input type="number" id="auto_save_interval" name="auto_save_interval" 
+                           min="10" max="300" placeholder="30" value="30">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="tags">タグ</label>
+                    <input type="text" id="tags" name="tags"
+                           placeholder="カンマ区切りでタグを入力（例：プロジェクト, 会議, アイデア）">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="public_access" name="public_access">
+                        <span class="checkmark"></span>
+                        パブリックアクセス許可
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="version_control" name="version_control" checked>
+                        <span class="checkmark"></span>
+                        バージョン管理を有効にする
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="notification_enabled" name="notification_enabled" checked>
+                        <span class="checkmark"></span>
+                        編集通知を受け取る
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">
+                    <span class="btn-icon">✨</span>
+                    ノートルーム作成
+                </button>
+                <button type="reset" class="btn-secondary">
+                    <span class="btn-icon">↻</span>
+                    リセット
+                </button>
+                <button type="button" class="btn-tertiary" onclick="previewTemplate()">
+                    <span class="btn-icon">👁</span>
+                    テンプレート preview
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function previewTemplate() {
+    const templateType = document.getElementById('template_type').value;
+    const templates = {
+        'blank': '空白のページです。自由に編集を開始してください。',
+        'meeting': '# 会議メモ\n\n## 日時\n## 参加者\n## 議題\n## 決定事項\n## アクションアイテム',
+        'project': '# プロジェクト計画\n\n## 概要\n## 目標\n## スケジュール\n## 担当者\n## リスク',
+        'brainstorm': '# ブレインストーミング\n\n## テーマ\n## アイデア一覧\n- \n- \n- \n\n## 選定されたアイデア',
+        'todo': '# ToDo リスト\n\n## 今日のタスク\n- [ ] \n- [ ] \n\n## 今週のタスク\n- [ ] \n- [ ] ',
+        'study': '# 学習ノート\n\n## 学習内容\n## 重要ポイント\n## 質問・疑問\n## 参考資料'
+    };
+    
+    const preview = templates[templateType] || templates['blank'];
+    alert('テンプレートプレビュー:\n\n' + preview);
+}
+
+// 自動保存間隔の検証
+document.getElementById('auto_save_interval').addEventListener('change', function() {
+    const value = parseInt(this.value);
+    if (value < 10) {
+        this.value = 10;
+        alert('自動保存間隔は最低10秒です。');
+    } else if (value > 300) {
+        this.value = 300;
+        alert('自動保存間隔は最大300秒です。');
+    }
+});
+</script>
+{% endblock %}

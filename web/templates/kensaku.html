@@ -1,0 +1,163 @@
+{% extends "layout.html" %}
+{% block title %}検索 - AI Agent{% endblock %}
+
+{% block content %}
+<div class="form-container light-blue-theme">
+    <div class="form-card">
+        <div class="form-header">
+            <h2><i class="icon">🔍</i>高度検索</h2>
+            <p class="form-subtitle">詳細な条件で検索を実行します</p>
+        </div>
+        
+        <form class="sophisticated-form" action="/kensaku" method="get">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="main_query">メインキーワード <span class="required">*</span></label>
+                    <input type="text" id="main_query" name="main_query" required
+                           placeholder="検索したいキーワードを入力">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="search_type">検索タイプ</label>
+                    <select id="search_type" name="search_type">
+                        <option value="all">すべて含む</option>
+                        <option value="any">いずれかを含む</option>
+                        <option value="exact">完全一致</option>
+                        <option value="exclude">除外</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="category">カテゴリ</label>
+                    <select id="category" name="category">
+                        <option value="">すべてのカテゴリ</option>
+                        <option value="documents">ドキュメント</option>
+                        <option value="images">画像</option>
+                        <option value="videos">動画</option>
+                        <option value="audio">音声</option>
+                        <option value="archives">アーカイブ</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="date_from">検索期間（開始）</label>
+                    <input type="date" id="date_from" name="date_from">
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="date_to">検索期間（終了）</label>
+                    <input type="date" id="date_to" name="date_to">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="additional_keywords">追加キーワード</label>
+                    <input type="text" id="additional_keywords" name="additional_keywords"
+                           placeholder="スペース区切りで複数のキーワードを入力">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="file_size_min">ファイルサイズ（最小）</label>
+                    <select id="file_size_min" name="file_size_min">
+                        <option value="">指定なし</option>
+                        <option value="1kb">1KB以上</option>
+                        <option value="10kb">10KB以上</option>
+                        <option value="100kb">100KB以上</option>
+                        <option value="1mb">1MB以上</option>
+                        <option value="10mb">10MB以上</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="file_size_max">ファイルサイズ（最大）</label>
+                    <select id="file_size_max" name="file_size_max">
+                        <option value="">指定なし</option>
+                        <option value="1mb">1MB以下</option>
+                        <option value="10mb">10MB以下</option>
+                        <option value="100mb">100MB以下</option>
+                        <option value="1gb">1GB以下</option>
+                        <option value="10gb">10GB以下</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="case_sensitive" name="case_sensitive">
+                        <span class="checkmark"></span>
+                        大文字小文字を区別
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="regex_mode" name="regex_mode">
+                        <span class="checkmark"></span>
+                        正規表現モード
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">
+                    <span class="btn-icon">🚀</span>
+                    検索実行
+                </button>
+                <button type="reset" class="btn-secondary">
+                    <span class="btn-icon">↻</span>
+                    条件クリア
+                </button>
+                <button type="button" class="btn-tertiary" onclick="saveSearch()">
+                    <span class="btn-icon">💾</span>
+                    検索条件保存
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function saveSearch() {
+    const formData = new FormData(document.querySelector('.sophisticated-form'));
+    const searchData = Object.fromEntries(formData);
+    localStorage.setItem('savedSearch', JSON.stringify(searchData));
+    alert('検索条件を保存しました');
+}
+
+// ページ読み込み時に保存された検索条件を復元
+document.addEventListener('DOMContentLoaded', function() {
+    const savedSearch = localStorage.getItem('savedSearch');
+    if (savedSearch) {
+        const searchData = JSON.parse(savedSearch);
+        Object.keys(searchData).forEach(key => {
+            const element = document.querySelector(`[name="${key}"]`);
+            if (element) {
+                if (element.type === 'checkbox') {
+                    element.checked = searchData[key] === 'on';
+                } else {
+                    element.value = searchData[key];
+                }
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

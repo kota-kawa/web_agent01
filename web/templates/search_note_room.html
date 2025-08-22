@@ -1,0 +1,256 @@
+{% extends "layout.html" %}
+{% block title %}ノートルーム検索 - AI Agent{% endblock %}
+
+{% block content %}
+<div class="form-container yellow-green-theme">
+    <div class="form-card">
+        <div class="form-header">
+            <h2><i class="icon">🔍</i>ノートルーム検索</h2>
+            <p class="form-subtitle">参加可能なノートルームを検索します</p>
+        </div>
+        
+        <form class="sophisticated-form" action="/search_note_room" method="get">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="search_query">検索キーワード</label>
+                    <input type="text" id="search_query" name="search_query" 
+                           placeholder="ノートルーム名、説明、タグで検索">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="template_type">テンプレートタイプ</label>
+                    <select id="template_type" name="template_type">
+                        <option value="">すべて</option>
+                        <option value="blank">空白ページ</option>
+                        <option value="meeting">会議メモ</option>
+                        <option value="project">プロジェクト計画</option>
+                        <option value="brainstorm">ブレインストーミング</option>
+                        <option value="todo">ToDo リスト</option>
+                        <option value="study">学習ノート</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="collaboration_mode">編集モード</label>
+                    <select id="collaboration_mode" name="collaboration_mode">
+                        <option value="">すべて</option>
+                        <option value="realtime">リアルタイム編集</option>
+                        <option value="turn_based">順番編集</option>
+                        <option value="section_based">セクション別編集</option>
+                        <option value="comment_only">コメントのみ</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="min_editors">最小編集者数</label>
+                    <input type="number" id="min_editors" name="min_editors" min="0" 
+                           placeholder="0">
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="max_editors">最大編集者数</label>
+                    <input type="number" id="max_editors" name="max_editors" min="1" 
+                           placeholder="50">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="tags">タグフィルター</label>
+                    <input type="text" id="tags" name="tags"
+                           placeholder="検索したいタグをカンマ区切りで入力">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="created_from">作成日（開始）</label>
+                    <input type="date" id="created_from" name="created_from">
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="created_to">作成日（終了）</label>
+                    <input type="date" id="created_to" name="created_to">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="sort_by">並び順</label>
+                    <select id="sort_by" name="sort_by">
+                        <option value="created_desc">作成日時（新しい順）</option>
+                        <option value="created_asc">作成日時（古い順）</option>
+                        <option value="updated_desc">更新日時（新しい順）</option>
+                        <option value="updated_asc">更新日時（古い順）</option>
+                        <option value="editors_desc">編集者数（多い順）</option>
+                        <option value="editors_asc">編集者数（少ない順）</option>
+                        <option value="name_asc">名前（昇順）</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="activity_level">活動レベル</label>
+                    <select id="activity_level" name="activity_level">
+                        <option value="">すべて</option>
+                        <option value="high">活発（毎日更新）</option>
+                        <option value="medium">中程度（週1-2回更新）</option>
+                        <option value="low">低（月1回以下）</option>
+                        <option value="inactive">非活発（1ヶ月以上更新なし）</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="public_only" name="public_only" checked>
+                        <span class="checkmark"></span>
+                        パブリックアクセス可能なもののみ
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="has_space" name="has_space">
+                        <span class="checkmark"></span>
+                        参加枠があるもののみ
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="version_control_enabled" name="version_control_enabled">
+                        <span class="checkmark"></span>
+                        バージョン管理有効なもののみ
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">
+                    <span class="btn-icon">🔍</span>
+                    検索実行
+                </button>
+                <button type="reset" class="btn-secondary">
+                    <span class="btn-icon">↻</span>
+                    リセット
+                </button>
+                <button type="button" class="btn-tertiary" onclick="saveSearchPreset()">
+                    <span class="btn-icon">⭐</span>
+                    検索条件を保存
+                </button>
+            </div>
+        </form>
+        
+        <!-- 検索結果表示エリア -->
+        <div class="search-results">
+            <h3>検索結果</h3>
+            <div class="result-cards">
+                <!-- サンプル結果カード -->
+                <div class="result-card note-room-card">
+                    <div class="card-header">
+                        <h4>📝 プロジェクト企画書</h4>
+                        <span class="template-badge">プロジェクト</span>
+                    </div>
+                    <p class="room-description">新規サービスの企画書を共同で作成中。アイデア募集中！</p>
+                    <div class="card-tags">
+                        <span class="tag">企画</span>
+                        <span class="tag">ブレスト</span>
+                        <span class="tag">新規事業</span>
+                    </div>
+                    <div class="card-footer">
+                        <span class="editor-count">✍️ 3/10編集者</span>
+                        <span class="last-updated">更新: 2時間前</span>
+                        <button class="btn-join">参加</button>
+                    </div>
+                </div>
+                
+                <div class="result-card note-room-card">
+                    <div class="card-header">
+                        <h4>📚 学習ノート - JavaScript</h4>
+                        <span class="template-badge">学習</span>
+                    </div>
+                    <p class="room-description">JavaScript学習の情報共有とTips集。初心者歓迎！</p>
+                    <div class="card-tags">
+                        <span class="tag">JavaScript</span>
+                        <span class="tag">学習</span>
+                        <span class="tag">初心者歓迎</span>
+                    </div>
+                    <div class="card-footer">
+                        <span class="editor-count">✍️ 7/15編集者</span>
+                        <span class="last-updated">更新: 1日前</span>
+                        <button class="btn-join">参加</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function saveSearchPreset() {
+    const formData = new FormData(document.querySelector('.sophisticated-form'));
+    const searchData = Object.fromEntries(formData);
+    const presetName = prompt('検索条件の名前を入力してください:');
+    if (presetName) {
+        let presets = JSON.parse(localStorage.getItem('noteRoomSearchPresets') || '{}');
+        presets[presetName] = searchData;
+        localStorage.setItem('noteRoomSearchPresets', JSON.stringify(presets));
+        alert('検索条件「' + presetName + '」を保存しました');
+    }
+}
+
+// ページ読み込み時に保存されたプリセットを表示
+document.addEventListener('DOMContentLoaded', function() {
+    const presets = JSON.parse(localStorage.getItem('noteRoomSearchPresets') || '{}');
+    if (Object.keys(presets).length > 0) {
+        const form = document.querySelector('.sophisticated-form');
+        const presetSelect = document.createElement('select');
+        presetSelect.innerHTML = '<option value="">保存済み検索条件を選択</option>';
+        
+        Object.keys(presets).forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            presetSelect.appendChild(option);
+        });
+        
+        presetSelect.addEventListener('change', function() {
+            if (this.value) {
+                const presetData = presets[this.value];
+                Object.keys(presetData).forEach(key => {
+                    const element = form.querySelector(`[name="${key}"]`);
+                    if (element) {
+                        if (element.type === 'checkbox') {
+                            element.checked = presetData[key] === 'on';
+                        } else {
+                            element.value = presetData[key];
+                        }
+                    }
+                });
+            }
+        });
+        
+        form.insertBefore(presetSelect, form.firstChild);
+    }
+});
+</script>
+{% endblock %}

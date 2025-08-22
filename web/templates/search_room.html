@@ -1,0 +1,115 @@
+{% extends "layout.html" %}
+{% block title %}ルーム検索 - AI Agent{% endblock %}
+
+{% block content %}
+<div class="form-container dark-green-theme">
+    <div class="form-card">
+        <div class="form-header">
+            <h2><i class="icon">🔍</i>ルーム検索</h2>
+            <p class="form-subtitle">参加するルームを検索します</p>
+        </div>
+        
+        <form class="sophisticated-form" action="/search_room" method="get">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="search_query">検索キーワード</label>
+                    <input type="text" id="search_query" name="search_query" 
+                           placeholder="ルーム名、説明、タグで検索">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="room_type">ルームタイプ</label>
+                    <select id="room_type" name="room_type">
+                        <option value="">すべて</option>
+                        <option value="public">パブリック</option>
+                        <option value="private">プライベート</option>
+                        <option value="group">グループ</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="sort_by">並び順</label>
+                    <select id="sort_by" name="sort_by">
+                        <option value="created_desc">作成日時（新しい順）</option>
+                        <option value="created_asc">作成日時（古い順）</option>
+                        <option value="users_desc">参加者数（多い順）</option>
+                        <option value="users_asc">参加者数（少ない順）</option>
+                        <option value="name_asc">名前（昇順）</option>
+                    </select>
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group half-width">
+                    <label for="min_users">最小参加者数</label>
+                    <input type="number" id="min_users" name="min_users" min="0" 
+                           placeholder="0">
+                    <div class="input-focus-line"></div>
+                </div>
+                
+                <div class="form-group half-width">
+                    <label for="max_users">最大参加者数</label>
+                    <input type="number" id="max_users" name="max_users" min="1" 
+                           placeholder="100">
+                    <div class="input-focus-line"></div>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="available_only" name="available_only" checked>
+                        <span class="checkmark"></span>
+                        参加可能なルームのみ表示
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="no_password" name="no_password">
+                        <span class="checkmark"></span>
+                        パスワード不要のルームのみ
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn-primary">
+                    <span class="btn-icon">🔍</span>
+                    検索実行
+                </button>
+                <button type="reset" class="btn-secondary">
+                    <span class="btn-icon">↻</span>
+                    リセット
+                </button>
+            </div>
+        </form>
+        
+        <!-- 検索結果表示エリア -->
+        <div class="search-results">
+            <h3>検索結果</h3>
+            <div class="result-cards">
+                <!-- サンプル結果カード -->
+                <div class="result-card">
+                    <div class="card-header">
+                        <h4>サンプルルーム</h4>
+                        <span class="room-type">パブリック</span>
+                    </div>
+                    <p class="room-description">これはサンプルルームの説明です。</p>
+                    <div class="card-footer">
+                        <span class="user-count">👥 5/20</span>
+                        <button class="btn-join">参加</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
