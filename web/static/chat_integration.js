@@ -93,11 +93,29 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  /* ----- キーボードショートカット (Ctrl+Enter で送信) ----- */
+  userInput.addEventListener("keydown", (evt) => {
+    if ((evt.ctrlKey || evt.metaKey) && evt.key === "Enter") {
+      evt.preventDefault();
+      if (!sendButton.disabled) {
+        sendButton.click();
+      }
+    }
+  });
+
   /* ----- 送信ボタンイベント ----- */
   sendButton.addEventListener("click", async (evt) => {
     evt.preventDefault();
     const text = userInput.value.trim();
     if (!text) return;
+
+    // Prevent double submission
+    if (sendButton.disabled) return;
+    
+    // Disable UI during execution
+    sendButton.disabled = true;
+    sendButton.textContent = "実行中...";
+    userInput.disabled = true;
 
     /* ユーザーメッセージを追加 */
     const u = document.createElement("p");
@@ -110,10 +128,7 @@ document.addEventListener("DOMContentLoaded", () => {
     /* AI 応答プレースホルダー + スピナー */
     const b = document.createElement("p");
     b.classList.add("bot-message");
-    b.textContent = "AI が応答中...";
-    const spin = document.createElement("span");
-    spin.classList.add("spinner");
-    b.appendChild(spin);
+    b.innerHTML = 'AI が応答中... <span class="spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #f3f3f3;border-top:2px solid #3498db;border-radius:50%;animation:spin 1s linear infinite;"></span>';
     chatArea.appendChild(b);
     chatArea.scrollTop = chatArea.scrollHeight;
 
@@ -124,10 +139,17 @@ document.addEventListener("DOMContentLoaded", () => {
         await window.executeTask(text, model, b);
       } else {
         console.error("executeTask function not found.");
+        b.textContent = "実行機能が見つかりません。";
       }
     } catch (err) {
       console.error(err);
-      b.textContent = "AI の応答に失敗しました。";
+      b.textContent = "AI の応答に失敗しました: " + err.message;
+    } finally {
+      // Re-enable UI after execution
+      sendButton.disabled = false;
+      sendButton.textContent = "送信";
+      userInput.disabled = false;
+      userInput.focus();
     }
   });
 });

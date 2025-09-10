@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -36,6 +37,67 @@ SPA_STABILIZE_TIMEOUT = int(
     os.getenv("SPA_STABILIZE_TIMEOUT", "2000")
 )  # ms  SPA描画安定待ち
 MAX_DSL_ACTIONS = int(os.getenv("MAX_DSL_ACTIONS", "50"))  # DSL アクション数上限
+
+
+# Security and navigation configuration
+ALLOWED_DOMAINS = os.getenv("ALLOWED_DOMAINS", "").split(",") if os.getenv("ALLOWED_DOMAINS") else []
+BLOCKED_DOMAINS = os.getenv("BLOCKED_DOMAINS", "").split(",") if os.getenv("BLOCKED_DOMAINS") else []
+MAX_REDIRECTS = int(os.getenv("MAX_REDIRECTS", "10"))
+
+
+def _is_domain_allowed(url: str) -> tuple[bool, str]:
+    """Check if domain is allowed for navigation."""
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        
+        # Check blocked domains first
+        if BLOCKED_DOMAINS:
+            for blocked in BLOCKED_DOMAINS:
+                if blocked and (domain == blocked.lower() or domain.endswith(f".{blocked.lower()}")):
+                    return False, f"Domain {domain} is blocked"
+        
+        # If allowlist is configured, check it
+        if ALLOWED_DOMAINS:
+            allowed = False
+            for allowed_domain in ALLOWED_DOMAINS:
+                if allowed_domain and (domain == allowed_domain.lower() or domain.endswith(f".{allowed_domain.lower()}")):
+                    allowed = True
+                    break
+            if not allowed:
+                return False, f"Domain {domain} is not in allowlist"
+        
+        return True, ""
+    except Exception as e:
+        return False, f"Could not parse domain from URL: {str(e)}"
+
+
+def _classify_error(error_str: str) -> tuple[str, bool]:
+    """Classify error as internal/external and provide user-friendly message."""
+    error_lower = error_str.lower()
+    
+    # Network/DNS errors (external)
+    if any(x in error_lower for x in ["dns", "connection", "timeout", "network", "err_name_not_resolved"]):
+        return "ネットワークエラー - サイトに接続できません", False
+    
+    # HTTP errors (external)
+    if "403" in error_str or "forbidden" in error_lower:
+        return "アクセス拒否 - サイトがアクセスを拒否しました", False
+    if "404" in error_str or "not found" in error_lower:
+        return "ページが見つかりません", False
+    if "500" in error_str or "internal server error" in error_lower:
+        return "サイトの内部エラー", False
+    
+    # Element/interaction errors (actionable)
+    if "element not found" in error_lower or "locator not found" in error_lower:
+        return "要素が見つかりませんでした - セレクタを確認するか、ページの読み込みを待ってください", True
+    if "timeout" in error_lower:
+        return "操作がタイムアウトしました - ページの応答が遅い可能性があります", True
+    if "not enabled" in error_lower or "not visible" in error_lower:
+        return "要素が操作できません - 要素が無効化されているか見えない状態です", True
+    
+    # Default classification as internal
+    return f"内部処理エラー - {error_str}", True
 
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
@@ -163,6 +225,85 @@ WARNINGS: List[str] = []
 
 # Execution lock to prevent concurrent DSL execution
 _EXECUTION_LOCK = asyncio.Lock()
+
+# Debug artifacts directory
+DEBUG_DIR = os.getenv("DEBUG_DIR", "./debug_artifacts")
+SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "true").lower() == "true"
+
+# Browser context management
+USE_INCOGNITO_CONTEXT = os.getenv("USE_INCOGNITO_CONTEXT", "false").lower() == "true"
+
+
+async def _create_clean_context():
+    """Create a new browser context (optionally incognito) for clean state."""
+    global PAGE
+    
+    if not BROWSER:
+        await _init_browser()
+        return
+    
+    if USE_INCOGNITO_CONTEXT:
+        # Create new incognito context
+        try:
+            context = await BROWSER.new_context()
+            PAGE = await context.new_page()
+            
+            # Inject watcher script
+            if _WATCHER_SCRIPT:
+                try:
+                    await PAGE.add_init_script(_WATCHER_SCRIPT)
+                except Exception as e:
+                    log.error("add_init_script failed: %s", e)
+                    
+            log.info("Created new incognito context")
+        except Exception as e:
+            log.error("Failed to create incognito context: %s", e)
+            # Fallback to existing page
+            pass
+
+
+async def _save_debug_artifacts(correlation_id: str, error_context: str = "") -> str:
+    """Save screenshot and HTML for debugging purposes."""
+    if not SAVE_DEBUG_ARTIFACTS or not PAGE:
+        return ""
+    
+    try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        
+        # Save screenshot
+        screenshot_path = os.path.join(DEBUG_DIR, f"{correlation_id}_screenshot.png")
+        try:
+            screenshot = await PAGE.screenshot(type="png")
+            with open(screenshot_path, "wb") as f:
+                f.write(screenshot)
+        except Exception as e:
+            log.warning("Could not save screenshot: %s", e)
+        
+        # Save HTML
+        html_path = os.path.join(DEBUG_DIR, f"{correlation_id}_page.html")
+        try:
+            html = await PAGE.content()
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception as e:
+            log.warning("Could not save HTML: %s", e)
+        
+        # Save error context
+        if error_context:
+            error_path = os.path.join(DEBUG_DIR, f"{correlation_id}_error.txt")
+            try:
+                with open(error_path, "w", encoding="utf-8") as f:
+                    f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Correlation ID: {correlation_id}\n")
+                    f.write(f"Error Context:\n{error_context}\n")
+            except Exception as e:
+                log.warning("Could not save error context: %s", e)
+        
+        return f"Debug artifacts saved with ID: {correlation_id}"
+        
+    except Exception as e:
+        log.error("Failed to save debug artifacts: %s", e)
+        return ""
 
 
 def _run(coro):
@@ -484,10 +625,21 @@ async def _apply(act: Dict) -> List[str]:
             if not _validate_url(tgt):
                 action_warnings.append(f"WARNING:auto:Skipping navigate - Invalid URL: {tgt}")
                 return action_warnings
+                
+            # Security check for domain allowlist/blocklist
+            domain_allowed, domain_msg = _is_domain_allowed(tgt)
+            if not domain_allowed:
+                action_warnings.append(f"ERROR:auto:Navigation blocked - {domain_msg}")
+                return action_warnings
+                
             timeout = NAVIGATION_TIMEOUT if ms == 0 else ms
-            await PAGE.goto(tgt, wait_until="load", timeout=timeout)
-            # Enhanced post-navigation stabilization
-            await _stabilize_page()
+            try:
+                await PAGE.goto(tgt, wait_until="load", timeout=timeout)
+                # Enhanced post-navigation stabilization
+                await _stabilize_page()
+            except Exception as e:
+                friendly_msg, is_internal = _classify_error(str(e))
+                action_warnings.append(f"WARNING:auto:Navigation failed - {friendly_msg}")
             return action_warnings
             
         if a == "go_back":
@@ -602,13 +754,13 @@ async def _apply(act: Dict) -> List[str]:
     return action_warnings
 
 
-async def _run_actions_with_lock(actions: List[Dict]) -> tuple[str, List[str]]:
+async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
     """Run actions with execution lock to prevent concurrent execution issues."""
     async with _EXECUTION_LOCK:
-        return await _run_actions(actions)
+        return await _run_actions(actions, correlation_id)
 
 
-async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
+async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
     all_warnings = []
     
     for i, act in enumerate(actions):
@@ -630,11 +782,18 @@ async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
                 
             except Exception as e:
                 error_msg = f"Action {i+1} '{act.get('action', 'unknown')}' attempt {attempt}/{retries} failed: {str(e)}"
-                log.error(error_msg)
+                log.error("[%s] %s", correlation_id, error_msg)
                 
                 if attempt == retries:
                     # Final retry failure - add to warnings instead of raising exception
-                    all_warnings.append(f"ERROR:auto:{error_msg}")
+                    friendly_msg, is_internal = _classify_error(str(e))
+                    all_warnings.append(f"ERROR:auto:[{correlation_id}] {friendly_msg}")
+                    
+                    # Save debug artifacts for critical failures
+                    if is_internal and SAVE_DEBUG_ARTIFACTS:
+                        debug_info = await _save_debug_artifacts(f"{correlation_id}_action_{i+1}", error_msg)
+                        if debug_info:
+                            all_warnings.append(f"DEBUG:auto:{debug_info}")
                 else:
                     # Wait with exponential backoff before retry
                     wait_time = min(1000 * (2 ** (attempt - 1)), 5000)  # Cap at 5 seconds
@@ -642,7 +801,7 @@ async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
         
         # If action couldn't be executed due to critical errors, note it
         if not action_executed:
-            all_warnings.append(f"WARNING:auto:Action {i+1} '{act.get('action', 'unknown')}' was skipped due to errors")
+            all_warnings.append(f"WARNING:auto:[{correlation_id}] Action {i+1} '{act.get('action', 'unknown')}' was skipped due to errors")
     
     try:
         html = await PAGE.content()
@@ -656,6 +815,10 @@ async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
 # -------------------------------------------------- HTTP エンドポイント
 @app.post("/execute-dsl")
 def execute_dsl():
+    # Generate correlation ID for request tracking
+    correlation_id = str(uuid.uuid4())[:8]
+    log.info("Starting DSL execution with correlation ID: %s", correlation_id)
+    
     warnings = []
     
     try:
@@ -666,26 +829,33 @@ def execute_dsl():
         _validate_schema(data)
         
         # Validate individual actions
-        for action in data.get("actions", []):
+        for i, action in enumerate(data.get("actions", [])):
             action_warnings = _validate_action_params(action)
-            warnings.extend(action_warnings)
+            if action_warnings:
+                # Add correlation ID and action index to warnings
+                for warning in action_warnings:
+                    warnings.append(f"[{correlation_id}] Action {i+1}: {warning}")
         
     except ValidationError as ve:
-        warnings.append(f"ERROR:auto:InvalidDSL - {str(ve)}")
-        return jsonify({"html": "", "warnings": warnings})
+        warning_msg = f"[{correlation_id}] ERROR:auto:InvalidDSL - {str(ve)}"
+        warnings.append(warning_msg)
+        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
     except Exception as e:
-        warnings.append(f"ERROR:auto:ParseError - {str(e)}")
-        return jsonify({"html": "", "warnings": warnings})
+        warning_msg = f"[{correlation_id}] ERROR:auto:ParseError - {str(e)}"
+        warnings.append(warning_msg)
+        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
 
     # If there are validation warnings for critical actions, skip execution
     critical_errors = [w for w in warnings if "Invalid navigate URL" in w or "Invalid selector" in w]
     if critical_errors:
-        return jsonify({"html": "", "warnings": warnings})
+        log.warning("Skipping execution due to critical validation errors: %s", critical_errors)
+        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
     
     # Check DSL size limit
     action_count = len(data.get("actions", []))
     if action_count > MAX_DSL_ACTIONS:
-        warnings.append(f"ERROR:auto:DSL too large - {action_count} actions exceed limit of {MAX_DSL_ACTIONS}. Consider splitting into smaller chunks.")
+        warning_msg = f"[{correlation_id}] ERROR:auto:DSL too large - {action_count} actions exceed limit of {MAX_DSL_ACTIONS}. Consider splitting into smaller chunks."
+        warnings.append(warning_msg)
         # Truncate to limit but still execute  
         data["actions"] = data["actions"][:MAX_DSL_ACTIONS]
 
@@ -694,21 +864,35 @@ def execute_dsl():
         
         # Check browser health before execution
         if not _run(_check_browser_health()):
-            log.warning("Browser unhealthy, recreating...")
+            log.warning("[%s] Browser unhealthy, recreating...", correlation_id)
             _run(_recreate_browser())
+        
+        # Optionally create clean context
+        if USE_INCOGNITO_CONTEXT:
+            _run(_create_clean_context())
             
-        html, action_warns = _run(_run_actions_with_lock(data["actions"]))
+        html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
         warnings.extend(action_warns)
-        return jsonify({"html": html, "warnings": warnings})
+        
+        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+        
     except Exception as e:
-        log.exception("execution failed")
-        warnings.append(f"ERROR:auto:ExecutionError - {str(e)}")
+        error_msg = f"[{correlation_id}] ExecutionError - {str(e)}"
+        log.exception("DSL execution failed: %s", error_msg)
+        warnings.append(f"ERROR:auto:{error_msg}")
+        
+        # Save debug artifacts on critical failure
+        debug_info = _run(_save_debug_artifacts(correlation_id, error_msg))
+        if debug_info:
+            warnings.append(f"DEBUG:auto:{debug_info}")
+        
         # Return current page HTML even on failure to provide context
         try:
             html = _run(PAGE.content()) if PAGE else ""
         except Exception:
             html = ""
-        return jsonify({"html": html, "warnings": warnings})
+            
+        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
 
 
 @app.get("/source")

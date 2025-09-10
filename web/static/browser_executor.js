@@ -56,41 +56,119 @@ function normalizeActions(instr) {
    Send DSL to Playwright server
    ====================================== */
 async function sendDSL(acts) {
-  if (!acts.length) return { html: "", error: null };
+  if (!acts.length) return { html: "", error: null, warnings: [] };
+  
   if (requiresApproval(acts)) {
     if (!confirm("重要な操作を実行しようとしています。続行しますか?")) {
       showSystemMessage("ユーザーが操作を拒否しました");
-      return { html: "", error: "user rejected" };
+      return { html: "", error: "user rejected", warnings: [] };
     }
   }
+  
   try {
     const r = await fetch("/automation/execute-dsl", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ actions: acts })
     });
+    
+    const responseData = await r.json();
+    
     if (!r.ok) {
-      let msg = "";
-      try {
-        const j = await r.json();
-        msg = j.message || j.error || "";
-      } catch (e) {
-        msg = await r.text();
-      }
-      console.error("execute-dsl failed:", r.status, msg);
-      showSystemMessage(`DSL 実行エラー: ${msg || r.status}`);
-      return { html: "", error: msg || `status ${r.status}` };
+      // Handle error responses that now come as 200 + warnings
+      const errorMsg = responseData.message || responseData.error || "Unknown error";
+      console.error("execute-dsl failed:", r.status, errorMsg);
+      showSystemMessage(`DSL 実行エラー: ${errorMsg}`);
+      return { 
+        html: responseData.html || "", 
+        error: errorMsg, 
+        warnings: responseData.warnings || [],
+        correlation_id: responseData.correlation_id 
+      };
     } else {
       appendHistory(acts);
-      const j = await r.json();
-      const err = j.warnings && j.warnings.length ? j.warnings.join("\n") : null;
-      return { html: j.html || "", error: err };
+      
+      // Display warnings prominently if present
+      if (responseData.warnings && responseData.warnings.length > 0) {
+        displayWarnings(responseData.warnings, responseData.correlation_id);
+      }
+      
+      const errorText = responseData.warnings && responseData.warnings.length > 0 
+        ? responseData.warnings.filter(w => w.startsWith("ERROR:")).join("\n") || null
+        : null;
+      
+      return { 
+        html: responseData.html || "", 
+        error: errorText,
+        warnings: responseData.warnings || [],
+        correlation_id: responseData.correlation_id 
+      };
     }
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
     showSystemMessage(`通信エラー: ${e}`);
-    return { html: "", error: String(e) };
+    return { html: "", error: String(e), warnings: [] };
   }
+}
+
+
+function displayWarnings(warnings, correlationId) {
+  if (!warnings || warnings.length === 0) return;
+  
+  const warningsContainer = document.createElement("div");
+  warningsContainer.classList.add("warnings-container");
+  warningsContainer.style.cssText = `
+    margin: 10px 0;
+    padding: 12px;
+    background: linear-gradient(135deg, #fff3cd, #ffeaa7);
+    border-left: 4px solid #ffc107;
+    border-radius: 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+  `;
+  
+  const title = document.createElement("div");
+  title.style.cssText = `
+    font-weight: bold;
+    color: #856404;
+    margin-bottom: 8px;
+    font-size: 13px;
+  `;
+  title.textContent = `⚠️ 実行時の注意・警告 ${correlationId ? `(ID: ${correlationId})` : ''}`;
+  warningsContainer.appendChild(title);
+  
+  warnings.forEach(warning => {
+    const warningItem = document.createElement("div");
+    warningItem.style.cssText = `
+      margin: 4px 0;
+      padding: 4px 8px;
+      background: rgba(255, 255, 255, 0.7);
+      border-radius: 4px;
+      line-height: 1.4;
+    `;
+    
+    // Color code different warning types
+    if (warning.startsWith("ERROR:")) {
+      warningItem.style.color = "#dc3545";
+      warningItem.style.borderLeft = "3px solid #dc3545";
+    } else if (warning.startsWith("WARNING:")) {
+      warningItem.style.color = "#fd7e14";  
+      warningItem.style.borderLeft = "3px solid #fd7e14";
+    } else if (warning.startsWith("DEBUG:")) {
+      warningItem.style.color = "#6c757d";
+      warningItem.style.borderLeft = "3px solid #6c757d";
+    } else {
+      warningItem.style.color = "#856404";
+    }
+    
+    warningItem.textContent = warning;
+    warningsContainer.appendChild(warningItem);
+  });
+  
+  chatArea.appendChild(warningsContainer);
+  chatArea.scrollTop = chatArea.scrollHeight;
 }
 
 function requiresApproval(acts) {
