@@ -76,7 +76,11 @@ def _classify_error(error_str: str) -> tuple[str, bool]:
     """Classify error as internal/external and provide user-friendly message."""
     error_lower = error_str.lower()
     
-    # Element/interaction errors (actionable) - check first as they're most common
+    # Page navigation errors (internal, actionable) - check first as they're specific
+    if any(x in error_lower for x in ["navigating and changing", "page is navigating"]):
+        return "ページが読み込み中です - しばらく待ってから再試行してください", True
+    
+    # Element/interaction errors (actionable) - check next as they're most common
     if any(x in error_lower for x in ["element not found", "locator not found", "not found"]):
         return "要素が見つかりませんでした - セレクタを確認するか、ページの読み込みを待ってください", True
     if any(x in error_lower for x in ["timeout", "timed out"]) and not any(x in error_lower for x in ["dns", "connection", "network"]):
@@ -282,7 +286,7 @@ async def _save_debug_artifacts(correlation_id: str, error_context: str = "") ->
         # Save HTML
         html_path = os.path.join(DEBUG_DIR, f"{correlation_id}_page.html")
         try:
-            html = await PAGE.content()
+            html = await _safe_get_page_content()
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html)
         except Exception as e:
@@ -594,6 +598,50 @@ async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
         await PAGE.wait_for_timeout(100)
 
 
+async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> str:
+    """Safely retrieve page content with navigation error handling."""
+    if not PAGE:
+        return ""
+    
+    for attempt in range(max_retries):
+        try:
+            # Wait for page to be in a stable state first
+            await _stabilize_page()
+            
+            # Try to get the content
+            return await PAGE.content()
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Check if this is the navigation error we're trying to fix
+            if "navigating and changing" in error_str or "page is navigating" in error_str:
+                log.warning("Page content retrieval attempt %d failed due to navigation: %s", attempt + 1, str(e))
+                
+                if attempt < max_retries - 1:
+                    # Wait a bit longer for navigation to complete
+                    await asyncio.sleep(delay_ms / 1000)
+                    
+                    # Try additional stabilization
+                    try:
+                        await PAGE.wait_for_load_state("domcontentloaded", timeout=5000)
+                        await PAGE.wait_for_load_state("networkidle", timeout=3000)
+                    except Exception:
+                        pass  # Continue with normal retry
+                    
+                    continue
+                else:
+                    # Final attempt failed
+                    log.warning("Final attempt to get page content failed due to navigation: %s", str(e))
+                    return ""
+            else:
+                # Different error, log and return empty content
+                log.warning("Page content retrieval failed: %s", str(e))
+                return ""
+    
+    return ""
+
+
 # SPA 安定化関数 ----------------------------------------
 async def _stabilize_page():
     """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
@@ -803,11 +851,10 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
         if not action_executed:
             all_warnings.append(f"WARNING:auto:[{correlation_id}] Action {i+1} '{act.get('action', 'unknown')}' was skipped due to errors")
     
-    try:
-        html = await PAGE.content()
-    except Exception as e:
-        html = ""
-        all_warnings.append(f"WARNING:auto:Could not retrieve final page content - {str(e)}")
+    # Use safe content retrieval to avoid navigation errors
+    html = await _safe_get_page_content()
+    if not html:
+        all_warnings.append(f"WARNING:auto:Could not retrieve final page content - page may be navigating")
     
     return html, all_warnings
 
@@ -888,7 +935,7 @@ def execute_dsl():
         
         # Return current page HTML even on failure to provide context
         try:
-            html = _run(PAGE.content()) if PAGE else ""
+            html = _run(_safe_get_page_content()) if PAGE else ""
         except Exception:
             html = ""
             
@@ -899,7 +946,7 @@ def execute_dsl():
 def source():
     try:
         _run(_init_browser())
-        return Response(_run(PAGE.content()), mimetype="text/plain")
+        return Response(_run(_safe_get_page_content()), mimetype="text/plain")
     except Exception as e:
         log.error("source error: %s", e)
         return Response("", mimetype="text/plain")

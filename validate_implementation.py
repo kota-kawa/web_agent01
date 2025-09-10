@@ -84,6 +84,7 @@ def test_error_classification():
         ("timeout waiting for element", "操作がタイムアウトしました - ページの応答が遅い可能性があります", True),
         ("element not found", "要素が見つかりませんでした - セレクタを確認するか、ページの読み込みを待ってください", True),
         ("403 Forbidden", "アクセス拒否 - サイトがアクセスを拒否しました", False),
+        ("page is navigating and changing content", "ページが読み込み中です - しばらく待ってから再試行してください", True),
         ("Internal error", "内部処理エラー - Internal error", True),
     ]
     
