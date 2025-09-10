@@ -55,14 +55,27 @@ function normalizeActions(instr) {
 /* ======================================
    Send DSL to Playwright server
    ====================================== */
+let isExecutingDSL = false;  // 実行中フラグ
+
 async function sendDSL(acts) {
   if (!acts.length) return { html: "", error: null };
+  
+  // 二重送信防止
+  if (isExecutingDSL) {
+    showSystemMessage("⚠ 操作実行中です。しばらくお待ちください。");
+    return { html: "", error: "execution in progress" };
+  }
+  
   if (requiresApproval(acts)) {
     if (!confirm("重要な操作を実行しようとしています。続行しますか?")) {
       showSystemMessage("ユーザーが操作を拒否しました");
       return { html: "", error: "user rejected" };
     }
   }
+  
+  isExecutingDSL = true;  // 実行開始
+  showSystemMessage("🔄 操作を実行中...");
+  
   try {
     const r = await fetch("/automation/execute-dsl", {
       method: "POST",
@@ -85,7 +98,7 @@ async function sendDSL(acts) {
           // エラーはユーザー向けメッセージに変換
           const userFriendlyErrors = errors.map(e => convertToUserFriendlyMessage(e));
           err = userFriendlyErrors.join("\n");
-          showSystemMessage(`操作エラー: ${userFriendlyErrors.join("; ")}`);
+          showSystemMessage(`❌ 操作エラー: ${userFriendlyErrors.join("; ")}`);
         }
         
         if (warnings.length) {
@@ -94,6 +107,8 @@ async function sendDSL(acts) {
           showSystemMessage(`⚠ 操作上の注意: ${userFriendlyWarnings.join("; ")}`);
           if (!err) err = userFriendlyWarnings.join("\n");
         }
+      } else {
+        showSystemMessage("✅ 操作が正常に完了しました");
       }
       
       return { html: j.html || "", error: err };
@@ -107,13 +122,15 @@ async function sendDSL(acts) {
         msg = await r.text();
       }
       console.error("execute-dsl failed:", r.status, msg);
-      showSystemMessage(`通信エラー: ${convertToUserFriendlyMessage(msg) || r.status}`);
+      showSystemMessage(`❌ 通信エラー: ${convertToUserFriendlyMessage(msg) || r.status}`);
       return { html: "", error: msg || `status ${r.status}` };
     }
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
-    showSystemMessage(`通信エラー: ${e}`);
+    showSystemMessage(`❌ 通信エラー: ${e}`);
     return { html: "", error: String(e) };
+  } finally {
+    isExecutingDSL = false;  // 実行終了
   }
 }
 
@@ -136,7 +153,9 @@ function convertToUserFriendlyMessage(message) {
     "Click failed": "クリック操作が失敗しました",
     "Fill failed": "テキスト入力が失敗しました",
     "Network error": "ネットワークエラーが発生しました",
-    "Server execution failed": "サーバー処理でエラーが発生しました"
+    "Server execution failed": "サーバー処理でエラーが発生しました",
+    "Large text input": "大きなテキストの入力は時間がかかる場合があります",
+    "Large DSL": "多数の操作が含まれているため分割実行されました"
   };
   
   for (const [pattern, replacement] of Object.entries(conversions)) {

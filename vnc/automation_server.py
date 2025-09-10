@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -35,6 +36,11 @@ DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(
     os.getenv("SPA_STABILIZE_TIMEOUT", "3000")  # ms  SPA描画安定待ち（2s→3s）
 )
+
+# 動的リトライ設定
+RETRY_BASE_DELAY = 0.5  # 基本リトライ間隔（秒）
+RETRY_BACKOFF_FACTOR = 1.5  # 指数バックオフ係数
+MAX_CHUNK_SIZE = int(os.getenv("MAX_CHUNK_SIZE", "10"))  # DSL 分割実行のしきい値
 
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
@@ -108,6 +114,69 @@ def _validate_selector(selector: str) -> bool:
     return bool(selector and selector.strip())
 
 
+def _get_action_specific_timeout(action: str, default_timeout: int) -> int:
+    """アクション種別別のタイムアウト設定"""
+    action_timeouts = {
+        "navigate": NAVIGATE_TIMEOUT,
+        "go_back": NAVIGATE_TIMEOUT, 
+        "go_forward": NAVIGATE_TIMEOUT,
+        "wait_for_selector": LOCATOR_TIMEOUT,
+        "click": ACTION_TIMEOUT,
+        "click_text": ACTION_TIMEOUT,
+        "type": ACTION_TIMEOUT * 2,  # タイプは長めに
+        "hover": ACTION_TIMEOUT // 2,  # ホバーは短め
+        "select_option": ACTION_TIMEOUT,
+        "press_key": ACTION_TIMEOUT // 2,
+        "extract_text": ACTION_TIMEOUT // 2,
+        "eval_js": ACTION_TIMEOUT,
+        "scroll": ACTION_TIMEOUT // 4,  # スクロールは短め
+        "wait": default_timeout,  # wait は指定値をそのまま使用
+    }
+    return action_timeouts.get(action, default_timeout)
+
+
+def _get_action_specific_retries(action: str) -> int:
+    """アクション種別別のリトライ回数"""
+    action_retries = {
+        "navigate": 5,  # 遷移は多めにリトライ
+        "go_back": 3,
+        "go_forward": 3,
+        "wait_for_selector": 2,  # 待機は少なめ
+        "click": 4,  # クリックは多めにリトライ
+        "click_text": 4,
+        "type": 3,
+        "hover": 2,
+        "select_option": 3,
+        "press_key": 2,
+        "extract_text": 2,
+        "eval_js": 1,  # eval_js は1回のみ
+        "scroll": 2,
+        "wait": 1,  # wait は基本的にリトライ不要
+    }
+    return action_retries.get(action, MAX_RETRIES)
+
+
+async def _retry_with_backoff(func, *args, max_retries: int = MAX_RETRIES, action_name: str = "unknown", **kwargs):
+    """指数バックオフによるリトライ実行"""
+    last_exception = None
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
+            log.warning("%s attempt %d/%d failed: %s", action_name, attempt, max_retries, e)
+            
+            if attempt < max_retries:
+                # 指数バックオフで待機
+                delay = RETRY_BASE_DELAY * (RETRY_BACKOFF_FACTOR ** (attempt - 1))
+                log.info("Retrying %s in %.2f seconds...", action_name, delay)
+                await asyncio.sleep(delay)
+    
+    # 最終的に失敗
+    raise last_exception
+
+
 # -------------------------------------------------- Playwright 管理
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
@@ -116,6 +185,9 @@ PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 EVAL_RESULTS: List[str] = []
 WARNINGS: List[str] = []
+
+# 並行実行防止用のロック
+EXECUTION_LOCK = asyncio.Lock()
 
 
 def _run(coro):
@@ -330,11 +402,42 @@ async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
 async def _stabilize_page():
     """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
     try:
-        # ネットワーク要求が終わるまで待機
+        # ネットワーク要求が終わるまで待機（必須化）
         await PAGE.wait_for_load_state("networkidle", timeout=SPA_STABILIZE_TIMEOUT)
-    except Exception:
-        pass
-    await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
+        log.debug("Network idle achieved")
+    except Exception as e:
+        log.warning("Network idle wait failed: %s", e)
+        # ネットワーク待機に失敗してもDOM待機は試行
+    
+    try:
+        # DOM idle も待機
+        await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
+        log.debug("DOM idle achieved")
+    except Exception as e:
+        log.warning("DOM idle wait failed: %s", e)
+    
+    # 短い追加待機（SPA の遅延描画対応）
+    await PAGE.wait_for_timeout(200)
+
+
+async def _enhanced_stabilize_after_navigation():
+    """ナビゲーション後の強化された安定化（遷移直後は特に重要）"""
+    try:
+        # ローディングスピナーの消失待ち
+        await PAGE.wait_for_load_state("load", timeout=NAVIGATE_TIMEOUT)
+        await PAGE.wait_for_load_state("networkidle", timeout=NAVIGATE_TIMEOUT) 
+        
+        # DOM の変更が止まるまで待機（長め）
+        await _wait_dom_idle(SPA_STABILIZE_TIMEOUT * 2)
+        
+        # 最終的な短い待機
+        await PAGE.wait_for_timeout(500)
+        log.info("Enhanced post-navigation stabilization completed")
+        
+    except Exception as e:
+        log.warning("Enhanced stabilization failed: %s", e)
+        # 最低限の待機
+        await PAGE.wait_for_timeout(1000)
 
 
 async def _apply(act: Dict):
@@ -357,12 +460,16 @@ async def _apply(act: Dict):
             log.warning(warning_msg)
             return
         await PAGE.goto(tgt, wait_until="load", timeout=NAVIGATE_TIMEOUT)
+        # ナビゲーション後は強化された安定化を実行
+        await _enhanced_stabilize_after_navigation()
         return
     if a == "go_back":
         await PAGE.go_back(wait_until="load", timeout=NAVIGATE_TIMEOUT)
+        await _enhanced_stabilize_after_navigation()
         return
     if a == "go_forward":
         await PAGE.go_forward(wait_until="load", timeout=NAVIGATE_TIMEOUT)
+        await _enhanced_stabilize_after_navigation()
         return
     if a == "wait":
         await PAGE.wait_for_timeout(ms)
@@ -455,57 +562,172 @@ async def _apply(act: Dict):
         EXTRACTED_TEXTS.append(text)
 
 
-async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
+async def _run_actions_with_correlation(actions: List[Dict], correlation_id: str) -> tuple[str, List[str]]:
+    """相関ID付きアクション実行"""
     WARNINGS.clear()
-    for act in actions:
+    
+    # 巨大な DSL の分割実行
+    if len(actions) > MAX_CHUNK_SIZE:
+        warning_msg = f"WARNING: Large DSL with {len(actions)} actions detected. Consider splitting into smaller chunks. Executing first {MAX_CHUNK_SIZE} actions."
+        WARNINGS.append(warning_msg)
+        log.warning("[%s] %s", correlation_id, warning_msg)
+        actions = actions[:MAX_CHUNK_SIZE]
+    
+    for i, act in enumerate(actions):
+        action_name = act.get('action', 'unknown')
+        target = act.get('target', '')[:50] + ('...' if len(act.get('target', '')) > 50 else '')
+        
+        log.info("[%s] Executing action %d/%d: %s (target: %s)", 
+                correlation_id, i+1, len(actions), action_name, target)
+        
         # DOM の更新が落ち着くまで待ってから次のアクションを実行する
         await _stabilize_page()
-        retries = int(act.get("retry", MAX_RETRIES))
+        
+        retries = int(act.get("retry", _get_action_specific_retries(action_name)))
         action_failed = False
         
-        for attempt in range(1, retries + 1):
-            try:
-                await _apply(act)
-                # アクション実行後も DOM 安定化を待つ
-                await _stabilize_page()
-                action_failed = False
-                break
-            except Exception as e:
-                log.error("action error (%d/%d): %s", attempt, retries, e)
-                if attempt == retries:
-                    # 最終リトライ失敗でも例外にせず、warnings に ERROR を格納
-                    error_msg = f"ERROR:auto: Action '{act.get('action', 'unknown')}' failed after {retries} retries: {str(e)}"
-                    WARNINGS.append(error_msg)
-                    action_failed = True
-                    log.warning("Final retry failed, added to warnings: %s", error_msg)
-                
-        # アクション失敗時は次のアクションも実行を続ける（論理エラーとして扱う）
+        try:
+            # 指数バックオフによるリトライ実行
+            await _retry_with_backoff(
+                _apply_single_action,
+                act,
+                max_retries=retries,
+                action_name=f"[{correlation_id}] action_{action_name}"
+            )
+            # アクション実行後も DOM 安定化を待つ
+            await _stabilize_page()
+            action_failed = False
+            
+        except Exception as e:
+            # 最終リトライ失敗でも例外にせず、warnings に ERROR を格納
+            current_url = await PAGE.url() if PAGE and not PAGE.is_closed() else "unknown"
+            error_msg = f"ERROR:auto: Action '{action_name}' (#{i+1}) failed after {retries} retries. URL: {current_url}. Error: {str(e)}"
+            WARNINGS.append(error_msg)
+            action_failed = True
+            log.error("[%s] Final retry failed for action %d: %s", correlation_id, i+1, error_msg)
+        
+        # アクション失敗時も次のアクションの実行を続ける（論理エラーとして扱う）
     
+    final_url = await PAGE.url() if PAGE and not PAGE.is_closed() else "unknown" 
+    log.info("[%s] DSL execution completed at URL: %s", correlation_id, final_url)
     return await PAGE.content(), WARNINGS.copy()
+
+
+async def _check_browser_health() -> bool:
+    """ブラウザとページの健全性をチェック"""
+    try:
+        if not BROWSER or not PAGE:
+            return False
+        
+        # ページが閉じられていないかチェック
+        if PAGE.is_closed():
+            log.warning("Page is closed, needs recreation")
+            return False
+            
+        # 簡単な動作確認（DOM アクセス）
+        await PAGE.evaluate("document.readyState", timeout=2000)
+        return True
+        
+    except Exception as e:
+        log.warning("Browser health check failed: %s", e)
+        return False
+
+
+async def _recreate_browser_if_needed():
+    """必要に応じてブラウザを再作成"""
+    global PW, BROWSER, PAGE
+    
+    if not await _check_browser_health():
+        log.info("Recreating browser due to health check failure")
+        
+        # 既存リソースのクリーンアップ
+        try:
+            if PAGE and not PAGE.is_closed():
+                await PAGE.close()
+        except Exception as e:
+            log.warning("Failed to close page during recreation: %s", e)
+            
+        try:
+            if BROWSER:
+                await BROWSER.close()
+        except Exception as e:
+            log.warning("Failed to close browser during recreation: %s", e)
+            
+        # 再初期化
+        PW = BROWSER = PAGE = None
+        await _init_browser()
+        log.info("Browser recreation completed")
+
+
+async def _safe_browser_operation(operation_func, *args, **kwargs):
+    """ブラウザ操作をヘルスチェック付きで実行"""
+    max_attempts = 2
+    
+    for attempt in range(max_attempts):
+        try:
+            await _recreate_browser_if_needed()
+            return await operation_func(*args, **kwargs)
+        except Exception as e:
+            if attempt == max_attempts - 1:
+                # 最終試行でも失敗
+                error_msg = f"Browser operation failed after {max_attempts} attempts: {str(e)}"
+                log.error(error_msg)
+                raise Exception(error_msg)
+            else:
+                log.warning("Browser operation attempt %d failed, retrying: %s", attempt + 1, e)
+                # 次の試行前にブラウザを強制再作成
+                global PW, BROWSER, PAGE
+                PW = BROWSER = PAGE = None
+
+
+async def _apply_single_action(act: Dict):
+    """単一のアクション実行（リトライ対象の関数）"""
+    await _apply(act)
 
 
 # -------------------------------------------------- HTTP エンドポイント
 @app.post("/execute-dsl")
 def execute_dsl():
+    correlation_id = str(uuid.uuid4())[:8]  # 相関ID生成
+    log.info("=== DSL Execution Start [%s] ===", correlation_id)
+    
     try:
         data = request.get_json(force=True)
         # 配列だけ来た場合の後方互換
         if isinstance(data, list):
             data = {"actions": data}
         _validate(data)
+        
+        action_count = len(data.get("actions", []))
+        log.info("[%s] Executing %d actions", correlation_id, action_count)
+        
     except ValidationError as ve:
+        log.warning("[%s] Validation error: %s", correlation_id, ve)
         return jsonify(error="InvalidDSL", message=str(ve)), 400
     except Exception as e:
+        log.error("[%s] Parse error: %s", correlation_id, e)
         return jsonify(error="ParseError", message=str(e)), 400
 
     try:
-        _run(_init_browser())
-        html, warns = _run(_run_actions(data["actions"]))
+        # 並行実行防止用のロック取得
+        async def safe_execution_with_lock():
+            async with EXECUTION_LOCK:
+                log.info("[%s] Acquired execution lock", correlation_id)
+                await _recreate_browser_if_needed()
+                return await _run_actions_with_correlation(data["actions"], correlation_id)
+        
+        html, warns = _run(safe_execution_with_lock())
+        
+        log.info("[%s] DSL execution completed - warnings: %d", correlation_id, len(warns))
+        if warns:
+            log.warning("[%s] Warnings summary: %s", correlation_id, "; ".join(warns[:3]))
+        
         return jsonify({"html": html, "warnings": warns})
+        
     except Exception as e:
-        log.exception("execution failed")
+        log.exception("[%s] Execution failed", correlation_id)
         # VNC サーバの 500 を 200＋warnings に変換
-        error_msg = f"ERROR:auto: Server execution failed: {str(e)}"
+        error_msg = f"ERROR:auto: Server execution failed (ID:{correlation_id}): {str(e)}"
         return jsonify({"html": "", "warnings": [error_msg]})
 
 
