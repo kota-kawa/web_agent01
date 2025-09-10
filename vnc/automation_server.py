@@ -76,25 +76,25 @@ def _classify_error(error_str: str) -> tuple[str, bool]:
     """Classify error as internal/external and provide user-friendly message."""
     error_lower = error_str.lower()
     
+    # Element/interaction errors (actionable) - check first as they're most common
+    if any(x in error_lower for x in ["element not found", "locator not found", "not found"]):
+        return "要素が見つかりませんでした - セレクタを確認するか、ページの読み込みを待ってください", True
+    if any(x in error_lower for x in ["timeout", "timed out"]) and not any(x in error_lower for x in ["dns", "connection", "network"]):
+        return "操作がタイムアウトしました - ページの応答が遅い可能性があります", True
+    if any(x in error_lower for x in ["not enabled", "not visible", "not interactable"]):
+        return "要素が操作できません - 要素が無効化されているか見えない状態です", True
+    
     # Network/DNS errors (external)
-    if any(x in error_lower for x in ["dns", "connection", "timeout", "network", "err_name_not_resolved"]):
+    if any(x in error_lower for x in ["dns", "connection", "network", "err_name_not_resolved", "net::"]):
         return "ネットワークエラー - サイトに接続できません", False
     
     # HTTP errors (external)
     if "403" in error_str or "forbidden" in error_lower:
         return "アクセス拒否 - サイトがアクセスを拒否しました", False
-    if "404" in error_str or "not found" in error_lower:
+    if "404" in error_str or ("not found" in error_lower and any(x in error_lower for x in ["page", "file", "resource"])):
         return "ページが見つかりません", False
     if "500" in error_str or "internal server error" in error_lower:
         return "サイトの内部エラー", False
-    
-    # Element/interaction errors (actionable)
-    if "element not found" in error_lower or "locator not found" in error_lower:
-        return "要素が見つかりませんでした - セレクタを確認するか、ページの読み込みを待ってください", True
-    if "timeout" in error_lower:
-        return "操作がタイムアウトしました - ページの応答が遅い可能性があります", True
-    if "not enabled" in error_lower or "not visible" in error_lower:
-        return "要素が操作できません - 要素が無効化されているか見えない状態です", True
     
     # Default classification as internal
     return f"内部処理エラー - {error_str}", True
