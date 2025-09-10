@@ -241,7 +241,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
    ====================================== */
 document.getElementById("executeButton")?.addEventListener("click", () => {
   const cmd   = document.getElementById("nlCommand").value.trim();
-  const model = document.getElementById("model-select")?.value || "gemini";
+  const model = "gemini";  // デフォルトモデルを使用
   if (cmd) executeTask(cmd, model);
 });
 
