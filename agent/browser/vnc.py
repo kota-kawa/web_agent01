@@ -72,27 +72,14 @@ def eval_js(script: str):
 
 
 def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
-    """Retrieve the DOM tree using interactive buildDomTree.js script.
+    """Retrieve the DOM tree by parsing the current page HTML.
 
     Returns a tuple of (DOM tree or None, error message or None).
     """
     try:
-        # Try to get interactive DOM tree from the VNC server
-        res = requests.get(f"{VNC_API}/dom-tree", timeout=30)
-        if res.ok:
-            dom_data = res.json()
-            if isinstance(dom_data, dict) and not dom_data.get("error"):
-                return DOMElementNode.from_json(dom_data), None
-            else:
-                error_msg = dom_data.get("error", "Unknown DOM tree error") if isinstance(dom_data, dict) else "Invalid DOM data format"
-                log.warning("Interactive DOM tree failed: %s, falling back to HTML parsing", error_msg)
-        else:
-            log.warning("DOM tree endpoint failed with status %s, falling back to HTML parsing", res.status_code)
-        
-        # Fallback to HTML parsing if interactive DOM tree fails
         html = get_html()
         if not html:
-            raise ValueError("empty html and DOM tree endpoint failed")
+            raise ValueError("empty html")
         return DOMElementNode.from_html(html), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
