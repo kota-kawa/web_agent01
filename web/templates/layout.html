@@ -8,19 +8,10 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <!-- ヘッダー -->
-  <header>
-    <nav>
-      <ul>
-        <li><a href="/">ホーム</a></li>
-        <li><a href="/about">当サイトについて</a></li>
-        <li><a href="/contact">お問い合わせ</a></li>
-      </ul>
-    </nav>
-  </header>
+
 
   <!-- ===== メインコンテンツ: 左チャット + 右VNC ===== -->
-  <main style="display:flex;flex-direction:row;height:calc(100vh - 140px);">
+  <main style="display:flex;flex-direction:row;height:100vh;">
     <!-- 左側: チャット欄 -->
     <div id="chat-panel" style="width:400px;display:flex;flex-direction:column;border-right:1px solid #ddd;">
       <div id="chat-header" style="background:linear-gradient(135deg, #6a11cb, #2575fc);padding:15px;color:white;font-weight:bold;">
@@ -45,9 +36,7 @@
       <button id="stop-button">停止</button>
       <button id="pause-button">一時停止</button>
       <button id="resume-button" style="display:none;">続行</button>
-      <button id="memory-button">履歴</button>
       <button id="reset-button">リセット</button>
-      <button id="history-toggle">ログ</button>
     </div>
     <!-- ★★★ ここまで ------------------------------------------ -->
 
@@ -62,10 +51,7 @@
     <pre id="logOutput"></pre>
   </div>
 
-  <!-- フッター -->
-  <footer>
-    <p>&copy; 2025 My Website</p>
-  </footer>
+
 
   <!-- JavaScript -->
   <script>
