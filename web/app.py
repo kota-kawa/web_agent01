@@ -141,10 +141,10 @@ def forward_dsl():
         return jsonify(res_obj)
     except requests.Timeout:
         log.error("forward_dsl timeout")
-        return jsonify(error="timeout"), 504
+        return jsonify({"html": "", "warnings": ["ERROR:auto:Request timeout - The operation took too long to complete"]})
     except Exception as e:
         log.error("forward_dsl error: %s", e)
-        return jsonify(error=str(e)), 500
+        return jsonify({"html": "", "warnings": [f"ERROR:auto:Communication error - {str(e)}"]})
 
 
 @app.get("/vnc-source")
@@ -161,7 +161,7 @@ def get_screenshot():
         return Response(res.text, mimetype="text/plain")
     except Exception as e:
         log.error("get_screenshot error: %s", e)
-        return jsonify(error=str(e)), 500
+        return Response("", mimetype="text/plain")
 
 
 # --------------- UI エントリポイント ------------------------------
