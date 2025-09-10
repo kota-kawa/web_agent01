@@ -70,6 +70,20 @@ def memory():
         return jsonify(error=str(e)), 500
 
 
+# ----- Reset endpoint -----
+@app.post("/reset")
+def reset():
+    """Reset conversation history by clearing the history file"""
+    try:
+        # Clear the history by saving an empty list
+        save_hist([])
+        log.info("Conversation history reset successfully")
+        return jsonify({"status": "success", "message": "会話履歴がリセットされました"})
+    except Exception as e:
+        log.error("reset error: %s", e)
+        return jsonify(error=str(e)), 500
+
+
 # --------------- API ---------------------------------------------
 @app.post("/execute")
 def execute():
