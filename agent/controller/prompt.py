@@ -6,13 +6,11 @@ from ..browser.dom import DOMElementNode
 log = logging.getLogger("controller")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
 
-
 def _collect_interactive(node: DOMElementNode, lst: list):
     if node.highlightIndex is not None:
         lst.append(node)
     for ch in getattr(node, "children", []):
         _collect_interactive(ch, lst)
-
 
 def build_prompt(
     cmd: str,
@@ -374,6 +372,7 @@ def build_prompt(
     #"---- 操作候補要素一覧 (操作対象は番号で指定 & この一覧にない要素の操作も可能 あくまで参考) ----\n"
     #f"{elem_lines}\n"
     #print(f"DOMツリー:{dom_text}")
+    
     print(f"エラー:{error_line}")
 
     return system_prompt
