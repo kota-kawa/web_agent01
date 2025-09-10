@@ -3,7 +3,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendButton  = document.querySelector("#input-area button");
   const userInput   = document.getElementById("user-input");
   const chatArea    = document.getElementById("chat-area");
-  const modelSelect = document.getElementById("model-select");
   const memoryBtn   = document.getElementById("memory-button");
 
   if (memoryBtn) {
@@ -37,8 +36,8 @@ document.addEventListener("DOMContentLoaded", () => {
           notice.classList.add("system-message");
           notice.textContent = `未完了タスクを再開します: 「${cmd}」`;
           chatArea.appendChild(notice);
-          /* 未完了タスクをモデル設定で再開する */
-          const model = modelSelect ? modelSelect.value : "gemini";
+          /* モデル選択がないのでgeminiを使用 */
+          const model = "gemini";
           if (typeof window.executeTask === "function") {
             await window.executeTask(cmd, model);
           } else {
@@ -87,7 +86,7 @@ document.addEventListener("DOMContentLoaded", () => {
     chatArea.scrollTop = chatArea.scrollHeight;
 
     try {
-      const model = modelSelect ? modelSelect.value : "gemini";
+      const model = "gemini";  // デフォルトモデルを使用
       /* ----- マルチターン実行開始 ----- */
       if (typeof window.executeTask === "function") {
         await window.executeTask(text, model, b);

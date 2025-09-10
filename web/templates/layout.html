@@ -19,14 +19,28 @@
     </nav>
   </header>
 
-  <!-- ===== メインコンテンツ & VNC iframe ===== -->
-  <main style="display:flex;flex-direction:column;height:calc(100vh - 140px);">
-    <div id="vnc-section" style="flex:1;">
-      <!-- VNC (NoVNC) を iframe 表示 -->
+  <!-- ===== メインコンテンツ: 左チャット + 右VNC ===== -->
+  <main style="display:flex;flex-direction:row;height:calc(100vh - 140px);">
+    <!-- 左側: チャット欄 -->
+    <div id="chat-panel" style="width:400px;display:flex;flex-direction:column;border-right:1px solid #ddd;">
+      <div id="chat-header" style="background:linear-gradient(135deg, #6a11cb, #2575fc);padding:15px;color:white;font-weight:bold;">
+        <span>チャット</span>
+      </div>
+      <div id="chat-area" style="flex:1;padding:15px;overflow-y:auto;background:#f7f7f7;">
+        <p class="bot-message">こんにちは！ご質問はありますか？</p>
+      </div>
+      <div id="input-area" style="background:#f9f9f9;padding:15px;display:flex;gap:10px;align-items:center;">
+        <textarea id="user-input" rows="3" placeholder="ここに入力..." style="flex:1;border:1px solid #ddd;border-radius:8px;padding:10px;font-size:14px;resize:vertical;min-height:60px;"></textarea>
+        <button style="background:linear-gradient(135deg, #6a11cb, #2575fc);color:white;border:none;border-radius:8px;padding:10px 20px;font-weight:bold;cursor:pointer;">送信</button>
+      </div>
+    </div>
+
+    <!-- 右側: VNC iframe -->
+    <div id="vnc-section" style="flex:1;display:flex;flex-direction:column;">
       <iframe id="vnc_frame" src="{{ vnc_url }}" style="width:100%;height:100%;border:none;"></iframe>
     </div>
 
-    <!-- ★★★ 追加/変更: Pause / Resume ボタン -------------------- -->
+    <!-- ★★★ コントロールボタン -------------------- -->
     <div id="chat-controls">
       <button id="stop-button">停止</button>
       <button id="pause-button">一時停止</button>
@@ -41,27 +55,6 @@
 
     {% block content %}{% endblock %}
   </main>
-
-  <!-- ===== チャットウィンドウ（共通） ===== -->
-  <div id="draggable-window" style="position: fixed;">
-    <div id="window-header">
-      <span>チャット</span>
-      <div class="close-btn" onclick="closeWindow()">×</div>
-    </div>
-    <div id="chat-area">
-      <p class="bot-message">こんにちは！ご質問はありますか？</p>
-    </div>
-    <div id="input-area">
-      <select id="model-select" style="height:38px;">
-        <option value="gemini">Gemini</option>
-        <option value="groq">Groq</option>
-      </select>
-
-      <textarea id="user-input" rows="6" placeholder="ここに入力..."></textarea>
-      <button>送信</button>
-
-    </div>
-  </div>
 
   <div id="hidden-browser-executor" style="display:none;">
     <textarea id="nlCommand"></textarea>
