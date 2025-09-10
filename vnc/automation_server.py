@@ -116,7 +116,15 @@ async def _wait_cdp(t: int = 15) -> bool:
 async def _init_browser():
     global PW, BROWSER, PAGE
     if PAGE:
-        return
+        # Check if existing page is still valid and connected
+        try:
+            await PAGE.evaluate("() => document.title")
+            return  # Page is still valid
+        except Exception:
+            # Page connection lost, reinitialize
+            log.warning("Existing page connection lost, reinitializing browser")
+            PAGE = None
+            
     PW = await async_playwright().start()
 
     if await _wait_cdp():
@@ -145,8 +153,13 @@ async def _init_browser():
     except Exception as e:
         log.error("add_init_script failed: %s", e)
 
-    await PAGE.goto(DEFAULT_URL, wait_until="load")
-    log.info("browser ready")
+    # Ensure we navigate to a valid page if currently on about:blank
+    current_url = PAGE.url
+    if current_url == "about:blank" or not current_url:
+        await PAGE.goto(DEFAULT_URL, wait_until="load")
+        log.info("browser ready - navigated to %s", DEFAULT_URL)
+    else:
+        log.info("browser ready - current page: %s", current_url)
 
 
 # -------------------------------------------------- アクション実装
@@ -410,8 +423,14 @@ def execute_dsl():
 def source():
     try:
         _run(_init_browser())
+        # Ensure page is loaded before getting source
+        current_url = PAGE.url
+        if current_url == "about:blank" or not current_url:
+            _run(PAGE.goto(DEFAULT_URL, wait_until="load"))
+        _run(_stabilize_page())
         return Response(_run(PAGE.content()), mimetype="text/plain")
     except Exception as e:
+        log.error("source error: %s", e)
         return jsonify(error=str(e)), 500
 
 
@@ -419,9 +438,15 @@ def source():
 def screenshot():
     try:
         _run(_init_browser())
+        # Ensure page is loaded and stable before taking screenshot
+        current_url = PAGE.url
+        if current_url == "about:blank" or not current_url:
+            _run(PAGE.goto(DEFAULT_URL, wait_until="load"))
+        _run(_stabilize_page())
         img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
+        log.error("screenshot error: %s", e)
         return jsonify(error=str(e)), 500
 
 
@@ -432,6 +457,35 @@ def elements():
         data = _run(_list_elements())
         return jsonify(data)
     except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+@app.get("/dom-tree")
+def dom_tree():
+    """Execute buildDomTree.js script and return interactive DOM tree data"""
+    try:
+        _run(_init_browser())
+        
+        # Ensure page is loaded and stable before building DOM tree
+        current_url = PAGE.url
+        if current_url == "about:blank" or not current_url:
+            _run(PAGE.goto(DEFAULT_URL, wait_until="load"))
+        _run(_stabilize_page())
+        
+        # Read the buildDomTree.js script
+        script_path = os.path.join(os.path.dirname(__file__), "buildDomTree.js")
+        with open(script_path, "r", encoding="utf-8") as f:
+            dom_script = f.read()
+        
+        # Execute the script to get the DOM tree
+        dom_data = _run(PAGE.evaluate(dom_script))
+        
+        if dom_data is None:
+            return jsonify(error="DOM tree script returned null"), 500
+            
+        return jsonify(dom_data)
+    except Exception as e:
+        log.error("dom_tree error: %s", e)
         return jsonify(error=str(e)), 500
 
 
