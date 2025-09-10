@@ -11,19 +11,16 @@ const START_URL = window.START_URL || "https://www.yahoo.co.jp";
 
 // screenshot helper
 async function captureScreenshot() {
-  //const iframe = document.getElementById("vnc_frame");
-  //if (!iframe) return null;
   try {
-    //const canvas = await html2canvas(iframe, {useCORS: true});
-    //return canvas.toDataURL("image/png");
-  
-      // バックエンドの Playwright API を直接呼び出してスクリーンショットを取得
+    // バックエンドの Playwright API を直接呼び出してスクリーンショットを取得
     const response = await fetch("/screenshot");
     if (!response.ok) {
         console.error("screenshot fetch failed:", response.status, await response.text());
         return null;
     }
-    return await response.text(); // base64エンコードされたデータURIを返す
+    const screenshot = await response.text(); // data URI形式のスクリーンショットを返す
+    console.log("Screenshot captured successfully, length:", screenshot.length);
+    return screenshot;
 
   } catch (e) {
     console.error("screenshot error:", e);
