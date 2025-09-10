@@ -8,21 +8,12 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <!-- ヘッダー -->
-  <header>
-    <nav>
-      <ul>
-        <li><a href="/">ホーム</a></li>
-        <li><a href="/about">当サイトについて</a></li>
-        <li><a href="/contact">お問い合わせ</a></li>
-      </ul>
-    </nav>
-  </header>
+
 
   <!-- ===== メインコンテンツ: 左チャット + 右VNC ===== -->
-  <main style="display:flex;flex-direction:row;height:calc(100vh - 140px);">
+  <main style="display:flex;flex-direction:row;height:100vh;">
     <!-- 左側: チャット欄 -->
-    <div id="chat-panel" style="width:400px;display:flex;flex-direction:column;border-right:1px solid #ddd;">
+    <div id="chat-panel" style="width:600px;display:flex;flex-direction:column;border-right:1px solid #ddd;">
       <div id="chat-header" style="background:linear-gradient(135deg, #6a11cb, #2575fc);padding:15px;color:white;font-weight:bold;">
         <span>チャット</span>
       </div>
@@ -31,7 +22,15 @@
       </div>
       <div id="input-area" style="background:#f9f9f9;padding:15px;display:flex;gap:10px;align-items:center;">
         <textarea id="user-input" rows="3" placeholder="ここに入力..." style="flex:1;border:1px solid #ddd;border-radius:8px;padding:10px;font-size:14px;resize:vertical;min-height:60px;"></textarea>
-        <button style="background:linear-gradient(135deg, #6a11cb, #2575fc);color:white;border:none;border-radius:8px;padding:10px 20px;font-weight:bold;cursor:pointer;">送信</button>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button style="background:linear-gradient(135deg, #6a11cb, #2575fc);color:white;border:none;border-radius:8px;padding:10px 20px;font-weight:bold;cursor:pointer;">送信</button>
+          <div style="display:flex;gap:5px;">
+            <button id="stop-button" style="background:#dc3545;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">停止</button>
+            <button id="pause-button" style="background:#ffc107;color:#212529;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">一時停止</button>
+            <button id="resume-button" style="display:none;background:#28a745;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">続行</button>
+            <button id="memory-button" style="background:#6c757d;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">メモリ</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -40,18 +39,7 @@
       <iframe id="vnc_frame" src="{{ vnc_url }}" style="width:100%;height:100%;border:none;"></iframe>
     </div>
 
-    <!-- ★★★ コントロールボタン -------------------- -->
-    <div id="chat-controls">
-      <button id="stop-button">停止</button>
-      <button id="pause-button">一時停止</button>
-      <button id="resume-button" style="display:none;">続行</button>
-      <button id="memory-button">履歴</button>
-      <button id="reset-button">リセット</button>
-      <button id="history-toggle">ログ</button>
-    </div>
-    <!-- ★★★ ここまで ------------------------------------------ -->
 
-    <div id="operation-history"></div>
 
     {% block content %}{% endblock %}
   </main>
@@ -62,10 +50,7 @@
     <pre id="logOutput"></pre>
   </div>
 
-  <!-- フッター -->
-  <footer>
-    <p>&copy; 2025 My Website</p>
-  </footer>
+
 
   <!-- JavaScript -->
   <script>
