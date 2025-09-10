@@ -12,6 +12,11 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       
+      // Stop any ongoing LLM operations
+      if (typeof window.stopRequested !== 'undefined') {
+        window.stopRequested = true;
+      }
+      
       try {
         const r = await fetch("/reset", {
           method: "POST",

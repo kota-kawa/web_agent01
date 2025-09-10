@@ -6,6 +6,7 @@
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chatArea   = document.getElementById("chat-area");
 let stopRequested   = false;
+window.stopRequested = false;  // Make it globally accessible
 const START_URL = window.START_URL || "https://www.yahoo.co.jp";
 
 // screenshot helper
@@ -177,16 +178,17 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   const MAX_REP = 1;
   let lastError = null;
   stopRequested   = false;
+  window.stopRequested = false;  // Reset both local and global
   pausedRequested = false;  // 毎タスク開始時にリセット
 
   while (keepLoop && stepCount < MAX_STEPS) {
-    if (stopRequested) break;
+    if (stopRequested || window.stopRequested) break;
 
    
     if (pausedRequested) {
       showSystemMessage("⏸ タスクを一時停止中。ブラウザを手動操作できます。");
       await new Promise(res => { resumeResolver = res; });  // Resume を待つ
-      if (stopRequested) break;   // 再開前に停止された場合
+      if (stopRequested || window.stopRequested) break;   // 再開前に停止された場合
       showSystemMessage("▶ タスクを再開します。");
     }
 
@@ -219,7 +221,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
 
   const done = document.createElement("p");
   done.classList.add("system-message");
-  if (stopRequested) {
+  if (stopRequested || window.stopRequested) {
     done.textContent = "⏹ タスクを中断しました";
   } else if (stepCount >= MAX_STEPS && keepLoop) {
     done.textContent = `⏹ ステップ上限(${MAX_STEPS})に達したため終了しました`;
@@ -241,7 +243,10 @@ document.getElementById("executeButton")?.addEventListener("click", () => {
 
 const stopBtn = document.getElementById("stop-button");
 if (stopBtn) {
-  stopBtn.addEventListener("click", () => { stopRequested = true; });
+  stopBtn.addEventListener("click", () => { 
+    stopRequested = true; 
+    window.stopRequested = true; 
+  });
 }
 
 
