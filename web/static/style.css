@@ -74,9 +74,60 @@ body {
 
 
 
+/* Warning styles */
+.warnings-container {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+}
 
+.warnings-container::-webkit-scrollbar {
+    width: 6px;
+}
 
+.warnings-container::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
 
+.warnings-container::-webkit-scrollbar-thumb {
+    background: #ffc107;
+    border-radius: 3px;
+}
+
+/* Disabled button styles */
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed !important;
+    background: #6c757d !important;
+    transform: none !important;
+}
+
+/* Enhanced spinner for inline usage */
+.inline-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-left: 4px;
+}
+
+/* Progress indicator */
+.execution-progress {
+    margin: 8px 0;
+    padding: 8px 12px;
+    background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+    border-left: 4px solid #2196f3;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #1565c0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 
 
 
