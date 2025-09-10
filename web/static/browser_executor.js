@@ -5,7 +5,6 @@
    ====================================== */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chatArea   = document.getElementById("chat-area");
-const opHistory  = document.getElementById("operation-history");
 let stopRequested   = false;
 const START_URL = window.START_URL || "https://www.yahoo.co.jp";
 
@@ -101,13 +100,8 @@ function requiresApproval(acts) {
 }
 
 function appendHistory(acts) {
-  if (!opHistory) return;
-  acts.forEach(a => {
-    const div = document.createElement("div");
-    div.textContent = JSON.stringify(a);
-    opHistory.appendChild(div);
-    opHistory.scrollTop = opHistory.scrollHeight;
-  });
+  // Operation history display removed - this function is now a no-op
+  return;
 }
 
 function showSystemMessage(msg) {
@@ -255,7 +249,6 @@ if (stopBtn) {
 
 const pauseBtn  = document.getElementById("pause-button");
 const resumeBtn = document.getElementById("resume-button");
-const resetBtn  = document.getElementById("reset-button");
 
 if (pauseBtn) {
   pauseBtn.addEventListener("click", () => {
@@ -277,11 +270,6 @@ if (resumeBtn) {
     }
   });
 }
-if (resetBtn) {
-  resetBtn.addEventListener("click", async () => {
-    stopRequested = true;
-    await sendDSL([{ action: "navigate", target: START_URL }]);
-  });
-}
+
 
 window.executeTask = executeTask;
