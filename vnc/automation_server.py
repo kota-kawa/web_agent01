@@ -444,7 +444,10 @@ def screenshot():
             _run(PAGE.goto(DEFAULT_URL, wait_until="load"))
         _run(_stabilize_page())
         img = _run(PAGE.screenshot(type="png"))
-        return Response(base64.b64encode(img), mimetype="text/plain")
+        # Return as data URI for browser compatibility
+        b64_img = base64.b64encode(img).decode('utf-8')
+        data_uri = f"data:image/png;base64,{b64_img}"
+        return Response(data_uri, mimetype="text/plain")
     except Exception as e:
         log.error("screenshot error: %s", e)
         return jsonify(error=str(e)), 500
