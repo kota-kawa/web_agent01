@@ -3,21 +3,48 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendButton  = document.querySelector("#input-area button");
   const userInput   = document.getElementById("user-input");
   const chatArea    = document.getElementById("chat-area");
-  const memoryBtn   = document.getElementById("memory-button");
+  const resetBtn    = document.getElementById("reset-button");
 
-  if (memoryBtn) {
-    memoryBtn.addEventListener("click", async () => {
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      // Confirm before resetting
+      if (!confirm("会話履歴をリセットしますか？この操作は元に戻せません。")) {
+        return;
+      }
+      
       try {
-        const r = await fetch("/memory");
-        if (!r.ok) throw new Error("memory fetch failed");
-        const hist = await r.json();
-        const pre = document.createElement("pre");
-        pre.classList.add("system-message");
-        pre.textContent = JSON.stringify(hist, null, 2);
-        chatArea.appendChild(pre);
+        const r = await fetch("/reset", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+        
+        if (!r.ok) throw new Error("reset request failed");
+        
+        const response = await r.json();
+        
+        // Clear the chat area and show initial message
+        chatArea.innerHTML = '<p class="bot-message">こんにちは！ご質問はありますか？</p>';
+        
+        // Show success message
+        const successMsg = document.createElement("p");
+        successMsg.classList.add("system-message");
+        successMsg.textContent = response.message || "会話履歴がリセットされました";
+        successMsg.style.color = "#28a745";
+        chatArea.appendChild(successMsg);
+        
         chatArea.scrollTop = chatArea.scrollHeight;
       } catch (e) {
-        console.error("memory fetch error:", e);
+        console.error("reset error:", e);
+        
+        // Show error message
+        const errorMsg = document.createElement("p");
+        errorMsg.classList.add("system-message");
+        errorMsg.textContent = "リセットに失敗しました: " + e.message;
+        errorMsg.style.color = "#dc3545";
+        chatArea.appendChild(errorMsg);
+        chatArea.scrollTop = chatArea.scrollHeight;
       }
     });
   }
