@@ -6,8 +6,10 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 
 import httpx
@@ -22,14 +24,17 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("auto")
 
+# 環境変数で調整可能な設定値
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
-MAX_RETRIES = 3
+NAVIGATE_TIMEOUT = int(os.getenv("NAVIGATE_TIMEOUT", "15000"))  # ms  ナビゲーション専用タイムアウト（延長）
+LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "7000"))  # ms  セレクタ待機タイムアウト（3s→7s）
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(
-    os.getenv("SPA_STABILIZE_TIMEOUT", "2000")
-)  # ms  SPA描画安定待ち
+    os.getenv("SPA_STABILIZE_TIMEOUT", "3000")  # ms  SPA描画安定待ち（2s→3s）
+)
 
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
@@ -85,6 +90,22 @@ def _validate(data: Dict) -> None:
     errs = sorted(validator.iter_errors(data), key=lambda e: e.path)
     if errs:
         raise ValidationError("; ".join(err.msg for err in errs))
+
+
+def _validate_url(url: str) -> bool:
+    """URL 形式の検証"""
+    if not url or not url.strip():
+        return False
+    try:
+        result = urlparse(url.strip())
+        return all([result.scheme, result.netloc]) and result.scheme in ('http', 'https')
+    except Exception:
+        return False
+
+
+def _validate_selector(selector: str) -> bool:
+    """セレクタが空でないことを検証"""
+    return bool(selector and selector.strip())
 
 
 # -------------------------------------------------- Playwright 管理
@@ -152,9 +173,22 @@ async def _init_browser():
 # -------------------------------------------------- アクション実装
 async def _prepare_element(loc):
     """Ensure the element is visible, enabled and ready for interaction."""
+    # 操作直前にも短い再確認
+    count = await loc.count()
+    if count == 0:
+        raise Exception("element not found during preparation")
+    
     await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
     await loc.first.scroll_into_view_if_needed(timeout=ACTION_TIMEOUT)
     await loc.first.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+    
+    # focus と hover を事前に実行してより確実な操作に
+    try:
+        await loc.first.focus(timeout=ACTION_TIMEOUT//2)
+        await loc.first.hover(timeout=ACTION_TIMEOUT//2)
+    except Exception as e:
+        log.warning("Element focus/hover preparation failed: %s", e)
+    
     if not await loc.first.is_enabled():
         raise Exception("element not enabled")
 
@@ -165,35 +199,59 @@ async def _safe_click(l, force=False):
         await l.first.click(timeout=ACTION_TIMEOUT, force=force)
     except Exception as e:
         if not force:
-            log.error("click retry with force due to: %s", e)
-            await l.first.click(timeout=ACTION_TIMEOUT, force=True)
+            log.warning("click retry with force due to: %s", e)
+            try:
+                await l.first.click(timeout=ACTION_TIMEOUT, force=True)
+            except Exception as e2:
+                # セーフ操作を強化してもダメな場合の詳細ログ
+                raise Exception(f"Click failed even with force=True: {str(e2)}. Original error: {str(e)}")
         else:
             raise
 
 
 async def _safe_fill(l, val: str):
+    # 長文は分割入力を検討
+    if len(val) > 1000:
+        warning_msg = f"WARNING: Large text input ({len(val)} chars) may be slow. Consider splitting or using setValue alternative."
+        WARNINGS.append(warning_msg)
+        log.warning(warning_msg)
+    
     try:
         await _prepare_element(l)
         await l.first.fill(val, timeout=ACTION_TIMEOUT)
     except Exception as e:
-        log.error("fill retry due to: %s", e)
-        await _safe_click(l)
-        await l.first.fill(val, timeout=ACTION_TIMEOUT)
+        log.warning("fill retry with click focus due to: %s", e)
+        try:
+            await _safe_click(l)
+            await l.first.fill(val, timeout=ACTION_TIMEOUT)
+        except Exception as e2:
+            # setValue 代替を提案
+            raise Exception(f"Fill failed even after click: {str(e2)}. Consider using eval_js setValue for editors. Original error: {str(e)}")
 
 
 async def _safe_hover(l):
-    await _prepare_element(l)
-    await l.first.hover(timeout=ACTION_TIMEOUT)
+    try:
+        await _prepare_element(l)
+        await l.first.hover(timeout=ACTION_TIMEOUT)
+    except Exception as e:
+        # hover失敗は比較的軽微なので詳細ログ
+        raise Exception(f"Hover failed: {str(e)}")
 
 
 async def _safe_select(l, val: str):
-    await _prepare_element(l)
-    await l.first.select_option(val, timeout=ACTION_TIMEOUT)
+    try:
+        await _prepare_element(l)
+        await l.first.select_option(val, timeout=ACTION_TIMEOUT)
+    except Exception as e:
+        raise Exception(f"Select option failed for value '{val}': {str(e)}")
 
 
 async def _safe_press(l, key: str):
-    await _prepare_element(l)
-    await l.first.press(key, timeout=ACTION_TIMEOUT)
+    try:
+        await _prepare_element(l)
+        await l.first.press(key, timeout=ACTION_TIMEOUT)
+    except Exception as e:
+        raise Exception(f"Press key '{key}' failed: {str(e)}")
 
 
 async def _list_elements(limit: int = 50) -> List[Dict]:
@@ -292,19 +350,39 @@ async def _apply(act: Dict):
 
     # -- navigate / wait / scroll はロケータ不要
     if a == "navigate":
-        await PAGE.goto(tgt, wait_until="load", timeout=ACTION_TIMEOUT)
+        # URL の検証
+        if not _validate_url(tgt):
+            warning_msg = f"WARNING: Navigate action skipped - invalid or empty URL: '{tgt}'"
+            WARNINGS.append(warning_msg)
+            log.warning(warning_msg)
+            return
+        await PAGE.goto(tgt, wait_until="load", timeout=NAVIGATE_TIMEOUT)
         return
     if a == "go_back":
-        await PAGE.go_back(wait_until="load")
+        await PAGE.go_back(wait_until="load", timeout=NAVIGATE_TIMEOUT)
         return
     if a == "go_forward":
-        await PAGE.go_forward(wait_until="load")
+        await PAGE.go_forward(wait_until="load", timeout=NAVIGATE_TIMEOUT)
         return
     if a == "wait":
         await PAGE.wait_for_timeout(ms)
         return
     if a == "wait_for_selector":
-        await PAGE.wait_for_selector(tgt, state="visible", timeout=ms)
+        # セレクタの検証
+        if not _validate_selector(tgt):
+            warning_msg = f"WARNING: wait_for_selector action skipped - empty selector"
+            WARNINGS.append(warning_msg)
+            log.warning(warning_msg)
+            return
+        # タイムアウトが指定されていない場合は既定値を使用
+        timeout = ms if ms > 0 else LOCATOR_TIMEOUT
+        try:
+            await PAGE.wait_for_selector(tgt, state="visible", timeout=timeout)
+        except Exception as e:
+            # wait_for_selector 失敗は warnings 化し、次手に回す
+            warning_msg = f"WARNING: wait_for_selector failed - selector '{tgt}' not found within {timeout}ms: {str(e)}"
+            WARNINGS.append(warning_msg)
+            log.warning(warning_msg)
         return
     if a == "scroll":
         offset = amt if dir_ == "down" else -amt
@@ -320,7 +398,10 @@ async def _apply(act: Dict):
                 result = await PAGE.evaluate(script)
                 EVAL_RESULTS.append(result)
             except Exception as e:
-                log.error("eval_js error: %s", e)
+                # eval_js 失敗は例外にせず常に warnings 化
+                warning_msg = f"WARNING: eval_js failed - {str(e)}. Consider using alternative methods like click or type."
+                WARNINGS.append(warning_msg)
+                log.warning(warning_msg)
         return
 
     # -- ロケータ系
@@ -354,7 +435,17 @@ async def _apply(act: Dict):
     elif a == "press_key":
         key = act.get("key", "")
         if key:
-            await _safe_press(loc, key)
+            if loc:
+                await _safe_press(loc, key)
+            else:
+                # 対象未指定は ページ全体への keypress にフォールバック
+                try:
+                    await PAGE.keyboard.press(key)
+                    log.info("press_key executed on page level for key: %s", key)
+                except Exception as e:
+                    warning_msg = f"WARNING: press_key failed on page level - {str(e)}"
+                    WARNINGS.append(warning_msg)
+                    log.warning(warning_msg)
     elif a == "extract_text":
         attr = act.get("attr")
         if attr:
@@ -370,16 +461,26 @@ async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
         # DOM の更新が落ち着くまで待ってから次のアクションを実行する
         await _stabilize_page()
         retries = int(act.get("retry", MAX_RETRIES))
+        action_failed = False
+        
         for attempt in range(1, retries + 1):
             try:
                 await _apply(act)
                 # アクション実行後も DOM 安定化を待つ
                 await _stabilize_page()
+                action_failed = False
                 break
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
                 if attempt == retries:
-                    raise
+                    # 最終リトライ失敗でも例外にせず、warnings に ERROR を格納
+                    error_msg = f"ERROR:auto: Action '{act.get('action', 'unknown')}' failed after {retries} retries: {str(e)}"
+                    WARNINGS.append(error_msg)
+                    action_failed = True
+                    log.warning("Final retry failed, added to warnings: %s", error_msg)
+                
+        # アクション失敗時は次のアクションも実行を続ける（論理エラーとして扱う）
+    
     return await PAGE.content(), WARNINGS.copy()
 
 
@@ -403,7 +504,9 @@ def execute_dsl():
         return jsonify({"html": html, "warnings": warns})
     except Exception as e:
         log.exception("execution failed")
-        return jsonify(error="ExecutionError", message=str(e)), 500
+        # VNC サーバの 500 を 200＋warnings に変換
+        error_msg = f"ERROR:auto: Server execution failed: {str(e)}"
+        return jsonify({"html": "", "warnings": [error_msg]})
 
 
 @app.get("/source")
@@ -412,7 +515,9 @@ def source():
         _run(_init_browser())
         return Response(_run(PAGE.content()), mimetype="text/plain")
     except Exception as e:
-        return jsonify(error=str(e)), 500
+        log.exception("source endpoint failed")
+        # 500 を 200＋エラー内容に変換
+        return Response(f"ERROR: Failed to get page source: {str(e)}", mimetype="text/plain")
 
 
 @app.get("/screenshot")
@@ -422,7 +527,10 @@ def screenshot():
         img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
-        return jsonify(error=str(e)), 500
+        log.exception("screenshot endpoint failed")
+        # スクリーンショット失敗時も 200 で空画像またはエラーメッセージを返す
+        error_msg = f"ERROR: Failed to capture screenshot: {str(e)}"
+        return Response(error_msg, mimetype="text/plain")
 
 
 @app.get("/elements")
@@ -432,7 +540,9 @@ def elements():
         data = _run(_list_elements())
         return jsonify(data)
     except Exception as e:
-        return jsonify(error=str(e)), 500
+        log.exception("elements endpoint failed")
+        # 要素リスト取得失敗時も 200 で空配列とエラー情報を返す
+        return jsonify({"error": f"Failed to list elements: {str(e)}", "elements": []})
 
 
 @app.get("/extracted")

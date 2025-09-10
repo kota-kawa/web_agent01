@@ -69,7 +69,36 @@ async function sendDSL(acts) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ actions: acts })
     });
-    if (!r.ok) {
+    
+    // HTTP 200 で warnings 方式への対応（500 エラーは発生しないはず）
+    if (r.ok) {
+      appendHistory(acts);
+      const j = await r.json();
+      let err = null;
+      
+      if (j.warnings && j.warnings.length) {
+        // warnings を用途別に分類して表示
+        const errors = j.warnings.filter(w => w.startsWith("ERROR:"));
+        const warnings = j.warnings.filter(w => w.startsWith("WARNING:"));
+        
+        if (errors.length) {
+          // エラーはユーザー向けメッセージに変換
+          const userFriendlyErrors = errors.map(e => convertToUserFriendlyMessage(e));
+          err = userFriendlyErrors.join("\n");
+          showSystemMessage(`操作エラー: ${userFriendlyErrors.join("; ")}`);
+        }
+        
+        if (warnings.length) {
+          // 警告は詳細表示
+          const userFriendlyWarnings = warnings.map(w => convertToUserFriendlyMessage(w));
+          showSystemMessage(`⚠ 操作上の注意: ${userFriendlyWarnings.join("; ")}`);
+          if (!err) err = userFriendlyWarnings.join("\n");
+        }
+      }
+      
+      return { html: j.html || "", error: err };
+    } else {
+      // 旧来の 400/500 エラーハンドリング（後方互換性のため残す）
       let msg = "";
       try {
         const j = await r.json();
@@ -78,19 +107,43 @@ async function sendDSL(acts) {
         msg = await r.text();
       }
       console.error("execute-dsl failed:", r.status, msg);
-      showSystemMessage(`DSL 実行エラー: ${msg || r.status}`);
+      showSystemMessage(`通信エラー: ${convertToUserFriendlyMessage(msg) || r.status}`);
       return { html: "", error: msg || `status ${r.status}` };
-    } else {
-      appendHistory(acts);
-      const j = await r.json();
-      const err = j.warnings && j.warnings.length ? j.warnings.join("\n") : null;
-      return { html: j.html || "", error: err };
     }
   } catch (e) {
     console.error("execute-dsl fetch error:", e);
     showSystemMessage(`通信エラー: ${e}`);
     return { html: "", error: String(e) };
   }
+}
+
+// 技術的なエラーメッセージをユーザー向けに変換
+function convertToUserFriendlyMessage(message) {
+  if (!message) return message;
+  
+  // ERROR: や WARNING: プレフィクスを除去
+  let msg = message.replace(/^(ERROR|WARNING):[^:]*:\s*/, "");
+  
+  // 技術的文言をユーザー向けに変換
+  const conversions = {
+    "Timeout": "応答時間切れ",
+    "locator not found": "要素が見つかりませんでした",
+    "element not enabled": "要素が操作できない状態です",
+    "element not found": "要素が見つかりませんでした",
+    "Navigation failed": "ページの移動に失敗しました",
+    "invalid or empty URL": "URLが無効または空です",
+    "selector.*not found": "指定された要素が見つかりませんでした",
+    "Click failed": "クリック操作が失敗しました",
+    "Fill failed": "テキスト入力が失敗しました",
+    "Network error": "ネットワークエラーが発生しました",
+    "Server execution failed": "サーバー処理でエラーが発生しました"
+  };
+  
+  for (const [pattern, replacement] of Object.entries(conversions)) {
+    msg = msg.replace(new RegExp(pattern, 'gi'), replacement);
+  }
+  
+  return msg;
 }
 
 function requiresApproval(acts) {
