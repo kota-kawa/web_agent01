@@ -196,7 +196,7 @@ def get_screenshot():
 def outer():
     return render_template(
         "layout.html",
-        vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901",
+        vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901&resize=scale",
         start_url=START_URL,
         max_steps=MAX_STEPS,
     )
