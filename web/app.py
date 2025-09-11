@@ -29,6 +29,33 @@ app = Flask(__name__)
 log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
 
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    """Global error handler to convert 500 errors to JSON warnings."""
+    import uuid
+    correlation_id = str(uuid.uuid4())[:8]
+    error_msg = f"Internal server error - {str(error)}"
+    log.exception("[%s] Unhandled exception: %s", correlation_id, error_msg)
+    
+    return jsonify({
+        "error": f"Internal failure - An unexpected error occurred",
+        "correlation_id": correlation_id
+    }), 200  # Return 200 instead of 500
+
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Global exception handler to catch all uncaught exceptions."""
+    import uuid
+    correlation_id = str(uuid.uuid4())[:8]
+    log.exception("[%s] Uncaught exception: %s", correlation_id, str(error))
+    
+    return jsonify({
+        "error": f"Internal failure - {str(error)}",
+        "correlation_id": correlation_id
+    }), 200  # Return 200 instead of 500
+
 # --------------- VNC / Playwright API ----------------------------
 VNC_API = "http://vnc:7000"  # Playwright 側の API
 START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp")

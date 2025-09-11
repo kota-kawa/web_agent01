@@ -25,6 +25,33 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("auto")
 
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    """Global error handler to convert 500 errors to JSON warnings."""
+    correlation_id = str(uuid.uuid4())[:8]
+    error_msg = f"Internal server error - {str(error)}"
+    log.exception("[%s] Unhandled exception: %s", correlation_id, error_msg)
+    
+    return jsonify({
+        "html": "", 
+        "warnings": [f"ERROR:auto:[{correlation_id}] Internal failure - An unexpected error occurred"],
+        "correlation_id": correlation_id
+    }), 200  # Return 200 instead of 500
+
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Global exception handler to catch all uncaught exceptions."""
+    correlation_id = str(uuid.uuid4())[:8]
+    log.exception("[%s] Uncaught exception: %s", correlation_id, str(error))
+    
+    return jsonify({
+        "html": "",
+        "warnings": [f"ERROR:auto:[{correlation_id}] Internal failure - {str(error)}"],
+        "correlation_id": correlation_id
+    }), 200  # Return 200 instead of 500
+
 # Configurable timeouts and retry settings
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
 NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "30000"))  # ms  ナビゲーション専用
@@ -236,6 +263,32 @@ SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "true").lower() == "tru
 
 # Browser context management
 USE_INCOGNITO_CONTEXT = os.getenv("USE_INCOGNITO_CONTEXT", "false").lower() == "true"
+BROWSER_REFRESH_INTERVAL = int(os.getenv("BROWSER_REFRESH_INTERVAL", "50"))  # Refresh after N DSL executions
+_DSL_EXECUTION_COUNT = 0
+
+
+async def _check_and_refresh_browser(correlation_id: str = "") -> bool:
+    """Check if browser should be refreshed and do it if needed."""
+    global _DSL_EXECUTION_COUNT
+    
+    _DSL_EXECUTION_COUNT += 1
+    
+    if _DSL_EXECUTION_COUNT >= BROWSER_REFRESH_INTERVAL:
+        log.info("[%s] Periodic browser refresh triggered after %d executions", 
+                correlation_id, _DSL_EXECUTION_COUNT)
+        
+        try:
+            await _recreate_browser()
+            _DSL_EXECUTION_COUNT = 0  # Reset counter
+            log.info("[%s] Browser refreshed successfully", correlation_id)
+            return True
+        except Exception as e:
+            log.error("[%s] Browser refresh failed: %s", correlation_id, str(e))
+            # Reset counter anyway to avoid getting stuck
+            _DSL_EXECUTION_COUNT = 0
+            return False
+    
+    return False
 
 
 async def _create_clean_context():
@@ -568,6 +621,32 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
     return els
 
 
+async def _wait_for_page_ready(timeout: int = 3000) -> List[str]:
+    """Automatically wait for page elements to be ready after navigation."""
+    warnings = []
+    
+    # Common selectors to wait for after navigation
+    common_selectors = [
+        "body",  # Basic body element
+        "main, [role=main], #main, .main",  # Main content area
+        "nav, [role=navigation], #nav, .nav",  # Navigation
+        "header, [role=banner], #header, .header",  # Header
+        "footer, [role=contentinfo], #footer, .footer",  # Footer
+    ]
+    
+    for selector in common_selectors:
+        try:
+            await PAGE.wait_for_selector(selector, state="visible", timeout=timeout)
+            log.debug(f"Found ready element: {selector}")
+            break  # Found one, good enough
+        except Exception:
+            continue  # Try next selector
+    
+    # Additional wait for dynamic content to stabilize
+    await _stabilize_page()
+    return warnings
+
+
 async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
     """Wait until DOM mutations stop for a short period."""
     script = """
@@ -653,8 +732,8 @@ async def _stabilize_page():
     await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
 
 
-async def _apply(act: Dict) -> List[str]:
-    """Execute a single action and return warnings instead of raising exceptions."""
+async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
+    """Execute a single action. Raises exceptions for retryable errors unless is_final_retry=True."""
     global PAGE
     action_warnings = []
     
@@ -683,21 +762,36 @@ async def _apply(act: Dict) -> List[str]:
             timeout = NAVIGATION_TIMEOUT if ms == 0 else ms
             try:
                 await PAGE.goto(tgt, wait_until="load", timeout=timeout)
-                # Enhanced post-navigation stabilization
+                # Enhanced post-navigation stabilization with automatic wait
                 await _stabilize_page()
+                wait_warnings = await _wait_for_page_ready()
+                action_warnings.extend(wait_warnings)
             except Exception as e:
+                error_msg = f"Navigation failed - {str(e)}"
                 friendly_msg, is_internal = _classify_error(str(e))
-                action_warnings.append(f"WARNING:auto:Navigation failed - {friendly_msg}")
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{friendly_msg}")
+                else:
+                    # Not final retry, raise exception to trigger retry for internal errors
+                    if is_internal:
+                        raise Exception(error_msg)
+                    else:
+                        # External error, don't retry
+                        action_warnings.append(f"WARNING:auto:{friendly_msg}")
             return action_warnings
             
         if a == "go_back":
             await PAGE.go_back(wait_until="load", timeout=NAVIGATION_TIMEOUT)
             await _stabilize_page()
+            wait_warnings = await _wait_for_page_ready()
+            action_warnings.extend(wait_warnings)
             return action_warnings
             
         if a == "go_forward":
             await PAGE.go_forward(wait_until="load", timeout=NAVIGATION_TIMEOUT)
             await _stabilize_page()
+            wait_warnings = await _wait_for_page_ready()
+            action_warnings.extend(wait_warnings)
             return action_warnings
             
         if a == "wait":
@@ -713,7 +807,12 @@ async def _apply(act: Dict) -> List[str]:
             try:
                 await PAGE.wait_for_selector(tgt, state="visible", timeout=timeout)
             except Exception as e:
-                action_warnings.append(f"WARNING:auto:wait_for_selector failed for '{tgt}' - {str(e)}")
+                error_msg = f"wait_for_selector failed for '{tgt}' - {str(e)}"
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{error_msg}")
+                else:
+                    # Not final retry, raise exception to trigger retry
+                    raise Exception(error_msg)
             return action_warnings
             
         if a == "scroll":
@@ -760,8 +859,14 @@ async def _apply(act: Dict) -> List[str]:
                     action_warnings.append(f"WARNING:auto:Locator search failed for '{tgt}' - {str(e)}")
 
         if loc is None:
-            action_warnings.append(f"WARNING:auto:Element not found: {tgt}. Consider using alternative selectors or text matching.")
-            return action_warnings
+            error_msg = f"Element not found: {tgt}. Consider using alternative selectors or text matching."
+            if is_final_retry:
+                # On final retry, add warning and continue
+                action_warnings.append(f"WARNING:auto:{error_msg}")
+                return action_warnings
+            else:
+                # Not final retry, raise exception to trigger retry
+                raise Exception(error_msg)
 
         # Execute the action with enhanced error handling
         try:
@@ -820,7 +925,8 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
         
         for attempt in range(1, retries + 1):
             try:
-                action_warnings = await _apply(act)
+                is_final_retry = (attempt == retries)
+                action_warnings = await _apply(act, is_final_retry)
                 all_warnings.extend(action_warnings)
                 action_executed = True
                 
@@ -833,11 +939,17 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                 log.error("[%s] %s", correlation_id, error_msg)
                 
                 if attempt == retries:
-                    # Final retry failure - add to warnings instead of raising exception
-                    friendly_msg, is_internal = _classify_error(str(e))
-                    all_warnings.append(f"ERROR:auto:[{correlation_id}] {friendly_msg}")
+                    # Final retry failure - try once more with is_final_retry=True to get warnings
+                    try:
+                        action_warnings = await _apply(act, is_final_retry=True)
+                        all_warnings.extend(action_warnings)
+                    except Exception as final_e:
+                        # If even final retry with warnings fails, add error message
+                        friendly_msg, is_internal = _classify_error(str(final_e))
+                        all_warnings.append(f"ERROR:auto:[{correlation_id}] {friendly_msg}")
                     
                     # Save debug artifacts for critical failures
+                    friendly_msg, is_internal = _classify_error(str(e))
                     if is_internal and SAVE_DEBUG_ARTIFACTS:
                         debug_info = await _save_debug_artifacts(f"{correlation_id}_action_{i+1}", error_msg)
                         if debug_info:
@@ -920,6 +1032,11 @@ def execute_dsl():
             
         html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
         warnings.extend(action_warns)
+        
+        # Check if periodic browser refresh is needed
+        refresh_done = _run(_check_and_refresh_browser(correlation_id))
+        if refresh_done:
+            warnings.append(f"INFO:auto:[{correlation_id}] Browser context refreshed for stability")
         
         return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
         
