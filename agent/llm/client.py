@@ -84,12 +84,19 @@ def _post_process(raw: str) -> Dict:
         else:
             acts.append(_normalize_action(act))
 
-    return {
+    # Build base response
+    result = {
         "explanation": expl,
         "actions": acts,
         #"raw": raw,
         "complete": js.get("complete", True),
     }
+    
+    # Add memory field if provided by LLM (optional)
+    if "memory" in js and js["memory"]:
+        result["memory"] = js["memory"]
+    
+    return result
 
 
 def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
