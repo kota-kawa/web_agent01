@@ -882,12 +882,46 @@ async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> s
 # SPA 安定化関数 ----------------------------------------
 async def _stabilize_page():
     """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
+    if not PAGE:
+        return
+        
     try:
-        # ネットワーク要求が終わるまで待機
+        # Enhanced stability checks for better dynamic content handling
+        
+        # 1. Wait for network to be idle
         await PAGE.wait_for_load_state("networkidle", timeout=SPA_STABILIZE_TIMEOUT)
+        
+        # 2. Wait for DOM mutations to stabilize
+        await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
+        
+        # 3. Additional wait for common dynamic loading indicators to disappear
+        await _wait_for_loading_indicators_to_disappear()
+        
     except Exception:
-        pass
-    await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
+        # Fallback to basic timeout if advanced waiting fails
+        await PAGE.wait_for_timeout(min(500, SPA_STABILIZE_TIMEOUT // 2))
+
+
+async def _wait_for_loading_indicators_to_disappear(timeout: int = 3000):
+    """Wait for common loading indicators to disappear."""
+    if not PAGE:
+        return
+        
+    # Common loading indicator selectors
+    loading_selectors = [
+        ".loading, .spinner, .loader",
+        "[data-testid*='loading'], [data-testid*='spinner']",
+        ".fa-spinner, .fa-circle-notch, .fa-refresh",
+        "[role='status'][aria-live]",
+        ".MuiCircularProgress-root, .ant-spin"
+    ]
+    
+    for selector in loading_selectors:
+        try:
+            # Wait for loading indicators to be hidden (if they exist)
+            await PAGE.wait_for_selector(selector, state="hidden", timeout=timeout)
+        except Exception:
+            continue  # Loading indicator may not exist, which is fine
 
 
 async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
@@ -905,6 +939,19 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
     dir_ = act.get("direction", "down")
 
     try:
+        # Check if PAGE is available for actions that need it
+        page_required_actions = ["navigate", "go_back", "go_forward", "wait", "wait_for_selector", 
+                                "scroll", "eval_js", "click", "click_text", "type", "hover", 
+                                "select_option", "press_key", "extract_text"]
+        
+        if a in page_required_actions and PAGE is None:
+            error_msg = f"Browser not initialized - cannot execute {a} action"
+            if is_final_retry:
+                action_warnings.append(f"WARNING:auto:{error_msg}")
+                return action_warnings
+            else:
+                raise Exception(error_msg)
+
         # -- navigate / wait / scroll はロケータ不要
         if a == "navigate":
             if not _validate_url(tgt):
@@ -999,6 +1046,15 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
             return action_warnings
 
+        # Check if PAGE is available before proceeding
+        if PAGE is None:
+            error_msg = f"Browser not initialized - cannot execute {a} action"
+            if is_final_retry:
+                action_warnings.append(f"WARNING:auto:{error_msg}")
+                return action_warnings
+            else:
+                raise Exception(error_msg)
+
         loc: Optional = None
         for attempt in range(LOCATOR_RETRIES):
             try:
@@ -1073,6 +1129,8 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
 
     except Exception as e:
         action_warnings.append(f"WARNING:auto:Action '{a}' failed - {str(e)}")
+    
+    return action_warnings
 
 
 def _get_action_guidance(action: str, target: str, error_msg: str) -> str:
@@ -1108,8 +1166,6 @@ def _get_basic_guidance(action: str, error_msg: str) -> str:
         return "This appears to be a network issue - consider retrying the operation."
     else:
         return "Consider using alternative approaches or waiting for page to stabilize."
-    
-    return action_warnings
 
 
 async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
