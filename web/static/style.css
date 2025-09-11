@@ -10,6 +10,9 @@ body {
 #chat-panel {
     background: #fff;
     box-shadow: 2px 0px 8px rgba(0, 0, 0, 0.1);
+    /* Responsive width - default 600px for larger screens */
+    width: 600px;
+    min-width: 300px; /* Ensure chat remains usable */
 }
 
 #chat-area {
@@ -127,6 +130,43 @@ button:disabled {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+/* Responsive breakpoints for chat panel */
+@media (max-width: 1200px) {
+    #chat-panel {
+        width: 400px;
+    }
+}
+
+@media (max-width: 900px) {
+    #chat-panel {
+        width: 350px;
+    }
+}
+
+@media (max-width: 768px) {
+    #chat-panel {
+        width: 300px;
+    }
+}
+
+@media (max-width: 600px) {
+    /* Stack layout for very small screens */
+    main {
+        flex-direction: column !important;
+    }
+    
+    #chat-panel {
+        width: 100% !important;
+        height: 40vh;
+        border-right: none !important;
+        border-bottom: 1px solid #ddd;
+    }
+    
+    #vnc-section {
+        height: 60vh;
+    }
 }
 
 
