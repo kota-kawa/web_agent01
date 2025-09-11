@@ -44,6 +44,18 @@ def internal_server_error(error):
     }), 200  # Return 200 instead of 500
 
 
+@app.errorhandler(404)
+def not_found_error(error):
+    """Handle 404 errors without logging a full exception."""
+    import uuid
+    correlation_id = str(uuid.uuid4())[:8]
+    # Avoid noisy stack traces for missing routes
+    return jsonify({
+        "error": f"Resource not found - {request.path}",
+        "correlation_id": correlation_id
+    }), 200
+
+
 @app.errorhandler(Exception)
 def handle_exception(error):
     """Global exception handler to catch all uncaught exceptions."""
