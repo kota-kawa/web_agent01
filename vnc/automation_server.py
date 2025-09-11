@@ -869,19 +869,22 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 raise Exception(error_msg)
 
         # Execute the action with enhanced error handling
+        # Determine timeout for this specific action
+        action_timeout = ACTION_TIMEOUT if ms == 0 else ms
+        
         try:
             if a in ("click", "click_text"):
-                await _safe_click(loc)
+                await _safe_click(loc, timeout=action_timeout)
             elif a == "type":
-                await _safe_fill(loc, val)
+                await _safe_fill(loc, val, timeout=action_timeout)
             elif a == "hover":
-                await _safe_hover(loc)
+                await _safe_hover(loc, timeout=action_timeout)
             elif a == "select_option":
-                await _safe_select(loc, val)
+                await _safe_select(loc, val, timeout=action_timeout)
             elif a == "press_key":
                 key = act.get("key", "")
                 if key:
-                    await _safe_press(loc, key)
+                    await _safe_press(loc, key, timeout=action_timeout)
                 else:
                     # Fallback to page-level keypress
                     if key:

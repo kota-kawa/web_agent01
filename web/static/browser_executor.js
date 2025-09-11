@@ -53,7 +53,23 @@ function normalizeActions(instr) {
 }
 
 /* ======================================
-   Send DSL to Playwright server
+   Health check and retry utilities
+   ====================================== */
+async function checkServerHealth() {
+  try {
+    const response = await fetch("/automation/healthz", {
+      method: "GET",
+      timeout: 5000
+    });
+    return response.ok;
+  } catch (e) {
+    console.warn("Health check failed:", e);
+    return false;
+  }
+}
+
+/* ======================================
+   Send DSL to Playwright server with retry logic
    ====================================== */
 async function sendDSL(acts) {
   if (!acts.length) return { html: "", error: null, warnings: [] };
@@ -65,50 +81,108 @@ async function sendDSL(acts) {
     }
   }
   
-  try {
-    const r = await fetch("/automation/execute-dsl", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actions: acts })
-    });
+  const maxRetries = 2; // Allow 1 retry attempt
+  let lastError = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Check server health before critical operations (on retries)
+    if (attempt > 1) {
+      console.log(`DSL retry attempt ${attempt}/${maxRetries}, checking server health...`);
+      const isHealthy = await checkServerHealth();
+      if (!isHealthy) {
+        console.warn("Server health check failed, proceeding with caution...");
+        showSystemMessage("サーバーの状態を確認中です...");
+        await sleep(2000); // Wait 2 seconds for server recovery
+      }
+    }
     
-    const responseData = await r.json();
-    
-    if (!r.ok) {
-      // Handle error responses that now come as 200 + warnings
-      const errorMsg = responseData.message || responseData.error || "Unknown error";
-      console.error("execute-dsl failed:", r.status, errorMsg);
-      showSystemMessage(`DSL 実行エラー: ${errorMsg}`);
-      return { 
-        html: responseData.html || "", 
-        error: errorMsg, 
-        warnings: responseData.warnings || [],
-        correlation_id: responseData.correlation_id 
-      };
-    } else {
-      appendHistory(acts);
+    try {
+      const r = await fetch("/automation/execute-dsl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actions: acts })
+      });
       
-      // Display warnings prominently if present
-      if (responseData.warnings && responseData.warnings.length > 0) {
-        displayWarnings(responseData.warnings, responseData.correlation_id);
+      const responseData = await r.json();
+      
+      if (!r.ok) {
+        // Handle error responses that now come as 200 + warnings
+        const errorMsg = responseData.message || responseData.error || "Unknown error";
+        console.error("execute-dsl failed:", r.status, errorMsg);
+        
+        // Check if this is a retryable error (500 errors)
+        if (r.status === 500 && attempt < maxRetries) {
+          lastError = { status: r.status, message: errorMsg, data: responseData };
+          console.log(`Server error (${r.status}), will retry after delay...`);
+          showSystemMessage(`サーバーエラーが発生しました。${maxRetries - attempt}回再試行します...`);
+          await sleep(1000 * attempt); // Exponential backoff: 1s, 2s
+          continue;
+        }
+        
+        showSystemMessage(`DSL 実行エラー: ${errorMsg}`);
+        return { 
+          html: responseData.html || "", 
+          error: errorMsg, 
+          warnings: responseData.warnings || [],
+          correlation_id: responseData.correlation_id 
+        };
+      } else {
+        // Success - clear any retry messages
+        if (attempt > 1) {
+          showSystemMessage("再試行が成功しました");
+        }
+        
+        appendHistory(acts);
+        
+        // Display warnings prominently if present
+        if (responseData.warnings && responseData.warnings.length > 0) {
+          displayWarnings(responseData.warnings, responseData.correlation_id);
+        }
+        
+        const errorText = responseData.warnings && responseData.warnings.length > 0 
+          ? responseData.warnings.filter(w => w.startsWith("ERROR:")).join("\n") || null
+          : null;
+        
+        return { 
+          html: responseData.html || "", 
+          error: errorText,
+          warnings: responseData.warnings || [],
+          correlation_id: responseData.correlation_id 
+        };
+      }
+    } catch (e) {
+      console.error("execute-dsl fetch error:", e);
+      lastError = { type: "fetch", message: String(e) };
+      
+      // Check if this is a retryable network error
+      if (attempt < maxRetries && (e.name === 'TypeError' || e.message.includes('Failed to fetch'))) {
+        console.log(`Network error, will retry after delay: ${e.message}`);
+        showSystemMessage(`通信エラーが発生しました。${maxRetries - attempt}回再試行します...`);
+        await sleep(1000 * attempt); // Exponential backoff
+        continue;
       }
       
-      const errorText = responseData.warnings && responseData.warnings.length > 0 
-        ? responseData.warnings.filter(w => w.startsWith("ERROR:")).join("\n") || null
-        : null;
-      
-      return { 
-        html: responseData.html || "", 
-        error: errorText,
-        warnings: responseData.warnings || [],
-        correlation_id: responseData.correlation_id 
-      };
+      // Final failure or non-retryable error
+      const errorMsg = `通信エラー: ${e.message || e}`;
+      showSystemMessage(errorMsg);
+      return { html: "", error: String(e), warnings: [] };
     }
-  } catch (e) {
-    console.error("execute-dsl fetch error:", e);
-    showSystemMessage(`通信エラー: ${e}`);
-    return { html: "", error: String(e), warnings: [] };
   }
+  
+  // All retries exhausted
+  if (lastError) {
+    const errorMsg = lastError.status ? 
+      `サーバーエラー (${lastError.status}): ${lastError.message}` : 
+      `通信エラー: ${lastError.message}`;
+    showSystemMessage(`${maxRetries}回の再試行後も失敗しました: ${errorMsg}`);
+    return { 
+      html: lastError.data?.html || "", 
+      error: lastError.message, 
+      warnings: lastError.data?.warnings || [] 
+    };
+  }
+  
+  return { html: "", error: "Unknown retry failure", warnings: [] };
 }
 
 
