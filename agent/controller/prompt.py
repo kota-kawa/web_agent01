@@ -21,7 +21,13 @@ def build_prompt(
     error: str | None = None,
 ) -> str:
     """Return full system prompt for the LLM."""
-    past_conv = "\n".join(f"U:{h['user']}\nA:{h['bot']['explanation']}" for h in hist)
+    def _hist_item(h):
+        txt = f"U:{h['user']}\nA:{h['bot']['explanation']}"
+        mem = h["bot"].get("memory") if isinstance(h.get("bot"), dict) else None
+        if mem:
+            txt += f"\nM:{mem}"
+        return txt
+    past_conv = "\n".join(_hist_item(h) for h in hist)
 
     add_img = (
         "現在の状況を把握するために、スクリーンショット画像も与えます。"
@@ -200,11 +206,14 @@ def build_prompt(
         "    その後のステップでは計画に沿ったアクションを生成する。\n"
         "    その計画は臨機応変に変更してよい。\n"
         "    プランニングは最初の一回と、明らかにプラン通りに進まなくなったときに再び実行する程度で、毎回やる必要はない。\n"
-        
+
+        "    複数ページから得た重要な情報は、最終回答に必要であれば `memory` フィールドに記録する。不要な場合は `memory` を省略してよい。\n"
+
         "その後に ```json フェンス内で DSL を出力。\n"
         "\n"
         "```json の中身は以下のフォーマット:\n"
         "{\n"
+        '  "memory": "覚えておくべき情報",   # 任意\n'
         '  "actions": [ <action_object> , ... ],\n'
         '  "complete": true | false               # true ならタスク完了, false なら未完了で続行\n'
         "}\n"
@@ -238,7 +247,8 @@ def build_prompt(
         "10. **ユーザーがページ内テキストを要求している場合**:\n"
         "    - `navigate` や `click` を行わずとも情報が取れるなら `actions` は空。\n"
         '    - 説明部にページから抽出したテキストを含める（長文は冒頭 200 文字＋"..."）。\n'
-        f"11. 最大 {MAX_STEPS} ステップ以内にタスクを完了できない場合は `complete:true` で終了してください。\n"
+        "11. 複数ページから得た重要な情報は `memory` に保存し、必要なときのみ含める。\n"
+        f"12. 最大 {MAX_STEPS} ステップ以内にタスクを完了できない場合は `complete:true` で終了してください。\n"
         "\n"
         "Python で利用できるアクションヘルパー関数:\n"
         "#click: 指定したターゲットをクリックするアクション\n"
@@ -344,6 +354,7 @@ def build_prompt(
     - ユーザー説明文や “Here is the DSL:” など JSON 以外の出力。  \n
     ========================================================================
     6. 返答フォーマット例（**実際の返答は JSON 部分のみ**)\n
+        "{ \"memory\": \"記事タイトル: Example\", \"actions\": [], \"complete\": false }\n"
         "{ \"actions\": [ { \"action\": \"navigate\", \"target\": \"https://example.com\" } ], \"complete\": false }\n"
         "{ \"actions\": [ { \"action\": \"click\", \"target\": \"css=button.submit\" } ], \"complete\": true }\n"
         "{ \"actions\": [ { \"action\": \"click_text\", \"text\": \"次へ\", \"target\": \"次へ\" } ], \"complete\": false }\n"
