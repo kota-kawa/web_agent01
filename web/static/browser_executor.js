@@ -315,6 +315,18 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 
   const res = await sendCommand(cmd, html, screenshot, model, prevError);
 
+  if (res.raw) console.log("LLM raw output:\n", res.raw);
+
+  // Extract actions immediately after getting LLM response
+  const acts = normalizeActions(res);
+
+  // Start Playwright execution immediately if there are actions
+  let playwrightPromise = null;
+  if (acts.length) {
+    playwrightPromise = sendDSL(acts);
+  }
+
+  // Update UI in parallel with Playwright execution
   if (showInUI && res.explanation) {
     if (placeholder) {
       placeholder.textContent = res.explanation;
@@ -328,15 +340,12 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     }
   }
 
-  if (res.raw) console.log("LLM raw output:\n", res.raw);
-
-  const acts = normalizeActions(res);
-
+  // Wait for Playwright execution to complete
   let newHtml = html;
   let newShot = screenshot;
   let errInfo = null;
-  if (acts.length) {
-    const ret = await sendDSL(acts);
+  if (playwrightPromise) {
+    const ret = await playwrightPromise;
     if (ret) {
       newHtml = ret.html || newHtml;
       errInfo = ret.error || null;
