@@ -67,16 +67,24 @@ os.makedirs(LOG_DIR, exist_ok=True)
 HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
 
 
-@app.get("/history")
+@app.route("/history", methods=["GET"])
 def get_history():
     try:
-        return jsonify(load_hist())
+        history_data = load_hist()
+        return jsonify(history_data)
     except Exception as e:
-        log.error("get_history error: %s", e)
-        return jsonify(error=str(e)), 500
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] get_history error: %s", correlation_id, e)
+        # Return structured error response instead of 500
+        return jsonify({
+            "error": f"Failed to load history - {str(e)}",
+            "correlation_id": correlation_id,
+            "data": []  # Provide empty data as fallback
+        }), 200
 
 
-@app.get("/history.json")
+@app.route("/history.json", methods=["GET"])
 def download_history():
     if os.path.exists(HIST_FILE):
         return send_from_directory(
@@ -88,13 +96,21 @@ def download_history():
 
 
 # ----- Memory endpoint -----
-@app.get("/memory")
+@app.route("/memory", methods=["GET"])
 def memory():
     try:
-        return jsonify(load_hist())
+        history_data = load_hist()
+        return jsonify(history_data)
     except Exception as e:
-        log.error("memory error: %s", e)
-        return jsonify(error=str(e)), 500
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] memory error: %s", correlation_id, e)
+        # Return structured error response instead of 500
+        return jsonify({
+            "error": f"Failed to load memory - {str(e)}",
+            "correlation_id": correlation_id,
+            "data": []  # Provide empty data as fallback
+        }), 200
 
 
 # ----- Reset endpoint -----
@@ -174,12 +190,12 @@ def forward_dsl():
         return jsonify({"html": "", "warnings": [f"ERROR:auto:Communication error - {str(e)}"]})
 
 
-@app.get("/vnc-source")
+@app.route("/vnc-source", methods=["GET"])
 def vhtml():
     return Response(vnc_html(), mimetype="text/plain")
 
 
-@app.get("/screenshot")
+@app.route("/screenshot", methods=["GET"])
 def get_screenshot():
     """VNCサーバーからスクリーンショットを取得してブラウザに返す"""
     try:
