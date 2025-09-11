@@ -186,6 +186,57 @@ def execute():
     return jsonify(res)
 
 
+@app.post("/store-warnings")
+def store_warnings():
+    """Store warnings in the last conversation history item."""
+    try:
+        data = request.get_json(force=True)
+        warnings = data.get("warnings", [])
+        
+        if not warnings:
+            return jsonify({"status": "success", "message": "No warnings to store"})
+        
+        # Load current history
+        hist = load_hist()
+        
+        if not hist:
+            log.warning("No conversation history found to update with warnings")
+            return jsonify({"status": "error", "message": "No conversation history found"})
+        
+        # Get the last conversation item
+        last_item = hist[-1]
+        
+        # Add warnings to the bot response, above the "complete" field
+        if "bot" in last_item and isinstance(last_item["bot"], dict):
+            # Make a copy of bot response to preserve order
+            bot_response = last_item["bot"].copy()
+            
+            # Remove complete field temporarily
+            complete_value = bot_response.pop("complete", True)
+            
+            # Add warnings
+            bot_response["warnings"] = warnings
+            
+            # Re-add complete field at the end
+            bot_response["complete"] = complete_value
+            
+            # Update the history item
+            last_item["bot"] = bot_response
+            
+            # Save updated history
+            save_hist(hist)
+            
+            log.info("Added %d warnings to conversation history", len(warnings))
+            return jsonify({"status": "success", "message": f"Stored {len(warnings)} warnings"})
+        else:
+            log.warning("Invalid conversation history format - cannot add warnings")
+            return jsonify({"status": "error", "message": "Invalid conversation history format"})
+            
+    except Exception as e:
+        log.error("store_warnings error: %s", e)
+        return jsonify({"status": "error", "message": f"Failed to store warnings: {str(e)}"})
+
+
 @app.post("/automation/execute-dsl")
 def forward_dsl():
     payload = request.get_json(force=True)

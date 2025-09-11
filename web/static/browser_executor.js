@@ -120,6 +120,12 @@ async function sendDSL(acts) {
         }
         
         showSystemMessage(`DSL 実行エラー: ${errorMsg}`);
+        
+        // Store warnings in conversation history even in error cases
+        if (responseData.warnings && responseData.warnings.length > 0) {
+          await storeWarningsInHistory(responseData.warnings);
+        }
+        
         return { 
           html: responseData.html || "", 
           error: errorMsg, 
@@ -137,6 +143,8 @@ async function sendDSL(acts) {
         // Display warnings prominently if present
         if (responseData.warnings && responseData.warnings.length > 0) {
           displayWarnings(responseData.warnings, responseData.correlation_id);
+          // Store warnings in conversation history
+          await storeWarningsInHistory(responseData.warnings);
         }
         
         const errorText = responseData.warnings && responseData.warnings.length > 0 
@@ -263,6 +271,32 @@ function showSystemMessage(msg) {
   p.textContent = msg;
   chatArea.appendChild(p);
   chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+/* ======================================
+   Store warnings in conversation history
+   ====================================== */
+async function storeWarningsInHistory(warnings) {
+  if (!warnings || warnings.length === 0) {
+    return;
+  }
+  
+  try {
+    const response = await fetch("/store-warnings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ warnings: warnings })
+    });
+    
+    const result = await response.json();
+    if (result.status === "success") {
+      console.log("Warnings stored in conversation history:", warnings.length);
+    } else {
+      console.warn("Failed to store warnings:", result.message);
+    }
+  } catch (e) {
+    console.error("Error storing warnings in history:", e);
+  }
 }
 
 /* ======================================
