@@ -508,8 +508,9 @@ async def _safe_click(l, force=False, timeout=None):
                 # Try JavaScript click as last resort
                 try:
                     await l.first.evaluate("el => el.click()")
-                except Exception:
-                    raise force_error
+                except Exception as js_error:
+                    # Include original error context in the final exception
+                    raise Exception(f"Click failed - Original: {str(e)}, Force: {str(force_error)}, JS: {str(js_error)}")
         else:
             raise
 
@@ -548,35 +549,192 @@ async def _safe_fill(l, val: str, timeout=None):
             try:
                 await l.first.evaluate(f"el => el.value = '{val}'")
                 await l.first.dispatch_event("input")
-            except Exception:
-                raise retry_error
+            except Exception as js_error:
+                # Include original error context in the final exception
+                raise Exception(f"Fill failed - Original: {str(e)}, Retry: {str(retry_error)}, JS: {str(js_error)}")
 
 
 async def _safe_hover(l, timeout=None):
-    """Enhanced safe hovering."""
+    """Enhanced safe hovering with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
         
-    await _prepare_element(l, timeout)
-    await l.first.hover(timeout=timeout)
+    try:
+        await _prepare_element(l, timeout)
+        await l.first.hover(timeout=timeout)
+        
+    except Exception as e:
+        log.warning("Hover retry with alternative methods due to: %s", e)
+        fallback_used = False
+        try:
+            # Fallback 1: Try hover with force option if element supports it
+            await l.first.hover(timeout=timeout, force=True)
+            fallback_used = True
+            log.info("Hover fallback successful: force hover worked for element")
+        except Exception as force_error:
+            try:
+                # Fallback 2: JavaScript-based mouseover event
+                await l.first.evaluate("""
+                    el => {
+                        el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true, cancelable: true}));
+                        el.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true, cancelable: true}));
+                    }
+                """)
+                fallback_used = True
+                log.info("Hover fallback successful: JavaScript mouseover events worked")
+            except Exception as js_error:
+                try:
+                    # Fallback 3: Position-based hover using bounding box
+                    box = await l.first.bounding_box()
+                    if box:
+                        await PAGE.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                        fallback_used = True
+                        log.info("Hover fallback successful: position-based hover worked")
+                    else:
+                        raise js_error
+                except Exception:
+                    # Include original error context in the final exception
+                    log.error("All hover fallback methods failed - Original: %s, Force: %s, JS: %s", str(e), str(force_error), str(js_error))
+                    raise Exception(f"Hover failed - Original: {str(e)}, Force: {str(force_error)}, JS: {str(js_error)}")
+        
+        if fallback_used:
+            log.info("Hover operation completed successfully using fallback method")
 
 
 async def _safe_select(l, val: str, timeout=None):
-    """Enhanced safe option selection."""
+    """Enhanced safe option selection with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
         
-    await _prepare_element(l, timeout)
-    await l.first.select_option(val, timeout=timeout)
+    try:
+        await _prepare_element(l, timeout)
+        await l.first.select_option(val, timeout=timeout)
+        
+    except Exception as e:
+        log.warning("Select retry with alternative methods due to: %s", e)
+        fallback_used = False
+        try:
+            # Fallback 1: Try selecting by label instead of value
+            await l.first.select_option(label=val, timeout=timeout)
+            fallback_used = True
+            log.info("Select fallback successful: label-based selection worked for value '%s'", val)
+        except Exception as label_error:
+            try:
+                # Fallback 2: JavaScript-based option selection
+                await l.first.evaluate(f"""
+                    el => {{
+                        // Try selecting by value first
+                        for (let option of el.options) {{
+                            if (option.value === '{val}' || option.text === '{val}') {{
+                                option.selected = true;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                return;
+                            }}
+                        }}
+                        // Try partial match if exact match fails
+                        for (let option of el.options) {{
+                            if (option.value.includes('{val}') || option.text.includes('{val}')) {{
+                                option.selected = true;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                return;
+                            }}
+                        }}
+                        throw new Error('No matching option found for: {val}');
+                    }}
+                """)
+                fallback_used = True
+                log.info("Select fallback successful: JavaScript-based selection worked for value '%s'", val)
+            except Exception as js_error:
+                try:
+                    # Fallback 3: Click dropdown and then click specific option
+                    await l.first.click(timeout=timeout)
+                    await asyncio.sleep(0.2)  # Wait for dropdown to open
+                    option_loc = PAGE.locator(f"option[value='{val}'], option:has-text('{val}')")
+                    await option_loc.first.click(timeout=timeout)
+                    fallback_used = True
+                    log.info("Select fallback successful: click-based selection worked for value '%s'", val)
+                except Exception as click_error:
+                    # Include original error context in the final exception
+                    log.error("All select fallback methods failed - Original: %s, Label: %s, JS: %s, Click: %s", str(e), str(label_error), str(js_error), str(click_error))
+                    raise Exception(f"Select failed - Original: {str(e)}, Label: {str(label_error)}, JS: {str(js_error)}, Click: {str(click_error)}")
+        
+        if fallback_used:
+            log.info("Select operation completed successfully using fallback method")
 
 
 async def _safe_press(l, key: str, timeout=None):
-    """Enhanced safe key pressing."""
+    """Enhanced safe key pressing with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
         
-    await _prepare_element(l, timeout)
-    await l.first.press(key, timeout=timeout)
+    try:
+        await _prepare_element(l, timeout)
+        await l.first.press(key, timeout=timeout)
+        
+    except Exception as e:
+        log.warning("Key press retry with alternative methods due to: %s", e)
+        fallback_used = False
+        try:
+            # Fallback 1: Focus element first then press key
+            await l.first.focus(timeout=timeout)
+            await asyncio.sleep(0.1)  # Brief pause after focus
+            await l.first.press(key, timeout=timeout)
+            fallback_used = True
+            log.info("Key press fallback successful: focus+press worked for key '%s'", key)
+        except Exception as focus_error:
+            try:
+                # Fallback 2: Page-level key press (if element-specific fails)
+                await PAGE.keyboard.press(key)
+                fallback_used = True
+                log.info("Key press fallback successful: page-level press worked for key '%s'", key)
+            except Exception as page_error:
+                try:
+                    # Fallback 3: JavaScript-based key event dispatch
+                    key_code = _get_key_code(key)
+                    await l.first.evaluate(f"""
+                        el => {{
+                            el.focus();
+                            const event = new KeyboardEvent('keydown', {{
+                                key: '{key}',
+                                keyCode: {key_code},
+                                bubbles: true,
+                                cancelable: true
+                            }});
+                            el.dispatchEvent(event);
+                            
+                            const eventUp = new KeyboardEvent('keyup', {{
+                                key: '{key}',
+                                keyCode: {key_code},
+                                bubbles: true,
+                                cancelable: true
+                            }});
+                            el.dispatchEvent(eventUp);
+                        }}
+                    """)
+                    fallback_used = True
+                    log.info("Key press fallback successful: JavaScript key events worked for key '%s'", key)
+                except Exception as js_error:
+                    # Include original error context in the final exception
+                    log.error("All key press fallback methods failed - Original: %s, Focus: %s, Page: %s, JS: %s", str(e), str(focus_error), str(page_error), str(js_error))
+                    raise Exception(f"Key press failed - Original: {str(e)}, Focus: {str(focus_error)}, Page: {str(page_error)}, JS: {str(js_error)}")
+        
+        if fallback_used:
+            log.info("Key press operation completed successfully using fallback method")
+
+
+def _get_key_code(key: str) -> int:
+    """Get keyCode for common keys."""
+    key_codes = {
+        'Enter': 13, 'Return': 13, 'Tab': 9, 'Escape': 27,
+        'Space': 32, 'Backspace': 8, 'Delete': 46,
+        'ArrowUp': 38, 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39,
+        'F1': 112, 'F2': 113, 'F3': 114, 'F4': 115, 'F5': 116,
+        'F6': 117, 'F7': 118, 'F8': 119, 'F9': 120, 'F10': 121, 'F11': 122, 'F12': 123
+    }
+    # For single characters, use ASCII code
+    if len(key) == 1:
+        return ord(key.upper())
+    return key_codes.get(key, 0)
 
 
 async def _list_elements(limit: int = 50) -> List[Dict]:
@@ -902,10 +1060,54 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:extract_text failed - {str(e)}")
         except Exception as e:
-            action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' - {str(e)}")
+            # Enhanced error reporting to help LLM understand what failed and make better decisions
+            error_msg = str(e)
+            if "failed -" in error_msg and ("Original:" in error_msg or "Fallback" in error_msg):
+                # This is a fallback failure with context - provide detailed info and guidance to LLM
+                action_guidance = _get_action_guidance(a, tgt, error_msg)
+                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' after trying multiple methods. {error_msg}. {action_guidance}")
+            else:
+                # Standard error reporting with basic guidance
+                basic_guidance = _get_basic_guidance(a, error_msg)
+                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' - {error_msg}. {basic_guidance}")
 
     except Exception as e:
         action_warnings.append(f"WARNING:auto:Action '{a}' failed - {str(e)}")
+
+
+def _get_action_guidance(action: str, target: str, error_msg: str) -> str:
+    """Provide specific guidance to LLM based on the type of action and failure."""
+    guidance_map = {
+        "hover": "Try using 'click' action instead if the hover was for triggering a menu, or wait longer for page elements to stabilize before hovering.",
+        "select_option": "Consider using 'click' to open the dropdown first, or try using a different selector like text content instead of value. Check if the select element is properly loaded.",
+        "press_key": "Try using 'type' action if you were entering text, or 'click' if you were trying to trigger a button. Ensure the element is focused before key operations.",
+        "click": "Try using a different selector (text content, ARIA labels, or CSS classes). Wait for page to fully load, or try 'click_text' with visible text.",
+        "type": "Ensure the input field is visible and enabled. Try clicking the field first, or use 'press_key' for special keys like Tab or Enter."
+    }
+    
+    base_guidance = guidance_map.get(action, "Try using alternative selectors or wait for page elements to fully load.")
+    
+    # Add specific guidance based on error patterns
+    if "timeout" in error_msg.lower():
+        return f"{base_guidance} Consider increasing wait time or checking if elements are dynamically loaded."
+    elif "not found" in error_msg.lower() or "not visible" in error_msg.lower():
+        return f"{base_guidance} The element may not be present yet - try waiting or using text-based selectors."
+    elif "not enabled" in error_msg.lower() or "disabled" in error_msg.lower():
+        return f"{base_guidance} The element appears to be disabled - check for prerequisite actions or form validation."
+    else:
+        return base_guidance
+
+
+def _get_basic_guidance(action: str, error_msg: str) -> str:
+    """Provide basic guidance for non-fallback failures."""
+    if "timeout" in error_msg.lower():
+        return "Consider waiting longer or checking if the page is fully loaded."
+    elif "not found" in error_msg.lower():
+        return "Try using alternative selectors like text content, CSS classes, or ARIA attributes."
+    elif "network" in error_msg.lower() or "connection" in error_msg.lower():
+        return "This appears to be a network issue - consider retrying the operation."
+    else:
+        return "Consider using alternative approaches or waiting for page to stabilize."
     
     return action_warnings
 
