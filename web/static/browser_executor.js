@@ -353,7 +353,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     newShot = await captureScreenshot();
   }
 
-  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", html: newHtml, screenshot: newShot, error: errInfo };
+  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", memory: res.memory || "", html: newHtml, screenshot: newShot, error: errInfo };
 }
 
 /* ======================================
@@ -388,7 +388,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
     }
 
     try {
-      const { cont, explanation, html, screenshot: shot, error } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null, lastError);
+      const { cont, explanation, memory, html, screenshot: shot, error } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null, lastError);
       if (shot) screenshot = shot;
       if (html) pageHtml = html;
       lastError = error;
