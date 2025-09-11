@@ -9,6 +9,9 @@ __pycache__/
 *.dll
 *.json
 *.Identifier
+# Backup files
+*.bak
+*.corrupted.bak
 # ログファイルを無視
 
 *.cgi
