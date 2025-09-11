@@ -10,8 +10,8 @@ body {
 #chat-panel {
     background: #fff;
     box-shadow: 2px 0px 8px rgba(0, 0, 0, 0.1);
-    /* Responsive width - default 600px for larger screens */
-    width: 600px;
+    /* Responsive width - reduced default for better VNC visibility */
+    width: 420px;
     min-width: 300px; /* Ensure chat remains usable */
 }
 
@@ -132,26 +132,33 @@ button:disabled {
     gap: 8px;
 }
 
-/* VNC section minimum width to ensure browser visibility */
+/* VNC section - ensure it fills available space properly */
 #vnc-section {
-    min-width: 600px; /* Ensure VNC has adequate space */
-    overflow-x: auto; /* Allow horizontal scrolling if needed */
+    min-width: 400px; /* Reduced min-width to prevent horizontal scroll issues */
+    overflow: hidden; /* Prevent overflow, let iframe scale */
+}
+
+/* VNC iframe responsive scaling */
+#vnc_frame {
+    min-width: 100%;
+    min-height: 100%;
+    object-fit: contain; /* Ensure iframe content scales properly */
 }
 
 /* Responsive breakpoints for chat panel */
 @media (max-width: 1200px) {
     #chat-panel {
-        width: 400px;
-    }
-}
-
-@media (max-width: 900px) {
-    #chat-panel {
         width: 350px;
     }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1000px) {
+    #chat-panel {
+        width: 320px;
+    }
+}
+
+@media (max-width: 900px) {
     /* Switch to vertical layout earlier to ensure VNC visibility */
     main {
         flex-direction: column !important;
@@ -167,11 +174,11 @@ button:disabled {
     #vnc-section {
         height: 65vh;
         min-width: unset; /* Remove min-width constraint in vertical layout */
-        overflow-x: visible; /* No need for horizontal scroll in vertical layout */
+        overflow: visible; /* Allow proper scaling in vertical layout */
     }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
     #chat-panel {
         height: 40vh;
     }
