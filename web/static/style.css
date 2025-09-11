@@ -132,6 +132,12 @@ button:disabled {
     gap: 8px;
 }
 
+/* VNC section minimum width to ensure browser visibility */
+#vnc-section {
+    min-width: 600px; /* Ensure VNC has adequate space */
+    overflow-x: auto; /* Allow horizontal scrolling if needed */
+}
+
 /* Responsive breakpoints for chat panel */
 @media (max-width: 1200px) {
     #chat-panel {
@@ -146,22 +152,28 @@ button:disabled {
 }
 
 @media (max-width: 768px) {
-    #chat-panel {
-        width: 300px;
-    }
-}
-
-@media (max-width: 600px) {
-    /* Stack layout for very small screens */
+    /* Switch to vertical layout earlier to ensure VNC visibility */
     main {
         flex-direction: column !important;
     }
     
     #chat-panel {
         width: 100% !important;
-        height: 40vh;
+        height: 35vh;
         border-right: none !important;
         border-bottom: 1px solid #ddd;
+    }
+    
+    #vnc-section {
+        height: 65vh;
+        min-width: unset; /* Remove min-width constraint in vertical layout */
+        overflow-x: visible; /* No need for horizontal scroll in vertical layout */
+    }
+}
+
+@media (max-width: 600px) {
+    #chat-panel {
+        height: 40vh;
     }
     
     #vnc-section {
