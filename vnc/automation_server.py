@@ -508,8 +508,9 @@ async def _safe_click(l, force=False, timeout=None):
                 # Try JavaScript click as last resort
                 try:
                     await l.first.evaluate("el => el.click()")
-                except Exception:
-                    raise force_error
+                except Exception as js_error:
+                    # Include original error context in the final exception
+                    raise Exception(f"Click failed - Original: {str(e)}, Force: {str(force_error)}, JS: {str(js_error)}")
         else:
             raise
 
@@ -548,35 +549,159 @@ async def _safe_fill(l, val: str, timeout=None):
             try:
                 await l.first.evaluate(f"el => el.value = '{val}'")
                 await l.first.dispatch_event("input")
-            except Exception:
-                raise retry_error
+            except Exception as js_error:
+                # Include original error context in the final exception
+                raise Exception(f"Fill failed - Original: {str(e)}, Retry: {str(retry_error)}, JS: {str(js_error)}")
 
 
 async def _safe_hover(l, timeout=None):
-    """Enhanced safe hovering."""
+    """Enhanced safe hovering with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
         
-    await _prepare_element(l, timeout)
-    await l.first.hover(timeout=timeout)
+    try:
+        await _prepare_element(l, timeout)
+        await l.first.hover(timeout=timeout)
+        
+    except Exception as e:
+        log.warning("Hover retry with alternative methods due to: %s", e)
+        try:
+            # Fallback 1: Try hover with force option if element supports it
+            await l.first.hover(timeout=timeout, force=True)
+        except Exception as force_error:
+            try:
+                # Fallback 2: JavaScript-based mouseover event
+                await l.first.evaluate("""
+                    el => {
+                        el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true, cancelable: true}));
+                        el.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true, cancelable: true}));
+                    }
+                """)
+            except Exception as js_error:
+                try:
+                    # Fallback 3: Position-based hover using bounding box
+                    box = await l.first.bounding_box()
+                    if box:
+                        await PAGE.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                    else:
+                        raise js_error
+                except Exception:
+                    # Include original error context in the final exception
+                    raise Exception(f"Hover failed - Original: {str(e)}, Force: {str(force_error)}, JS: {str(js_error)}")
 
 
 async def _safe_select(l, val: str, timeout=None):
-    """Enhanced safe option selection."""
+    """Enhanced safe option selection with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
         
-    await _prepare_element(l, timeout)
-    await l.first.select_option(val, timeout=timeout)
+    try:
+        await _prepare_element(l, timeout)
+        await l.first.select_option(val, timeout=timeout)
+        
+    except Exception as e:
+        log.warning("Select retry with alternative methods due to: %s", e)
+        try:
+            # Fallback 1: Try selecting by label instead of value
+            await l.first.select_option(label=val, timeout=timeout)
+        except Exception as label_error:
+            try:
+                # Fallback 2: JavaScript-based option selection
+                await l.first.evaluate(f"""
+                    el => {{
+                        // Try selecting by value first
+                        for (let option of el.options) {{
+                            if (option.value === '{val}' || option.text === '{val}') {{
+                                option.selected = true;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                return;
+                            }}
+                        }}
+                        // Try partial match if exact match fails
+                        for (let option of el.options) {{
+                            if (option.value.includes('{val}') || option.text.includes('{val}')) {{
+                                option.selected = true;
+                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                return;
+                            }}
+                        }}
+                        throw new Error('No matching option found for: {val}');
+                    }}
+                """)
+            except Exception as js_error:
+                try:
+                    # Fallback 3: Click dropdown and then click specific option
+                    await l.first.click(timeout=timeout)
+                    await asyncio.sleep(0.2)  # Wait for dropdown to open
+                    option_loc = PAGE.locator(f"option[value='{val}'], option:has-text('{val}')")
+                    await option_loc.first.click(timeout=timeout)
+                except Exception as click_error:
+                    # Include original error context in the final exception
+                    raise Exception(f"Select failed - Original: {str(e)}, Label: {str(label_error)}, JS: {str(js_error)}, Click: {str(click_error)}")
 
 
 async def _safe_press(l, key: str, timeout=None):
-    """Enhanced safe key pressing."""
+    """Enhanced safe key pressing with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
         
-    await _prepare_element(l, timeout)
-    await l.first.press(key, timeout=timeout)
+    try:
+        await _prepare_element(l, timeout)
+        await l.first.press(key, timeout=timeout)
+        
+    except Exception as e:
+        log.warning("Key press retry with alternative methods due to: %s", e)
+        try:
+            # Fallback 1: Focus element first then press key
+            await l.first.focus(timeout=timeout)
+            await asyncio.sleep(0.1)  # Brief pause after focus
+            await l.first.press(key, timeout=timeout)
+        except Exception as focus_error:
+            try:
+                # Fallback 2: Page-level key press (if element-specific fails)
+                await PAGE.keyboard.press(key)
+            except Exception as page_error:
+                try:
+                    # Fallback 3: JavaScript-based key event dispatch
+                    key_code = _get_key_code(key)
+                    await l.first.evaluate(f"""
+                        el => {{
+                            el.focus();
+                            const event = new KeyboardEvent('keydown', {{
+                                key: '{key}',
+                                keyCode: {key_code},
+                                bubbles: true,
+                                cancelable: true
+                            }});
+                            el.dispatchEvent(event);
+                            
+                            const eventUp = new KeyboardEvent('keyup', {{
+                                key: '{key}',
+                                keyCode: {key_code},
+                                bubbles: true,
+                                cancelable: true
+                            }});
+                            el.dispatchEvent(eventUp);
+                        }}
+                    """)
+                except Exception as js_error:
+                    # Include original error context in the final exception
+                    raise Exception(f"Key press failed - Original: {str(e)}, Focus: {str(focus_error)}, Page: {str(page_error)}, JS: {str(js_error)}")
+
+
+def _get_key_code(key: str) -> int:
+    """Get keyCode for common keys."""
+    key_codes = {
+        'Enter': 13, 'Return': 13, 'Tab': 9, 'Escape': 27,
+        'Space': 32, 'Backspace': 8, 'Delete': 46,
+        'ArrowUp': 38, 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39,
+        'F1': 112, 'F2': 113, 'F3': 114, 'F4': 115, 'F5': 116,
+        'F6': 117, 'F7': 118, 'F8': 119, 'F9': 120, 'F10': 121, 'F11': 122, 'F12': 123
+    }
+    # For single characters, use ASCII code
+    if len(key) == 1:
+        return ord(key.upper())
+    return key_codes.get(key, 0)
 
 
 async def _list_elements(limit: int = 50) -> List[Dict]:
@@ -902,7 +1027,14 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:extract_text failed - {str(e)}")
         except Exception as e:
-            action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' - {str(e)}")
+            # Enhanced error reporting to help LLM understand what failed
+            error_msg = str(e)
+            if "failed -" in error_msg and ("Original:" in error_msg or "Fallback" in error_msg):
+                # This is a fallback failure with context - provide detailed info to LLM
+                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' after trying multiple methods. {error_msg}. Consider using alternative selectors or waiting for page to fully load.")
+            else:
+                # Standard error reporting
+                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' - {error_msg}")
 
     except Exception as e:
         action_warnings.append(f"WARNING:auto:Action '{a}' failed - {str(e)}")
