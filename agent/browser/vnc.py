@@ -101,9 +101,61 @@ def execute_dsl(payload, timeout=120):
                 final_warning = _truncate_warning(f"ERROR:auto:{error_msg}")
                 return {"html": "", "warnings": [final_warning]}
             
-            # Ensure any existing warnings are also truncated
+            # Capture additional Playwright-specific errors and information
+            # Even if the request succeeded, there might be important warnings/errors from Playwright
+            enhanced_warnings = []
+            
+            # Include existing warnings
             if "warnings" in result and result["warnings"]:
-                result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
+                enhanced_warnings.extend(result["warnings"])
+            
+            # Check for Playwright-specific error indicators in the response
+            if isinstance(result, dict):
+                # Look for common Playwright error patterns in various fields
+                error_indicators = []
+                
+                # Check all text fields for Playwright error patterns
+                for key, value in result.items():
+                    if isinstance(value, str) and value:
+                        # Look for Playwright error patterns (case-insensitive)
+                        error_patterns = [
+                            "timeout", "timed out", "waiting for", "locator", "element not found",
+                            "element not visible", "not attached", "detached", "intercepted",
+                            "waiting for selector", "waiting for element", "selector resolved to",
+                            "element is not", "element state", "page closed", "context closed",
+                            "navigation", "frame detached", "execution context", "protocol error",
+                            "target closed", "page crashed", "browser disconnected", "websocket",
+                            "click", "type", "hover", "scroll", "screenshot", "evaluate",
+                            "blocking", "covered by", "outside viewport", "disabled element",
+                            "readonly element", "not editable", "not clickable", "not hoverable"
+                        ]
+                        
+                        value_lower = value.lower()
+                        for pattern in error_patterns:
+                            if pattern in value_lower:
+                                error_indicators.append(f"INFO:playwright:{key}={value[:200]}{'...' if len(value) > 200 else ''}")
+                                break  # Only add one indicator per field
+                
+                # Add Playwright error indicators as warnings
+                for indicator in error_indicators:
+                    enhanced_warnings.append(_truncate_warning(indicator))
+                
+                # Check for execution results that might contain errors
+                if "execution_info" in result and result["execution_info"]:
+                    exec_info = result["execution_info"]
+                    if isinstance(exec_info, (list, str)):
+                        exec_warning = f"INFO:playwright:execution_info={str(exec_info)[:300]}{'...' if len(str(exec_info)) > 300 else ''}"
+                        enhanced_warnings.append(_truncate_warning(exec_warning))
+                
+                # Check for any field that might contain error information
+                error_fields = ["error_message", "error_details", "failures", "exceptions", "stack_trace", "console_errors"]
+                for field in error_fields:
+                    if field in result and result[field]:
+                        field_warning = f"ERROR:playwright:{field}={str(result[field])[:300]}{'...' if len(str(result[field])) > 300 else ''}"
+                        enhanced_warnings.append(_truncate_warning(field_warning))
+            
+            # Ensure all warnings are truncated
+            result["warnings"] = [_truncate_warning(warning) for warning in enhanced_warnings]
             
             return result
             
@@ -117,9 +169,20 @@ def execute_dsl(payload, timeout=120):
                 time.sleep(wait_time)
                 continue
         except requests.HTTPError as e:
-            # Log HTTP error details
+            # Log HTTP error details and capture response content for additional error information
             status_code = e.response.status_code if e.response else 0
-            current_error = f"HTTP {status_code} error - {str(e)}"
+            error_details = str(e)
+            
+            # Try to extract additional error information from response body
+            if e.response is not None:
+                try:
+                    response_text = e.response.text[:500]  # First 500 chars of response
+                    if response_text.strip():
+                        error_details += f" - Response: {response_text}"
+                except Exception:
+                    pass  # If we can't read response, just use the basic error
+            
+            current_error = f"HTTP {status_code} error - {error_details}"
             all_errors.append(current_error)
             log.error("execute_dsl HTTP error on attempt %d: %s", attempt, current_error)
             
@@ -136,7 +199,20 @@ def execute_dsl(payload, timeout=120):
                 # Client error - don't retry
                 break
         except requests.ConnectionError as e:
-            current_error = f"Connection error - Could not connect to automation server: {str(e)}"
+            # Capture more detailed connection error information
+            error_detail = str(e)
+            # Try to extract more specific connection issues
+            if "Connection refused" in error_detail:
+                current_error = f"Connection refused - Automation server not accepting connections: {error_detail[:300]}"
+            elif "Name resolution" in error_detail or "Failed to resolve" in error_detail:
+                current_error = f"DNS resolution failed - Cannot resolve automation server hostname: {error_detail[:300]}"
+            elif "Network is unreachable" in error_detail:
+                current_error = f"Network unreachable - Cannot reach automation server: {error_detail[:300]}"
+            elif "Connection timeout" in error_detail or "timed out" in error_detail:
+                current_error = f"Connection timeout - Server not responding: {error_detail[:300]}"
+            else:
+                current_error = f"Connection error - Could not connect to automation server: {error_detail[:300]}"
+            
             all_errors.append(current_error)
             log.error("execute_dsl connection error on attempt %d: %s", attempt, current_error)
             if attempt < max_retries:
@@ -145,7 +221,10 @@ def execute_dsl(payload, timeout=120):
                 time.sleep(wait_time)
                 continue
         except requests.RequestException as e:
-            current_error = f"Request error - {str(e)}"
+            # Capture detailed information about other request-related errors
+            error_detail = str(e)
+            error_type = type(e).__name__
+            current_error = f"Request error ({error_type}) - {error_detail[:400]}"
             all_errors.append(current_error)
             log.error("execute_dsl request error on attempt %d: %s", attempt, current_error)
             if attempt < max_retries:
@@ -154,7 +233,12 @@ def execute_dsl(payload, timeout=120):
                 time.sleep(wait_time)
                 continue
         except Exception as e:
-            current_error = f"Unexpected error - {str(e)}"
+            # Capture comprehensive information about unexpected errors
+            error_type = type(e).__name__
+            error_detail = str(e)
+            import traceback
+            stack_trace = traceback.format_exc()[:500]  # First 500 chars of stack trace
+            current_error = f"Unexpected error ({error_type}) - {error_detail} | Stack: {stack_trace}"
             all_errors.append(current_error)
             log.error("execute_dsl unexpected error on attempt %d: %s", attempt, current_error)
             break  # Don't retry unexpected errors

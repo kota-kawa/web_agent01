@@ -6,6 +6,24 @@ from ..browser.dom import DOMElementNode
 log = logging.getLogger("controller")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
 
+def _extract_recent_warnings(hist, max_warnings=5):
+    """Extract recent warnings from conversation history to include in error context."""
+    warnings = []
+    
+    # Look at the last few conversation items for warnings
+    for item in reversed(hist[-3:]):  # Check last 3 conversation items
+        if isinstance(item, dict) and "bot" in item:
+            bot_response = item["bot"]
+            if isinstance(bot_response, dict) and "warnings" in bot_response:
+                bot_warnings = bot_response["warnings"]
+                if isinstance(bot_warnings, list):
+                    # Add each warning with a prefix to show it's from recent history
+                    for warning in bot_warnings:
+                        if len(warnings) < max_warnings:
+                            warnings.append(f"RECENT:{warning}")
+    
+    return warnings
+
 def _collect_interactive(node: DOMElementNode, lst: list):
     if node.highlightIndex is not None:
         lst.append(node)
@@ -36,48 +54,85 @@ def build_prompt(
     )
     elem_lines = ""
     error_line = ""
-    if error:
-        if isinstance(error, list):
-            err_lines: list[str] = []
-            for e in error:
-                err_lines.extend(str(e).splitlines())
-        else:
-            err_lines = str(error).splitlines()
+    if error or hist:  # Include error processing if there's either an explicit error or conversation history
+        # Collect all error sources
+        all_error_sources = []
+        
+        # Add explicit error if provided
+        if error:
+            if isinstance(error, list):
+                err_lines: list[str] = []
+                for e in error:
+                    err_lines.extend(str(e).splitlines())
+            else:
+                err_lines = str(error).splitlines()
+            all_error_sources.extend(err_lines)
+        
+        # Add recent warnings from conversation history
+        recent_warnings = _extract_recent_warnings(hist)
+        all_error_sources.extend(recent_warnings)
 
-        # Extract only meaningful error lines. Previously the keyword list
-        # contained "visible" which caused verbose Playwright logs such as
-        # "waiting for locator ... to be visible" to be captured and drown out
-        # actual error messages (e.g. timeouts).  Narrowing the keywords to
-        # genuine error indicators ensures `error_line` reflects real
-        # failures like "Timeout exceeded" or "Element is not visible".
+        # Extract meaningful error lines with enhanced Playwright error detection.
+        # This captures both obvious errors and subtle Playwright issues that
+        # might help the LLM understand what's happening, including minor errors.
         keywords = (
             "error",
-            "timeout",
-            "not found",
-            "traceback",
-            "exception",
-            "warning",
-            "not visible",
+            "timeout", "timed out", "waiting for",
+            "not found", "not visible", "not attached", "not clickable", "not hoverable",
+            "traceback", "exception", "warning", "info",
+            "locator", "selector", "element", "detached", "intercepted",
+            "page closed", "context closed", "navigation", "frame detached",
+            "execution context", "protocol error", "target closed", "page crashed",
+            "browser disconnected", "websocket", "click", "type", "hover", "scroll",
+            "screenshot", "evaluate", "blocking", "covered by", "outside viewport",
+            "disabled", "readonly", "not editable", "playwright", "automation",
+            "connection", "http", "request", "response", "network", "dns",
+            "refused", "unreachable", "resolution", "failed", "retry attempt",
+            "stack:", "at ", "file:", "line:", # Stack trace indicators
         )
 
-        # Collect lines containing the above keywords and also retain a few
-        # subsequent lines to capture Playwright call logs that often follow
-        # the initial error line (e.g. locator details).  This provides the
-        # LLM with richer context about the failure.
-        lines: list[str] = []
-        i = 0
-        while i < len(err_lines):
-            line = err_lines[i]
-            if any(k in line.lower() for k in keywords):
-                lines.append(line)
-                # include up to five following lines for additional context
-                lines.extend(err_lines[i + 1 : i + 6])
-                i += 6
-            else:
-                i += 1
+        # Also include lines that contain specific Playwright patterns
+        playwright_patterns = (
+            "selector resolved to", "element state", "element is", "waiting for selector",
+            "waiting for element", "execution info", "console error", "page error",
+            "request timeout", "response timeout", "navigation timeout",
+            "load timeout", "goto timeout", "action timeout", "assertion timeout"
+        )
 
-        if lines:
-            error_line = "\n".join(lines[-10:]) + "\n--------------------------------\n"
+        # Process all error sources if we have any
+        if all_error_sources:
+            # Collect lines containing the above keywords and patterns, and also retain
+            # subsequent lines to capture Playwright call logs that often follow
+            # the initial error line. This provides the LLM with comprehensive context.
+            lines: list[str] = []
+            i = 0
+            while i < len(all_error_sources):
+                line = all_error_sources[i]
+                line_lower = line.lower()
+                
+                # Check for keywords or Playwright patterns
+                matches_keyword = any(k in line_lower for k in keywords)
+                matches_pattern = any(p in line_lower for p in playwright_patterns)
+                
+                if matches_keyword or matches_pattern:
+                    lines.append(line)
+                    # Include up to 3 following lines for additional context
+                    context_lines = all_error_sources[i + 1 : i + 4]
+                    lines.extend(context_lines)
+                    i += 4
+                else:
+                    # Even if line doesn't match keywords, include it if it looks like
+                    # it contains useful debugging information (e.g., stack traces, file paths)
+                    if any(indicator in line for indicator in [':', '/', '\\', '(', ')', '[', ']']):
+                        # This might be a file path, stack trace line, or structured data
+                        if len(line.strip()) > 5:  # Avoid including very short lines
+                            lines.append(f"INFO:context:{line}")
+                    i += 1
+
+            # Ensure we capture sufficient error context but limit total size
+            if lines:
+                # Take more lines for better context (up to 15 instead of 10)
+                error_line = "\n".join(lines[-15:]) + "\n--------------------------------\n"
     dom_text = strip_html(page)
     if elements:
         nodes: list[DOMElementNode] = []
@@ -114,7 +169,7 @@ def build_prompt(
             - **入力済みの値**: フォームフィールドに既に入力された内容（例：検索キーワード「箱根」が既に入力済みかどうか）\n
             - **現在の進行状況**: タスクのどの段階まで完了しているか\n
         - **重要**: 同じアクション（例：同じ要素への同じ値の入力）を**絶対に繰り返してはいけません**\n
-        - **直前のエラー:** `## 現在のエラー状況` に情報があるか？ もしあれば、そのエラーメッセージ (例: "Timeout", "not found", "not visible") の原因を具体的に推測します。「なぜタイムアウトしたのか？」「なぜ要素が見つからなかったのか？」を自問します。\n
+        - **直前のエラー:** 「現在のエラー状況」に情報があるか？ もしあれば、そのエラーメッセージ (例: "Timeout", "not found", "not visible") の原因を具体的に推測します。「なぜタイムアウトしたのか？」「なぜ要素が見つからなかったのか？」を自問します。\n
         - **変化の確認:** 直前のアクションでページの何が変化したか？ 新しい要素は出現したか？ 何かが消えたか？ ページ遷移は発生したか？\n
 
         **3. 次のアクションの検討 (Action Planning):**

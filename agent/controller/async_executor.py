@@ -110,11 +110,28 @@ class AsyncExecutor:
                 task.status = TaskStatus.FAILED
                 task.completed_at = time.time()
                 
-                # Create a result with warnings from the exception
-                error_warning = _truncate_warning(f"ERROR:auto:Async execution failed - {str(e)}")
+                # Create comprehensive warnings from the exception
+                error_type = type(e).__name__
+                error_detail = str(e)
+                
+                # Try to get more detailed error information
+                import traceback
+                stack_info = traceback.format_exc()
+                
+                warnings = []
+                warnings.append(_truncate_warning(f"ERROR:auto:Async execution failed ({error_type}) - {error_detail}"))
+                
+                # Include stack trace information if helpful
+                if "playwright" in stack_info.lower() or "automation" in stack_info.lower():
+                    stack_lines = stack_info.splitlines()
+                    relevant_stack = [line for line in stack_lines if any(keyword in line.lower() for keyword in ['playwright', 'automation', 'error', 'exception', 'traceback'])]
+                    if relevant_stack:
+                        stack_warning = f"STACK:auto:{' | '.join(relevant_stack[:3])}"  # First 3 relevant lines
+                        warnings.append(_truncate_warning(stack_warning))
+                
                 task.result = {
                     "html": "", 
-                    "warnings": [error_warning]
+                    "warnings": warnings
                 }
                 
                 log.error("Failed execution for task %s: %s", task_id, e)
