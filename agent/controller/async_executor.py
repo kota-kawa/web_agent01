@@ -164,6 +164,20 @@ class AsyncExecutor:
             del self.tasks[task_id]
             log.debug("Cleaned up old task %s", task_id)
     
+    def cancel_all_tasks(self):
+        """Cancel all running and pending tasks."""
+        cancelled_count = 0
+        for task_id, task in list(self.tasks.items()):
+            if task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
+                task.status = TaskStatus.FAILED
+                task.error = "Cancelled by user reset"
+                task.completed_at = time.time()
+                cancelled_count += 1
+                log.info("Cancelled task %s due to reset", task_id)
+        
+        log.info("Cancelled %d tasks due to reset", cancelled_count)
+        return cancelled_count
+    
     def shutdown(self):
         """Shutdown the executor."""
         log.info("Shutting down AsyncExecutor")
