@@ -84,7 +84,7 @@ def execute_dsl(payload, timeout=120):
                 # If we succeeded on retry, still include previous attempt errors as warnings
                 if all_errors:
                     retry_warnings = [f"ERROR:auto:Retry attempt {i+1} - {error}" for i, error in enumerate(all_errors)]
-                    # Truncate each warning message to 1000 characters
+                    # Include all warning messages without character limits
                     retry_warnings = [_truncate_warning(warning) for warning in retry_warnings]
                     # Add retry warnings to the successful result
                     if "warnings" not in result:
@@ -132,7 +132,7 @@ def execute_dsl(payload, timeout=120):
                         value_lower = value.lower()
                         for pattern in error_patterns:
                             if pattern in value_lower:
-                                error_indicators.append(f"INFO:playwright:{key}={value[:200]}{'...' if len(value) > 200 else ''}")
+                                error_indicators.append(f"INFO:playwright:{key}={value}")
                                 break  # Only add one indicator per field
                 
                 # Add Playwright error indicators as warnings
@@ -143,17 +143,17 @@ def execute_dsl(payload, timeout=120):
                 if "execution_info" in result and result["execution_info"]:
                     exec_info = result["execution_info"]
                     if isinstance(exec_info, (list, str)):
-                        exec_warning = f"INFO:playwright:execution_info={str(exec_info)[:300]}{'...' if len(str(exec_info)) > 300 else ''}"
+                        exec_warning = f"INFO:playwright:execution_info={str(exec_info)}"
                         enhanced_warnings.append(_truncate_warning(exec_warning))
                 
                 # Check for any field that might contain error information
                 error_fields = ["error_message", "error_details", "failures", "exceptions", "stack_trace", "console_errors"]
                 for field in error_fields:
                     if field in result and result[field]:
-                        field_warning = f"ERROR:playwright:{field}={str(result[field])[:300]}{'...' if len(str(result[field])) > 300 else ''}"
+                        field_warning = f"ERROR:playwright:{field}={str(result[field])}"
                         enhanced_warnings.append(_truncate_warning(field_warning))
             
-            # Ensure all warnings are truncated
+            # Include all warnings without character limits
             result["warnings"] = [_truncate_warning(warning) for warning in enhanced_warnings]
             
             return result
@@ -175,7 +175,7 @@ def execute_dsl(payload, timeout=120):
             # Try to extract additional error information from response body
             if e.response is not None:
                 try:
-                    response_text = e.response.text[:500]  # First 500 chars of response
+                    response_text = e.response.text
                     if response_text.strip():
                         error_details += f" - Response: {response_text}"
                 except Exception:
@@ -202,15 +202,15 @@ def execute_dsl(payload, timeout=120):
             error_detail = str(e)
             # Try to extract more specific connection issues
             if "Connection refused" in error_detail:
-                current_error = f"Connection refused - Automation server not accepting connections: {error_detail[:300]}"
+                current_error = f"Connection refused - Automation server not accepting connections: {error_detail}"
             elif "Name resolution" in error_detail or "Failed to resolve" in error_detail:
-                current_error = f"DNS resolution failed - Cannot resolve automation server hostname: {error_detail[:300]}"
+                current_error = f"DNS resolution failed - Cannot resolve automation server hostname: {error_detail}"
             elif "Network is unreachable" in error_detail:
-                current_error = f"Network unreachable - Cannot reach automation server: {error_detail[:300]}"
+                current_error = f"Network unreachable - Cannot reach automation server: {error_detail}"
             elif "Connection timeout" in error_detail or "timed out" in error_detail:
-                current_error = f"Connection timeout - Server not responding: {error_detail[:300]}"
+                current_error = f"Connection timeout - Server not responding: {error_detail}"
             else:
-                current_error = f"Connection error - Could not connect to automation server: {error_detail[:300]}"
+                current_error = f"Connection error - Could not connect to automation server: {error_detail}"
             
             all_errors.append(current_error)
             log.error("execute_dsl connection error on attempt %d: %s", attempt, current_error)
@@ -223,7 +223,7 @@ def execute_dsl(payload, timeout=120):
             # Capture detailed information about other request-related errors
             error_detail = str(e)
             error_type = type(e).__name__
-            current_error = f"Request error ({error_type}) - {error_detail[:400]}"
+            current_error = f"Request error ({error_type}) - {error_detail}"
             all_errors.append(current_error)
             log.error("execute_dsl request error on attempt %d: %s", attempt, current_error)
             if attempt < max_retries:
@@ -236,7 +236,7 @@ def execute_dsl(payload, timeout=120):
             error_type = type(e).__name__
             error_detail = str(e)
             import traceback
-            stack_trace = traceback.format_exc()[:500]  # First 500 chars of stack trace
+            stack_trace = traceback.format_exc()
             current_error = f"Unexpected error ({error_type}) - {error_detail} | Stack: {stack_trace}"
             all_errors.append(current_error)
             log.error("execute_dsl unexpected error on attempt %d: %s", attempt, current_error)

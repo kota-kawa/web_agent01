@@ -116,7 +116,7 @@ class AsyncExecutor:
                 # Ensure warnings are properly formatted and truncated
                 if result and isinstance(result, dict):
                     if "warnings" in result and result["warnings"]:
-                        # Truncate each warning to 1000 characters
+                        # Include all warning messages without character limits
                         result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
                     
                     # If execution returned an error but not in warnings format, convert it

@@ -281,7 +281,7 @@ def get_execution_status(task_id):
         if status is None:
             return jsonify({"error": "Task not found"}), 404
         
-        # Ensure warnings in the result are properly truncated
+        # Include all warnings without character limits
         if status and "result" in status and status["result"] and isinstance(status["result"], dict):
             if "warnings" in status["result"] and status["result"]["warnings"]:
                 status["result"]["warnings"] = [_truncate_warning(warning) for warning in status["result"]["warnings"]]
@@ -371,7 +371,7 @@ def forward_dsl():
     try:
         res_obj = execute_dsl(payload, timeout=120)
         
-        # Ensure warnings are properly formatted and truncated
+        # Include all warnings without character limits
         if res_obj and isinstance(res_obj, dict) and "warnings" in res_obj:
             res_obj["warnings"] = [_truncate_warning(warning) for warning in res_obj["warnings"]]
         
