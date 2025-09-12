@@ -9,26 +9,60 @@ let stopRequested   = false;
 window.stopRequested = false;  // Make it globally accessible
 const START_URL = window.START_URL || "https://www.yahoo.co.jp";
 
-// screenshot helper
+// screenshot helper with improved error handling
 async function captureScreenshot() {
-  //const iframe = document.getElementById("vnc_frame");
-  //if (!iframe) return null;
-  try {
-    //const canvas = await html2canvas(iframe, {useCORS: true});
-    //return canvas.toDataURL("image/png");
+  const maxRetries = 2;
+  let lastError = null;
   
-      // バックエンドの Playwright API を直接呼び出してスクリーンショットを取得
-    const response = await fetch("/screenshot");
-    if (!response.ok) {
-        console.error("screenshot fetch failed:", response.status, await response.text());
-        return null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Add timeout for screenshot requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      
+      const response = await fetch("/screenshot", {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "Unknown error");
+        console.warn(`Screenshot fetch failed (attempt ${attempt}/${maxRetries}):`, response.status, errorText);
+        
+        // Don't retry on client errors (4xx)
+        if (response.status >= 400 && response.status < 500) {
+          console.error("Screenshot client error, not retrying:", response.status);
+          return null;
+        }
+        
+        lastError = `HTTP ${response.status}: ${errorText}`;
+        
+        if (attempt < maxRetries) {
+          await sleep(1000 * attempt); // 1s, 2s delay
+          continue;
+        }
+      } else {
+        const data = await response.text();
+        if (attempt > 1) {
+          console.log("Screenshot retry succeeded");
+        }
+        return data;
+      }
+    } catch (e) {
+      console.warn(`Screenshot error (attempt ${attempt}/${maxRetries}):`, e.message);
+      lastError = e.message;
+      
+      // Retry on network errors but not on abort
+      if (attempt < maxRetries && e.name !== 'AbortError') {
+        await sleep(1000 * attempt);
+        continue;
+      }
     }
-    return await response.text(); // base64エンコードされたデータURIを返す
-
-  } catch (e) {
-    console.error("screenshot error:", e);
-    return null;
   }
+  
+  console.error("Screenshot failed after all retries:", lastError);
+  return null;
 }
 
 
@@ -356,6 +390,26 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 
   if (res.raw) console.log("LLM raw output:\n", res.raw);
 
+  // Handle command errors
+  if (res.error) {
+    console.warn("Command execution had errors:", res.error);
+    if (showInUI && thinkingElement) {
+      thinkingElement.textContent = res.explanation || "通信エラーが発生しました。";
+      thinkingElement.querySelector(".spinner")?.remove();
+    }
+    // Return early if there's a communication error
+    if (res.error.includes("Command failed") || res.error.includes("Failed to fetch")) {
+      return { 
+        cont: false, 
+        explanation: res.explanation || "通信エラーが発生しました。しばらく待ってから再試行してください。", 
+        memory: "", 
+        html: html, 
+        screenshot: screenshot, 
+        error: res.error 
+      };
+    }
+  }
+
   // Update UI immediately with LLM response
   if (showInUI && res.explanation && thinkingElement) {
     thinkingElement.textContent = res.explanation;
@@ -416,9 +470,16 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         statusElement.style.color = "#ffc107";
         errInfo = "Operation was stopped by user";
       } else if (executionResult.status === "timeout") {
-        statusElement.textContent = "⏱ ブラウザ操作のタイムアウト - 処理は継続中です";
-        statusElement.style.color = "#fd7e14";
-        errInfo = "Execution status polling timed out";
+        // Distinguish between different types of timeouts
+        if (executionResult.recoverable) {
+          statusElement.textContent = "⚠️ 通信エラーが発生しましたが、操作は継続中の可能性があります";
+          statusElement.style.color = "#fd7e14";
+          errInfo = "Network communication timeout - operation may still be running";
+        } else {
+          statusElement.textContent = "⏱ ブラウザ操作のタイムアウト - 処理は継続中です";
+          statusElement.style.color = "#fd7e14";
+          errInfo = "Execution status polling timed out";
+        }
         // Don't treat timeout as a complete failure, just note it
       } else {
         statusElement.textContent = "🔄 ブラウザ操作の状態が不明です";
@@ -426,32 +487,50 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         errInfo = "Unknown execution status";
       }
     } else {
-      // Handle the case where polling completely failed
+      // Handle the case where polling completely failed (shouldn't happen now due to timeout handling)
       statusElement.textContent = "⚠️ 実行状態の確認に失敗しました - 操作は継続中の可能性があります";
       statusElement.style.color = "#ffc107";
       console.warn("Polling failed completely for task", res.task_id);
       
-      // Try to get current page state as fallback
+      // Try multiple fallback strategies
+      let fallbackSuccess = false;
+      
+      // Strategy 1: Try to get current page state
       try {
-        const fallbackHtml = await fetch("/vnc-source").then(r => r.ok ? r.text() : "").catch(() => "");
+        const fallbackHtml = await fetch("/vnc-source", {
+          signal: AbortSignal.timeout(5000)
+        }).then(r => r.ok ? r.text() : "").catch(() => "");
+        
         if (fallbackHtml && fallbackHtml !== newHtml) {
           newHtml = fallbackHtml;
           console.log("Using fallback HTML from vnc-source");
-          
-          // Update status to indicate we got some page state
           statusElement.textContent = "⚠️ 実行状態の確認に失敗しましたが、ページ状態を取得しました";
           statusElement.style.color = "#fd7e14";
+          fallbackSuccess = true;
         }
       } catch (e) {
         console.warn("Failed to get fallback HTML:", e);
       }
       
-      // Try to check if the server is still responsive
-      const serverHealthy = await checkServerHealth();
-      if (!serverHealthy) {
-        statusElement.textContent = "❌ サーバーとの通信に問題があります";
-        statusElement.style.color = "#dc3545";
-        errInfo = "Server communication failed";
+      // Strategy 2: Check server health if previous fallback didn't work
+      if (!fallbackSuccess) {
+        try {
+          const serverHealthy = await checkServerHealth();
+          if (!serverHealthy) {
+            statusElement.textContent = "⚠️ サーバーとの通信に一時的な問題があります - 自動的に回復する可能性があります";
+            statusElement.style.color = "#ffc107";
+            errInfo = "Temporary server communication issue";
+          } else {
+            statusElement.textContent = "⚠️ 操作の状態確認に失敗しましたが、サーバーは正常です";
+            statusElement.style.color = "#fd7e14";
+            errInfo = "Status check failed but server is responsive";
+          }
+        } catch (e) {
+          console.warn("Health check failed:", e);
+          statusElement.textContent = "⚠️ 通信の問題により状態を確認できません";
+          statusElement.style.color = "#ffc107";
+          errInfo = "Network communication issue";
+        }
       }
     }
     
@@ -515,10 +594,14 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
         consecutiveErrors++;
         console.warn(`Failed to get execution status (attempt ${attempt + 1}): ${response.status}`);
         
-        // If too many consecutive errors, give up
+        // If too many consecutive errors, return timeout instead of null
         if (consecutiveErrors >= maxConsecutiveErrors) {
           console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
-          return null;
+          return { 
+            status: "timeout", 
+            error: `Server connection failed after ${consecutiveErrors} consecutive errors`,
+            recoverable: true
+          };
         }
         
         // For server errors, wait longer before retry
@@ -572,10 +655,14 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
         return { status: "stopped", error: "Operation was stopped by user" };
       }
       
-      // If too many consecutive errors, give up
+      // If too many consecutive errors, return timeout instead of null for better UX
       if (consecutiveErrors >= maxConsecutiveErrors) {
         console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
-        return null;
+        return { 
+          status: "timeout", 
+          error: `Polling failed after ${consecutiveErrors} consecutive network errors`,
+          recoverable: true
+        };
       }
       
       // Use longer delay for network errors
