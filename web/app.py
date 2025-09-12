@@ -230,26 +230,30 @@ def execute():
     # If there are actions, start async Playwright execution immediately
     task_id = None
     if actions:
-        executor = get_async_executor()
-        task_id = executor.create_task()
-        
-        # Start Playwright execution in parallel
-        success = executor.submit_playwright_execution(
-            task_id, 
-            execute_dsl,  # The function to execute
-            actions       # The actions to execute
-        )
-        
-        if success:
-            # Also start parallel data fetching
-            fetch_funcs = {
-                "updated_html": vnc_html,
-                # Add screenshot fetching if needed in the future
-            }
-            executor.submit_parallel_data_fetch(task_id, fetch_funcs)
-            log.info("Started async execution for task %s", task_id)
-        else:
-            log.error("Failed to start async execution")
+        try:
+            executor = get_async_executor()
+            task_id = executor.create_task()
+            
+            # Start Playwright execution in parallel
+            success = executor.submit_playwright_execution(
+                task_id, 
+                execute_dsl,  # The function to execute
+                actions       # The actions to execute
+            )
+            
+            if success:
+                # Also start parallel data fetching
+                fetch_funcs = {
+                    "updated_html": vnc_html,
+                    # Add screenshot fetching if needed in the future
+                }
+                executor.submit_parallel_data_fetch(task_id, fetch_funcs)
+                log.info("Started async execution for task %s", task_id)
+            else:
+                log.error("Failed to start async execution")
+                task_id = None
+        except Exception as e:
+            log.error("Error starting async execution: %s", e)
             task_id = None
     
     # Return LLM response immediately with task_id for status tracking

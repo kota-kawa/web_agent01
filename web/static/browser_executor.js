@@ -390,10 +390,12 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     // Fallback to synchronous execution if async is not available
     console.log("Falling back to synchronous execution");
     const acts = normalizeActions(res);
-    const ret = await sendDSL(acts);
-    if (ret) {
-      newHtml = ret.html || newHtml;
-      errInfo = ret.error || null;
+    if (acts && acts.length > 0) {
+      const ret = await sendDSL(acts);
+      if (ret) {
+        newHtml = ret.html || newHtml;
+        errInfo = ret.error || null;
+      }
     }
     newShot = await captureScreenshot();
   }
@@ -412,12 +414,20 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
    Poll execution status
    ====================================== */
 async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
+  const startTime = Date.now();
+  const maxDuration = maxAttempts * interval; // Maximum time to wait
+  
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const response = await fetch(`/execution-status/${taskId}`);
       if (!response.ok) {
         console.error("Failed to get execution status:", response.status);
-        return null;
+        // Don't immediately return null, try a few more times
+        if (attempt > 3) {
+          return null;
+        }
+        await sleep(interval);
+        continue;
       }
       
       const status = await response.json();
@@ -427,12 +437,22 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
         return status;
       }
       
+      // Check if we've exceeded the maximum duration
+      if (Date.now() - startTime > maxDuration) {
+        console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms`);
+        break;
+      }
+      
       // Wait before next poll
       await sleep(interval);
       
     } catch (e) {
       console.error("Error polling execution status:", e);
-      // Continue polling on error
+      // Continue polling on error, but limit attempts
+      if (attempt > 5) {
+        console.error("Too many polling errors, giving up");
+        return null;
+      }
       await sleep(interval);
     }
   }
