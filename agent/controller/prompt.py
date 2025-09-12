@@ -129,10 +129,10 @@ def build_prompt(
                             lines.append(f"INFO:context:{line}")
                     i += 1
 
-            # Ensure we capture sufficient error context but limit total size
+            # Capture all error context without limiting line count
             if lines:
-                # Take more lines for better context (up to 15 instead of 10)
-                error_line = "\n".join(lines[-15:]) + "\n--------------------------------\n"
+                # Include all error lines without truncation
+                error_line = "\n".join(lines) + "\n--------------------------------\n"
     dom_text = strip_html(page)
     if elements:
         nodes: list[DOMElementNode] = []
