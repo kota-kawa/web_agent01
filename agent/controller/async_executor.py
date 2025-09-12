@@ -99,9 +99,10 @@ class AsyncExecutor:
             log.error("Task %s is not in pending state: %s", task_id, task.status)
             return False
             
-        def _truncate_warning(warning_msg, max_length=1000):
-            """Truncate warning message to specified length if too long."""
-            return warning_msg if len(warning_msg) <= max_length else warning_msg[:max_length-3] + "..."
+        def _truncate_warning(warning_msg, max_length=None):
+            """Return warning message without truncation (character limits removed)."""
+            # Character limits removed for conversation history as requested
+            return warning_msg
             
         def run_execution():
             try:
