@@ -354,7 +354,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     const executionResult = await pollExecutionStatus(res.task_id);
     
     if (executionResult) {
-      // Update status message
+      // Update status message based on result
       if (executionResult.status === "completed") {
         statusElement.textContent = "✅ ブラウザ操作が完了しました";
         statusElement.style.color = "#28a745";
@@ -379,6 +379,10 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         statusElement.textContent = "❌ ブラウザ操作に失敗しました";
         statusElement.style.color = "#dc3545";
         errInfo = executionResult.error || "Unknown execution error";
+      } else if (executionResult.status === "stopped") {
+        statusElement.textContent = "⏹ ブラウザ操作が停止されました";
+        statusElement.style.color = "#ffc107";
+        errInfo = "Operation was stopped by user";
       }
     } else {
       statusElement.textContent = "⚠️ 実行状態の確認に失敗しました";
@@ -420,6 +424,12 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
   const maxDuration = maxAttempts * interval; // Maximum time to wait
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Check stop flags before each poll attempt
+    if (stopRequested || window.stopRequested) {
+      console.log(`Polling stopped for task ${taskId} due to stop request`);
+      return { status: "stopped", error: "Operation was stopped by user" };
+    }
+    
     try {
       const response = await fetch(`/execution-status/${taskId}`);
       if (!response.ok) {
@@ -445,11 +455,22 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
         break;
       }
       
+      // Check stop flags again before sleeping
+      if (stopRequested || window.stopRequested) {
+        console.log(`Polling stopped for task ${taskId} during wait`);
+        return { status: "stopped", error: "Operation was stopped by user" };
+      }
+      
       // Wait before next poll
       await sleep(interval);
       
     } catch (e) {
       console.error("Error polling execution status:", e);
+      // Check stop flags even in error case
+      if (stopRequested || window.stopRequested) {
+        return { status: "stopped", error: "Operation was stopped by user" };
+      }
+      
       // Continue polling on error, but limit attempts
       if (attempt > 5) {
         console.error("Too many polling errors, giving up");

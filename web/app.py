@@ -165,8 +165,16 @@ def memory():
 # ----- Reset endpoint -----
 @app.post("/reset")
 def reset():
-    """Reset conversation history by clearing the history file"""
+    """Reset conversation history by clearing the history file and canceling all tasks"""
     try:
+        # Cancel all running async tasks
+        try:
+            executor = get_async_executor()
+            cancelled_count = executor.cancel_all_tasks()
+            log.info("Reset: cancelled %d async tasks", cancelled_count)
+        except Exception as e:
+            log.warning("Failed to cancel async tasks during reset: %s", e)
+        
         # Clear the history by saving an empty list
         save_hist([])
         log.info("Conversation history reset successfully")

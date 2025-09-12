@@ -12,9 +12,50 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       
-      // Stop any ongoing LLM operations
+      // Stop any ongoing operations immediately
       if (typeof window.stopRequested !== 'undefined') {
         window.stopRequested = true;
+      }
+      
+      // Also stop the local stopRequested flag in browser_executor.js
+      if (typeof stopRequested !== 'undefined') {
+        stopRequested = true;
+      }
+      
+      // Reset pause/resume state
+      if (typeof pausedRequested !== 'undefined') {
+        pausedRequested = false;
+      }
+      
+      // Reset resume resolver to prevent stuck promises
+      if (typeof resumeResolver === 'function') {
+        try {
+          resumeResolver();
+        } catch (e) {
+          console.log("Resume resolver already resolved or invalid");
+        }
+      }
+      if (typeof window.resumeResolver !== 'undefined') {
+        window.resumeResolver = null;
+      }
+      
+      // Re-enable UI elements that might be disabled during execution
+      if (sendButton) {
+        sendButton.disabled = false;
+        sendButton.textContent = "送信";
+      }
+      if (userInput) {
+        userInput.disabled = false;
+      }
+      
+      // Reset button states
+      const pauseBtn = document.getElementById("pause-button");
+      const resumeBtn = document.getElementById("resume-button");
+      if (pauseBtn) {
+        pauseBtn.style.display = "inline-block";
+      }
+      if (resumeBtn) {
+        resumeBtn.style.display = "none";
       }
       
       try {
@@ -40,6 +81,11 @@ document.addEventListener("DOMContentLoaded", () => {
         chatArea.appendChild(successMsg);
         
         chatArea.scrollTop = chatArea.scrollHeight;
+        
+        // Focus on input field for immediate use
+        if (userInput) {
+          userInput.focus();
+        }
       } catch (e) {
         console.error("reset error:", e);
         
@@ -50,6 +96,16 @@ document.addEventListener("DOMContentLoaded", () => {
         errorMsg.style.color = "#dc3545";
         chatArea.appendChild(errorMsg);
         chatArea.scrollTop = chatArea.scrollHeight;
+        
+        // Still re-enable UI even if reset failed
+        if (sendButton) {
+          sendButton.disabled = false;
+          sendButton.textContent = "送信";
+        }
+        if (userInput) {
+          userInput.disabled = false;
+          userInput.focus();
+        }
       }
     });
   }
