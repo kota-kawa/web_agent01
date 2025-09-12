@@ -87,39 +87,131 @@ function normalizeActions(instr) {
 }
 
 /* ======================================
-   Health check and retry utilities
+   Enhanced health check utilities
    ====================================== */
 async function checkServerHealth() {
   try {
-    // Use the new health endpoint
-    const response = await fetch("/health", {
-      method: "GET",
-      signal: AbortSignal.timeout(5000) // 5 second timeout
-    });
+    // Use the new health endpoint with retry logic
+    const maxRetries = 2;
+    let lastError = null;
     
-    if (response.ok) {
-      const healthData = await response.json();
-      return healthData.status === "healthy";
-    } else {
-      console.warn("Health check returned non-OK status:", response.status);
-      return false;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeout = 3000 + (attempt * 1000); // 3s, 4s, 5s
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        
+        const response = await fetch("/health", {
+          method: "GET",
+          signal: controller.signal,
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          const healthData = await response.json();
+          const isHealthy = healthData.status === "healthy";
+          
+          if (attempt > 1) {
+            console.log(`Health check succeeded on attempt ${attempt}`);
+          }
+          
+          return isHealthy;
+        } else {
+          lastError = `HTTP ${response.status}`;
+          console.warn(`Health check failed (attempt ${attempt}/${maxRetries}): ${response.status}`);
+          
+          if (attempt < maxRetries) {
+            await sleep(500 * attempt); // 500ms, 1s delay
+            continue;
+          }
+        }
+      } catch (e) {
+        lastError = e.message;
+        
+        if (e.name === 'AbortError') {
+          console.warn(`Health check timeout (attempt ${attempt}/${maxRetries}): ${timeout}ms`);
+        } else {
+          console.warn(`Health check error (attempt ${attempt}/${maxRetries}):`, e.message);
+        }
+        
+        if (attempt < maxRetries) {
+          await sleep(500 * attempt);
+          continue;
+        }
+      }
     }
+    
+    console.warn(`Health check failed after ${maxRetries} attempts:`, lastError);
+    return false;
+    
   } catch (e) {
-    console.warn("Health check failed:", e);
+    console.warn("Health check completely failed:", e);
     return false;
   }
 }
 
-// Alternative health check using the automation server
+// Enhanced automation server health check
 async function checkAutomationServerHealth() {
   try {
-    const response = await fetch("/automation/healthz", {
-      method: "GET",
-      signal: AbortSignal.timeout(3000) // 3 second timeout
-    });
-    return response.ok;
+    const maxRetries = 2;
+    let lastError = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeout = 2000 + (attempt * 500); // 2s, 2.5s, 3s
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        
+        const response = await fetch("/automation/healthz", {
+          method: "GET",
+          signal: controller.signal,
+          headers: {
+            'Cache-Control': 'no-cache'
+          }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          if (attempt > 1) {
+            console.log(`Automation health check succeeded on attempt ${attempt}`);
+          }
+          return true;
+        } else {
+          lastError = `HTTP ${response.status}`;
+          console.warn(`Automation health check failed (attempt ${attempt}/${maxRetries}): ${response.status}`);
+          
+          if (attempt < maxRetries) {
+            await sleep(300 * attempt); // 300ms, 600ms delay
+            continue;
+          }
+        }
+      } catch (e) {
+        lastError = e.message;
+        
+        if (e.name === 'AbortError') {
+          console.warn(`Automation health timeout (attempt ${attempt}/${maxRetries}): ${timeout}ms`);
+        } else {
+          console.warn(`Automation health error (attempt ${attempt}/${maxRetries}):`, e.message);
+        }
+        
+        if (attempt < maxRetries) {
+          await sleep(300 * attempt);
+          continue;
+        }
+      }
+    }
+    
+    console.warn(`Automation health check failed after ${maxRetries} attempts:`, lastError);
+    return false;
+    
   } catch (e) {
-    console.warn("Automation server health check failed:", e);
+    console.warn("Automation health check completely failed:", e);
     return false;
   }
 }
@@ -461,6 +553,21 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
             console.log("Using HTML from async execution result");
           }
         }
+      } else if (executionResult.status === "completed_via_fallback") {
+        statusElement.textContent = "✅ ブラウザ操作が完了しました（フォールバック経由）";
+        statusElement.style.color = "#28a745";
+        
+        // Handle fallback completion
+        if (executionResult.result) {
+          newHtml = executionResult.result.html || newHtml;
+          errInfo = null; // Clear error since we recovered
+          
+          // Show fallback warnings
+          if (executionResult.result.warnings && executionResult.result.warnings.length > 0) {
+            displayWarnings(executionResult.result.warnings, "fallback");
+            await storeWarningsInHistory(executionResult.result.warnings);
+          }
+        }
       } else if (executionResult.status === "failed") {
         statusElement.textContent = "❌ ブラウザ操作に失敗しました";
         statusElement.style.color = "#dc3545";
@@ -470,16 +577,35 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         statusElement.style.color = "#ffc107";
         errInfo = "Operation was stopped by user";
       } else if (executionResult.status === "timeout") {
-        // Distinguish between different types of timeouts
-        if (executionResult.recoverable) {
-          statusElement.textContent = "⚠️ 通信エラーが発生しましたが、操作は継続中の可能性があります";
+        // Enhanced timeout handling with fallback information
+        const serverStatus = executionResult.server_status;
+        const fallbackReason = executionResult.fallback_reason;
+        
+        if (executionResult.result && executionResult.result.html) {
+          // We got some data via fallback
+          statusElement.textContent = "⚠️ 状態確認にエラーがありましたが、ページ状態を取得できました";
           statusElement.style.color = "#fd7e14";
-          errInfo = "Network communication timeout - operation may still be running";
+          newHtml = executionResult.result.html;
+          
+          // Show fallback warnings
+          if (executionResult.result.warnings) {
+            displayWarnings(executionResult.result.warnings, "fallback");
+            await storeWarningsInHistory(executionResult.result.warnings);
+          }
+          
+          errInfo = null; // Clear error since we recovered some data
+        } else if (serverStatus && (serverStatus.main_server || serverStatus.automation_server)) {
+          // Server is healthy but polling failed
+          statusElement.textContent = "⚠️ 状態確認は失敗しましたが、サーバーは正常に動作しています";
+          statusElement.style.color = "#fd7e14";
+          errInfo = `Status polling failed (${fallbackReason}) but server is responsive`;
         } else {
-          statusElement.textContent = "⏱ ブラウザ操作のタイムアウト - 処理は継続中です";
-          statusElement.style.color = "#fd7e14";
-          errInfo = "Execution status polling timed out";
+          // Complete communication failure
+          statusElement.textContent = "⚠️ サーバーとの通信に問題があります - 自動的に回復する可能性があります";
+          statusElement.style.color = "#ffc107";
+          errInfo = `Communication issue (${fallbackReason}) - operation may still be running`;
         }
+        
         // Don't treat timeout as a complete failure, just note it
       } else {
         statusElement.textContent = "🔄 ブラウザ操作の状態が不明です";
@@ -487,50 +613,34 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         errInfo = "Unknown execution status";
       }
     } else {
-      // Handle the case where polling completely failed (shouldn't happen now due to timeout handling)
-      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました - 操作は継続中の可能性があります";
-      statusElement.style.color = "#ffc107";
-      console.warn("Polling failed completely for task", res.task_id);
+      // Handle the case where polling completely failed - this should be rare now
+      console.warn("Polling returned null for task", res.task_id);
       
-      // Try multiple fallback strategies
-      let fallbackSuccess = false;
+      // Try one final fallback using our graceful fallback mechanism
+      const fallbackResult = await attemptGracefulFallback(res.task_id, null, "polling_null_result");
       
-      // Strategy 1: Try to get current page state
-      try {
-        const fallbackHtml = await fetch("/vnc-source", {
-          signal: AbortSignal.timeout(5000)
-        }).then(r => r.ok ? r.text() : "").catch(() => "");
+      if (fallbackResult && fallbackResult.result && fallbackResult.result.html) {
+        // We managed to recover some data
+        statusElement.textContent = "⚠️ 実行状態の確認には失敗しましたが、現在のページ状態を取得しました";
+        statusElement.style.color = "#fd7e14";
+        newHtml = fallbackResult.result.html;
         
-        if (fallbackHtml && fallbackHtml !== newHtml) {
-          newHtml = fallbackHtml;
-          console.log("Using fallback HTML from vnc-source");
-          statusElement.textContent = "⚠️ 実行状態の確認に失敗しましたが、ページ状態を取得しました";
-          statusElement.style.color = "#fd7e14";
-          fallbackSuccess = true;
+        if (fallbackResult.result.warnings) {
+          displayWarnings(fallbackResult.result.warnings, "final_fallback");
+          await storeWarningsInHistory(fallbackResult.result.warnings);
         }
-      } catch (e) {
-        console.warn("Failed to get fallback HTML:", e);
-      }
-      
-      // Strategy 2: Check server health if previous fallback didn't work
-      if (!fallbackSuccess) {
-        try {
-          const serverHealthy = await checkServerHealth();
-          if (!serverHealthy) {
-            statusElement.textContent = "⚠️ サーバーとの通信に一時的な問題があります - 自動的に回復する可能性があります";
-            statusElement.style.color = "#ffc107";
-            errInfo = "Temporary server communication issue";
-          } else {
-            statusElement.textContent = "⚠️ 操作の状態確認に失敗しましたが、サーバーは正常です";
-            statusElement.style.color = "#fd7e14";
-            errInfo = "Status check failed but server is responsive";
-          }
-        } catch (e) {
-          console.warn("Health check failed:", e);
-          statusElement.textContent = "⚠️ 通信の問題により状態を確認できません";
-          statusElement.style.color = "#ffc107";
-          errInfo = "Network communication issue";
-        }
+      } else {
+        // Complete failure - but be less alarming
+        statusElement.textContent = "⚠️ 実行状態を確認できませんでした - ページの手動確認をお勧めします";
+        statusElement.style.color = "#ffc107";
+        
+        // Add a helpful message
+        const helpMessage = document.createElement("p");
+        helpMessage.classList.add("system-message");
+        helpMessage.textContent = "💡 操作は完了している可能性があります。必要に応じてページを手動で確認してください。";
+        helpMessage.style.color = "#6c757d";
+        helpMessage.style.fontStyle = "italic";
+        chatArea.appendChild(helpMessage);
       }
     }
     
@@ -562,13 +672,20 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 }
 
 /* ======================================
-   Poll execution status with improved robustness
+   Poll execution status with enhanced robustness
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 500) {
+async function pollExecutionStatus(taskId, maxAttempts = 60, initialInterval = 300) {
   const startTime = Date.now();
-  const maxDuration = 60000; // Maximum 60 seconds total wait time
+  const maxDuration = 90000; // Extended to 90 seconds total wait time
   let consecutiveErrors = 0;
-  const maxConsecutiveErrors = 5;
+  const maxConsecutiveErrors = 3; // Reduced for faster fallback
+  let lastKnownStatus = null;
+  
+  // Pre-check server health before starting polling
+  const serverHealthy = await checkServerHealth();
+  if (!serverHealthy) {
+    console.warn(`Server appears unhealthy before polling task ${taskId}, but will try anyway`);
+  }
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // Check stop flags before each poll attempt
@@ -577,46 +694,56 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
       return { status: "stopped", error: "Operation was stopped by user" };
     }
     
-    // Adaptive interval: start fast, then slow down
-    const interval = Math.min(initialInterval + (attempt * 100), 2000); // 500ms to 2s max
+    // Adaptive interval with exponential backoff capped at 2s
+    const baseInterval = Math.min(initialInterval + (attempt * 50), 2000);
+    const errorMultiplier = consecutiveErrors > 0 ? Math.min(2 ** consecutiveErrors, 4) : 1;
+    const interval = Math.min(baseInterval * errorMultiplier, 3000);
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout per request
+      // Dynamic timeout: longer for later attempts when errors occur
+      const requestTimeout = Math.min(3000 + (consecutiveErrors * 1000), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), requestTimeout);
       
       const response = await fetch(`/execution-status/${taskId}`, {
-        signal: controller.signal
+        signal: controller.signal,
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
       });
       
       clearTimeout(timeoutId);
       
       if (!response.ok) {
         consecutiveErrors++;
-        console.warn(`Failed to get execution status (attempt ${attempt + 1}): ${response.status}`);
+        console.warn(`Failed to get execution status (attempt ${attempt + 1}/${maxAttempts}): ${response.status}`);
         
-        // If too many consecutive errors, return timeout instead of null
+        // Immediate fallback for client errors (4xx) - these won't improve with retrying
+        if (response.status >= 400 && response.status < 500) {
+          console.error(`Client error ${response.status} for task ${taskId}, attempting graceful fallback`);
+          return await attemptGracefulFallback(taskId, lastKnownStatus, "client_error");
+        }
+        
+        // For server errors, check if we should give up early
         if (consecutiveErrors >= maxConsecutiveErrors) {
-          console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
-          return { 
-            status: "timeout", 
-            error: `Server connection failed after ${consecutiveErrors} consecutive errors`,
-            recoverable: true
-          };
+          console.error(`Too many consecutive errors (${consecutiveErrors}) for task ${taskId}`);
+          return await attemptGracefulFallback(taskId, lastKnownStatus, "server_errors");
         }
         
-        // For server errors, wait longer before retry
-        if (response.status >= 500) {
-          await sleep(Math.min(interval * 2, 3000));
-        } else {
-          await sleep(interval);
-        }
+        // Exponential backoff for server errors
+        await sleep(interval);
         continue;
       }
       
       // Reset error counter on successful response
-      consecutiveErrors = 0;
+      if (consecutiveErrors > 0) {
+        console.log(`Connection recovered for task ${taskId} after ${consecutiveErrors} errors`);
+        consecutiveErrors = 0;
+      }
       
       const status = await response.json();
+      lastKnownStatus = status; // Store the last known good status
       console.log(`Task ${taskId} status (attempt ${attempt + 1}):`, status.status);
       
       // Task completed (successfully or failed)
@@ -627,8 +754,7 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
       // Check if we've exceeded the maximum duration
       if (Date.now() - startTime > maxDuration) {
         console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms`);
-        // Return current status even if not complete, rather than null
-        return status || { status: "timeout", error: "Polling timeout exceeded" };
+        return await attemptGracefulFallback(taskId, lastKnownStatus, "duration_timeout");
       }
       
       // Check stop flags again before sleeping
@@ -643,11 +769,13 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
     } catch (e) {
       consecutiveErrors++;
       
-      // Check for abort signal (our timeout)
+      // Log different types of errors differently
       if (e.name === 'AbortError') {
-        console.warn(`Request timeout for task ${taskId} (attempt ${attempt + 1})`);
+        console.warn(`Request timeout for task ${taskId} (attempt ${attempt + 1}/${maxAttempts}) - ${requestTimeout}ms timeout`);
+      } else if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
+        console.warn(`Network error for task ${taskId} (attempt ${attempt + 1}/${maxAttempts}):`, e.message);
       } else {
-        console.error(`Error polling execution status (attempt ${attempt + 1}):`, e);
+        console.error(`Unexpected error polling task ${taskId} (attempt ${attempt + 1}/${maxAttempts}):`, e);
       }
       
       // Check stop flags even in error case
@@ -655,27 +783,95 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
         return { status: "stopped", error: "Operation was stopped by user" };
       }
       
-      // If too many consecutive errors, return timeout instead of null for better UX
+      // Early fallback for persistent network issues
       if (consecutiveErrors >= maxConsecutiveErrors) {
-        console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
-        return { 
-          status: "timeout", 
-          error: `Polling failed after ${consecutiveErrors} consecutive network errors`,
-          recoverable: true
-        };
+        console.error(`Too many consecutive network errors (${consecutiveErrors}) for task ${taskId}`);
+        return await attemptGracefulFallback(taskId, lastKnownStatus, "network_errors");
       }
       
-      // Use longer delay for network errors
-      const errorDelay = e.name === 'AbortError' || e.message.includes('fetch') 
-        ? Math.min(interval * 2, 3000) 
-        : interval;
-      await sleep(errorDelay);
+      // Progressive delay for network errors
+      await sleep(interval);
     }
   }
   
   console.warn(`Polling reached maximum attempts (${maxAttempts}) for task ${taskId}`);
-  // Return a timeout status rather than null to provide better user feedback
-  return { status: "timeout", error: `Polling timeout after ${maxAttempts} attempts` };
+  return await attemptGracefulFallback(taskId, lastKnownStatus, "max_attempts");
+}
+
+/* ======================================
+   Graceful fallback when polling fails
+   ====================================== */
+async function attemptGracefulFallback(taskId, lastKnownStatus, reason) {
+  console.log(`Attempting graceful fallback for task ${taskId}, reason: ${reason}`);
+  
+  // Strategy 1: Try to get current page state regardless of task status
+  let fallbackHtml = null;
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 5000); // 5s timeout for fallback
+    
+    const htmlResponse = await fetch("/vnc-source", {
+      signal: controller.signal,
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    
+    if (htmlResponse.ok) {
+      fallbackHtml = await htmlResponse.text();
+      console.log(`Successfully retrieved fallback HTML for task ${taskId} (${fallbackHtml.length} chars)`);
+    }
+  } catch (e) {
+    console.warn(`Fallback HTML retrieval failed for task ${taskId}:`, e.message);
+  }
+  
+  // Strategy 2: Check overall server health
+  let serverHealthy = false;
+  try {
+    serverHealthy = await checkServerHealth();
+  } catch (e) {
+    console.warn(`Health check failed during fallback for task ${taskId}:`, e.message);
+  }
+  
+  // Strategy 3: Try automation server health as backup
+  let automationHealthy = false;
+  if (!serverHealthy) {
+    try {
+      automationHealthy = await checkAutomationServerHealth();
+    } catch (e) {
+      console.warn(`Automation health check failed for task ${taskId}:`, e.message);
+    }
+  }
+  
+  // Build result based on what we could determine
+  let result = {
+    status: "timeout",
+    error: `Status polling failed (${reason})`,
+    recoverable: true,
+    fallback_reason: reason
+  };
+  
+  // If we have recent status, use it
+  if (lastKnownStatus) {
+    result.last_known_status = lastKnownStatus.status;
+    result.last_known_time = lastKnownStatus.started_at || lastKnownStatus.created_at;
+  }
+  
+  // If we got HTML, include it in the result
+  if (fallbackHtml) {
+    result.result = {
+      html: fallbackHtml,
+      warnings: [`WARNING: Retrieved page state via fallback method due to polling failure (${reason})`]
+    };
+    result.status = "completed_via_fallback";
+    result.error = null; // Clear error since we recovered some data
+  }
+  
+  // Add health information
+  result.server_status = {
+    main_server: serverHealthy,
+    automation_server: automationHealthy
+  };
+  
+  return result;
 }
 
 /* ======================================

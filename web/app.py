@@ -272,20 +272,57 @@ def execute():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint for monitoring server status."""
+    """Enhanced health check endpoint for monitoring server status."""
     try:
         # Check if basic components are working
         executor = get_async_executor()
         
-        # Simple health indicators
+        # Test VNC connection
+        vnc_healthy = False
+        vnc_error = None
+        try:
+            # Quick test of VNC connectivity
+            vnc_response = requests.get(f"{VNC_API}/healthz", timeout=2)
+            vnc_healthy = vnc_response.status_code == 200
+        except Exception as e:
+            vnc_error = str(e)
+        
+        # Get task statistics
+        active_tasks = [t for t in executor.tasks.values() 
+                       if t.status.value in ["pending", "running"]]
+        completed_tasks = [t for t in executor.tasks.values() 
+                          if t.status.value == "completed"]
+        failed_tasks = [t for t in executor.tasks.values() 
+                       if t.status.value == "failed"]
+        
+        # Calculate server load indicators
+        total_tasks = len(executor.tasks)
+        load_indicator = "low"
+        if len(active_tasks) > 5:
+            load_indicator = "high"
+        elif len(active_tasks) > 2:
+            load_indicator = "medium"
+        
         health_status = {
-            "status": "healthy",
+            "status": "healthy" if vnc_healthy else "degraded",
             "timestamp": time.time(),
-            "async_executor": "available",
-            "tasks_count": len(executor.tasks)
+            "components": {
+                "async_executor": "available",
+                "vnc_server": "healthy" if vnc_healthy else "unhealthy",
+                "vnc_error": vnc_error
+            },
+            "metrics": {
+                "total_tasks": total_tasks,
+                "active_tasks": len(active_tasks),
+                "completed_tasks": len(completed_tasks),
+                "failed_tasks": len(failed_tasks),
+                "load_indicator": load_indicator
+            }
         }
         
-        return jsonify(health_status), 200
+        # Return degraded status if VNC is down but main server is up
+        status_code = 200 if vnc_healthy else 206  # 206 = Partial Content (degraded)
+        return jsonify(health_status), status_code
         
     except Exception as e:
         import uuid
@@ -296,7 +333,11 @@ def health_check():
             "status": "unhealthy",
             "error": str(e),
             "correlation_id": correlation_id,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "components": {
+                "async_executor": "error",
+                "vnc_server": "unknown"
+            }
         }), 503
 
 
