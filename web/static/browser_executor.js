@@ -377,7 +377,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
   if (res.async_execution && res.task_id) {
     console.log("Async execution started, task ID:", res.task_id);
     
-    // Show execution status
+    // Show execution status immediately (no delay)
     const statusElement = document.createElement("p");
     statusElement.classList.add("system-message");
     statusElement.textContent = "🔄 ブラウザ操作を実行中...";
@@ -385,15 +385,15 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     chatArea.appendChild(statusElement);
     chatArea.scrollTop = chatArea.scrollHeight;
     
-    // Update status periodically during polling
+    // Start polling immediately with optimized timing
     let pollingStartTime = Date.now();
     const updateInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - pollingStartTime) / 1000);
       statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
     }, 1000);
 
-    // Poll for execution completion
-    const executionResult = await pollExecutionStatus(res.task_id);
+    // Poll for execution completion with immediate first attempt
+    const executionResult = await pollExecutionStatus(res.task_id, 30, 500); // Reduced initial interval
     
     // Clear the update interval
     clearInterval(updateInterval);
@@ -493,7 +493,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 /* ======================================
    Poll execution status
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 1000) {
+async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 500) {
   const startTime = Date.now();
   const maxDuration = maxAttempts * initialInterval * 2; // More generous timeout
   let httpErrorCount = 0;

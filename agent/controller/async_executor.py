@@ -12,6 +12,19 @@ from enum import Enum
 
 log = logging.getLogger(__name__)
 
+# Pre-generated task ID pool for faster task creation
+_task_id_pool = []
+_task_id_pool_size = 100
+
+def _ensure_task_id_pool():
+    """Ensure task ID pool is populated for immediate task creation."""
+    global _task_id_pool
+    while len(_task_id_pool) < _task_id_pool_size:
+        _task_id_pool.append(str(uuid.uuid4()))
+
+# Initialize the pool at import time
+_ensure_task_id_pool()
+
 
 class TaskStatus(Enum):
     PENDING = "pending"
@@ -54,36 +67,49 @@ class AsyncExecutor:
         self.cleanup_interval = 300  # Clean up completed tasks after 5 minutes
         
     def create_task(self) -> str:
-        """Create a new task and return its ID."""
-        task_id = str(uuid.uuid4())
+        """Create a new task and return its ID (optimized for speed)."""
+        global _task_id_pool
+        
+        # Use pre-generated task ID for immediate creation
+        if _task_id_pool:
+            task_id = _task_id_pool.pop()
+        else:
+            # Fallback to generating new ID if pool is empty
+            task_id = str(uuid.uuid4())
+            log.warning("Task ID pool exhausted, generating new ID")
+        
+        # Create task with minimal overhead
         self.tasks[task_id] = ExecutionTask(task_id=task_id)
-        log.info("Created task %s", task_id)
+        log.debug("Created task %s", task_id)
+        
+        # Replenish pool asynchronously to maintain performance
+        if len(_task_id_pool) < 10:  # Replenish when low
+            self.executor.submit(_ensure_task_id_pool)
+        
         return task_id
     
     def submit_playwright_execution(self, task_id: str, execute_func: Callable, actions: list) -> bool:
-        """Submit Playwright execution for async processing."""
-        if task_id not in self.tasks:
+        """Submit Playwright execution for async processing (optimized for immediate execution)."""
+        task = self.tasks.get(task_id)
+        if not task:
             log.error("Task %s not found", task_id)
             return False
             
-        task = self.tasks[task_id]
         if task.status != TaskStatus.PENDING:
             log.error("Task %s is not in pending state: %s", task_id, task.status)
             return False
             
         def _truncate_warning(warning_msg, max_length=1000):
             """Truncate warning message to specified length if too long."""
-            if len(warning_msg) <= max_length:
-                return warning_msg
-            return warning_msg[:max_length-3] + "..."
+            return warning_msg if len(warning_msg) <= max_length else warning_msg[:max_length-3] + "..."
             
         def run_execution():
             try:
                 task.status = TaskStatus.RUNNING
                 task.started_at = time.time()
-                log.info("Starting execution for task %s", task_id)
+                log.debug("Starting execution for task %s", task_id)
                 
-                # Execute the Playwright operations
+                # Execute the Playwright operations immediately
                 result = execute_func({"actions": actions})
                 
                 # Ensure warnings are properly formatted and truncated
