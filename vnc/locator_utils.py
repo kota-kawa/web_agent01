@@ -112,39 +112,38 @@ class SmartLocator:
             return False
 
     async def _wait_for_element_ready(self, loc: Locator, timeout: int = 2000):
-        """Wait for element to be ready for interaction"""
+        """Wait for element to be ready for interaction using Playwright's built-in mechanisms"""
         try:
-            # Use JavaScript to check element readiness
-            script = """
-                (element, timeout) => {
-                    return new Promise((resolve) => {
-                        const start = Date.now();
-                        const check = () => {
-                            if (Date.now() - start > timeout) {
-                                resolve(false);
-                                return;
-                            }
-                            
-                            // Check if element is ready
+            # Use Playwright's built-in state waiting instead of custom JavaScript polling
+            await loc.first.wait_for(state="visible", timeout=timeout)
+            await loc.first.wait_for(state="attached", timeout=timeout)
+            
+            # Check if it's an interactive element and ensure it's enabled
+            if await self._is_interactive_element(loc):
+                # For interactive elements, wait for enabled state
+                try:
+                    # Use a more efficient check using evaluate without polling
+                    is_ready = await loc.first.evaluate("""
+                        element => {
                             const rect = element.getBoundingClientRect();
                             const isVisible = rect.width > 0 && rect.height > 0;
                             const isEnabled = !element.disabled;
                             const isNotReadonly = !element.readOnly;
-                            
-                            if (isVisible && isEnabled && isNotReadonly) {
-                                resolve(true);
-                            } else {
-                                setTimeout(check, 100);
-                            }
-                        };
-                        check();
-                    });
-                }
-            """
-            await loc.first.evaluate(script, timeout)
+                            return isVisible && isEnabled && isNotReadonly;
+                        }
+                    """)
+                    if not is_ready:
+                        # Brief wait for element to become ready, but cap it
+                        await loc.first.page.wait_for_timeout(50)
+                except Exception:
+                    pass
         except Exception:
-            # Fallback to basic wait
-            await loc.first.page.wait_for_timeout(100)
+            # Enhanced fallback using Playwright states instead of fixed timeout
+            try:
+                await loc.first.wait_for(state="visible", timeout=min(timeout // 2, 1000))
+            except Exception:
+                # Minimal fallback timeout
+                await loc.first.page.wait_for_timeout(50)
 
 
     async def locate(self) -> Optional[Locator]:
