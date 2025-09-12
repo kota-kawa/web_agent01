@@ -313,23 +313,25 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     screenshot = await captureScreenshot();
   }
 
+  // Always show thinking message with spinner when showInUI is true
+  let thinkingElement = placeholder;
+  if (showInUI && !placeholder) {
+    thinkingElement = document.createElement("p");
+    thinkingElement.classList.add("bot-message");
+    thinkingElement.innerHTML = 'AI が応答中... <span class="spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #f3f3f3;border-top:2px solid #3498db;border-radius:50%;animation:spin 1s linear infinite;"></span>';
+    chatArea.appendChild(thinkingElement);
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+
   // Send command to LLM and get immediate response
   const res = await sendCommand(cmd, html, screenshot, model, prevError);
 
   if (res.raw) console.log("LLM raw output:\n", res.raw);
 
   // Update UI immediately with LLM response
-  if (showInUI && res.explanation) {
-    if (placeholder) {
-      placeholder.textContent = res.explanation;
-      placeholder.querySelector(".spinner")?.remove();
-    } else {
-      const p = document.createElement("p");
-      p.classList.add("bot-message");
-      p.textContent = res.explanation;
-      chatArea.appendChild(p);
-      chatArea.scrollTop = chatArea.scrollHeight;
-    }
+  if (showInUI && res.explanation && thinkingElement) {
+    thinkingElement.textContent = res.explanation;
+    thinkingElement.querySelector(".spinner")?.remove();
   }
 
   let newHtml = html;
