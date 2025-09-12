@@ -485,7 +485,8 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     memory: res.memory || "", 
     html: newHtml, 
     screenshot: newShot, 
-    error: errInfo 
+    error: errInfo,
+    actions: normalizeActions(res) // Include normalized actions for loop detection
   };
 }
 
@@ -616,6 +617,13 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   let repeatCnt = 0;
   const MAX_REP = 1;
   let lastError = null;
+  
+  // Enhanced loop detection: track actions, not just explanations
+  let actionHistory = [];
+  const MAX_ACTION_HISTORY = 5; // Keep track of last 5 actions
+  let identicalActionCount = 0;
+  const MAX_IDENTICAL_ACTIONS = 2; // Allow max 2 identical actions before stopping
+  
   stopRequested   = false;
   window.stopRequested = false;  // Reset both local and global
   pausedRequested = false;  // 毎タスク開始時にリセット
@@ -632,15 +640,45 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
     }
 
     try {
-      const { cont, explanation, memory, html, screenshot: shot, error } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null, lastError);
+      const { cont, explanation, memory, html, screenshot: shot, error, actions } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null, lastError);
       if (shot) screenshot = shot;
       if (html) pageHtml = html;
       lastError = error;
 
+      // Enhanced loop detection: check for identical actions
+      if (actions && actions.length > 0) {
+        // Create a signature for the actions to detect duplicates
+        const actionSignature = actions.map(a => `${a.action}:${a.target}:${a.value || ''}`).join('|');
+        
+        // Check if this exact sequence of actions was recently executed
+        const isIdenticalAction = actionHistory.some(histAction => histAction === actionSignature);
+        
+        if (isIdenticalAction) {
+          identicalActionCount += 1;
+          console.warn(`Detected identical action sequence (${identicalActionCount}/${MAX_IDENTICAL_ACTIONS}): ${actionSignature}`);
+          
+          if (identicalActionCount >= MAX_IDENTICAL_ACTIONS) {
+            console.warn("同一アクションが繰り返されたためループを終了します。");
+            showSystemMessage("⚠️ 同じ操作の繰り返しを検出したため、タスクを終了します。");
+            break;
+          }
+        } else {
+          identicalActionCount = 0; // Reset count if actions are different
+        }
+        
+        // Add to action history
+        actionHistory.push(actionSignature);
+        if (actionHistory.length > MAX_ACTION_HISTORY) {
+          actionHistory.shift(); // Keep only the most recent actions
+        }
+      }
+
+      // Original explanation-based loop detection (kept as secondary check)
       if (explanation === lastMsg) {
         repeatCnt += 1;
         if (repeatCnt > MAX_REP) {
           console.warn("同一説明が繰り返されたためループを終了します。");
+          showSystemMessage("⚠️ 同じ説明の繰り返しを検出したため、タスクを終了します。");
           break;
         }
       } else {
