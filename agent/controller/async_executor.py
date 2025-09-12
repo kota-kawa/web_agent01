@@ -31,6 +31,8 @@ class TaskStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED_FOR_USER = "paused_for_user"  # LLM paused waiting for user input
+    WAITING_INTERVENTION = "waiting_intervention"  # Task waiting for user intervention
 
 
 @dataclass
@@ -44,6 +46,13 @@ class ExecutionTask:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     
+    # User intervention fields
+    pause_reason: Optional[str] = None  # Why the task was paused
+    intervention_prompt: Optional[str] = None  # User's intervention input
+    failure_count: int = 0  # Count of consecutive failures
+    last_user_input: Optional[str] = None  # Last user intervention input
+    awaiting_user_response: bool = False  # True when waiting for user input
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -54,7 +63,13 @@ class ExecutionTask:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
-            "duration": (self.completed_at - self.started_at) if self.started_at and self.completed_at else None
+            "duration": (self.completed_at - self.started_at) if self.started_at and self.completed_at else None,
+            # User intervention fields
+            "pause_reason": self.pause_reason,
+            "intervention_prompt": self.intervention_prompt,
+            "failure_count": self.failure_count,
+            "last_user_input": self.last_user_input,
+            "awaiting_user_response": self.awaiting_user_response
         }
 
 
@@ -219,6 +234,59 @@ class AsyncExecutor:
         if task_id not in self.tasks:
             return False
         return self.tasks[task_id].status in [TaskStatus.COMPLETED, TaskStatus.FAILED]
+    
+    def pause_task_for_user(self, task_id: str, reason: str) -> bool:
+        """Pause a task and wait for user intervention."""
+        task = self.tasks.get(task_id)
+        if not task:
+            log.error("Task %s not found for pausing", task_id)
+            return False
+            
+        if task.status not in [TaskStatus.RUNNING, TaskStatus.PENDING]:
+            log.error("Cannot pause task %s in status %s", task_id, task.status)
+            return False
+            
+        task.status = TaskStatus.PAUSED_FOR_USER
+        task.pause_reason = reason
+        task.awaiting_user_response = True
+        log.info("Task %s paused for user intervention: %s", task_id, reason)
+        return True
+    
+    def provide_user_intervention(self, task_id: str, user_input: str) -> bool:
+        """Provide user intervention input to a paused task."""
+        task = self.tasks.get(task_id)
+        if not task:
+            log.error("Task %s not found for intervention", task_id)
+            return False
+            
+        if task.status != TaskStatus.PAUSED_FOR_USER:
+            log.error("Task %s not in paused state for intervention: %s", task_id, task.status)
+            return False
+            
+        task.intervention_prompt = user_input
+        task.last_user_input = user_input
+        task.awaiting_user_response = False
+        task.status = TaskStatus.RUNNING  # Resume execution
+        log.info("User intervention provided for task %s: %s", task_id, user_input)
+        return True
+    
+    def increment_failure_count(self, task_id: str) -> int:
+        """Increment failure count for a task and return new count."""
+        task = self.tasks.get(task_id)
+        if not task:
+            log.error("Task %s not found for failure increment", task_id)
+            return 0
+            
+        task.failure_count += 1
+        log.debug("Task %s failure count incremented to %d", task_id, task.failure_count)
+        return task.failure_count
+    
+    def should_request_user_advice(self, task_id: str, threshold: int = 3) -> bool:
+        """Check if we should request user advice based on failure count."""
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+        return task.failure_count >= threshold
     
     def cleanup_old_tasks(self):
         """Remove old completed tasks to prevent memory leaks."""

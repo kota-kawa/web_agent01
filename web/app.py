@@ -226,7 +226,10 @@ def execute():
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg)
+    
+    # Check for intervention context from request
+    intervention_context = data.get("intervention_context")
+    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg, intervention_context)
     
     # Call LLM first
     res = call_llm(prompt, model, shot)
@@ -237,6 +240,29 @@ def execute():
     
     # Extract and normalize actions from LLM response
     actions = normalize_actions(res)
+    
+    # Check if LLM requested user intervention
+    if res.get("pause_for_user"):
+        pause_info = res["pause_for_user"]
+        reason = pause_info.get("reason", "user_confirmation_needed")
+        message = pause_info.get("message", "ユーザーの確認が必要です")
+        
+        # Create a task for tracking intervention state
+        executor = get_preinitialized_async_executor()
+        task_id = executor.create_task()
+        
+        # Pause the task immediately for user intervention
+        success = executor.pause_task_for_user(task_id, reason)
+        
+        if success:
+            log.info("Task %s paused for user intervention: %s", task_id, reason)
+            res["task_id"] = task_id
+            res["async_execution"] = False
+            res["needs_user_intervention"] = True
+            res["intervention_message"] = message
+            return jsonify(res)
+        else:
+            log.error("Failed to pause task for user intervention")
     
     # If there are actions, start async Playwright execution immediately (optimized)
     task_id = None
@@ -298,6 +324,80 @@ def get_execution_status(task_id):
         error_warning = _truncate_warning(f"Failed to get status - {str(e)}")
         return jsonify({
             "error": error_warning,
+            "correlation_id": correlation_id
+        }), 200
+
+
+@app.route("/intervention/provide", methods=["POST"])
+def provide_user_intervention():
+    """Provide user intervention input to a paused task."""
+    try:
+        data = request.get_json(force=True)
+        task_id = data.get("task_id")
+        user_input = data.get("user_input", "").strip()
+        
+        if not task_id:
+            return jsonify({"error": "task_id is required"}), 400
+        
+        if not user_input:
+            return jsonify({"error": "user_input is required"}), 400
+        
+        executor = get_async_executor()
+        success = executor.provide_user_intervention(task_id, user_input)
+        
+        if success:
+            log.info("User intervention provided for task %s", task_id)
+            return jsonify({
+                "status": "success",
+                "message": "User intervention provided successfully",
+                "task_id": task_id
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to provide intervention - task not found or not in paused state"
+            }), 400
+            
+    except Exception as e:
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] provide_user_intervention error: %s", correlation_id, e)
+        return jsonify({
+            "error": f"Failed to provide intervention - {str(e)}",
+            "correlation_id": correlation_id
+        }), 200
+
+
+@app.route("/intervention/pause/<task_id>", methods=["POST"])
+def pause_task_for_intervention(task_id):
+    """Manually pause a task for user intervention."""
+    try:
+        data = request.get_json(force=True) or {}
+        reason = data.get("reason", "Manual user intervention requested")
+        
+        executor = get_async_executor()
+        success = executor.pause_task_for_user(task_id, reason)
+        
+        if success:
+            log.info("Task %s manually paused for intervention", task_id)
+            return jsonify({
+                "status": "success",
+                "message": "Task paused for user intervention",
+                "task_id": task_id,
+                "reason": reason
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to pause task - task not found or not in valid state"
+            }), 400
+            
+    except Exception as e:
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] pause_task_for_intervention error: %s", correlation_id, e)
+        return jsonify({
+            "error": f"Failed to pause task - {str(e)}",
             "correlation_id": correlation_id
         }), 200
 

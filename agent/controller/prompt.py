@@ -47,6 +47,7 @@ def build_prompt(
     screenshot: bool = False,
     elements: DOMElementNode | list | None = None,
     error: str | None = None,
+    intervention_context: str | None = None,  # New parameter for intervention context
 ) -> str:
     """Return full system prompt for the LLM."""
     def _hist_item(h):
@@ -54,6 +55,13 @@ def build_prompt(
         mem = h["bot"].get("memory") if isinstance(h.get("bot"), dict) else None
         if mem:
             txt += f"\nM:{mem}"
+        # Include intervention information if present
+        bot_response = h.get("bot", {})
+        if isinstance(bot_response, dict):
+            if bot_response.get("pause_for_user"):
+                txt += f"\n[INTERVENTION_REQUESTED: {bot_response['pause_for_user'].get('reason', 'unknown')}]"
+            if bot_response.get("intervention_provided"):
+                txt += f"\n[USER_INTERVENTION: {bot_response['intervention_provided']}]"
         return txt
     past_conv = "\n".join(_hist_item(h) for h in hist)
 
@@ -179,7 +187,27 @@ def build_prompt(
         - **直前のエラー:** 「現在のエラー状況」に情報があるか？ もしあれば、そのエラーメッセージ (例: "Timeout", "not found", "not visible") の原因を具体的に推測します。「なぜタイムアウトしたのか？」「なぜ要素が見つからなかったのか？」を自問します。\n
         - **変化の確認:** 直前のアクションでページの何が変化したか？ 新しい要素は出現したか？ 何かが消えたか？ ページ遷移は発生したか？\n
 
-        **3. 次のアクションの検討 (Action Planning):**
+        **3. ユーザー介入判断 (User Intervention Decision):**\n
+        以下の状況では、実行を一時停止してユーザーの入力を待つ必要があります：\n
+        - **確認が必要な情報**: ロボット認証、CAPTCHA、日付選択、料金確認、個人情報入力など\n
+        - **複数の選択肢**: どの選択肢を選ぶべきかユーザーの判断が必要な場合\n
+        - **エラーが続く場合**: 同じ操作で3回以上失敗している場合\n
+        - **曖昧な指示**: ユーザーの指示が不明確で追加情報が必要な場合\n
+        
+        このような状況では、JSONの`pause_for_user`フィールドを使用してください：\n
+        ```json\n
+        {\n
+          "explanation": "ロボット認証が表示されています。確認をお願いします。",\n
+          "pause_for_user": {\n
+            "reason": "robot_verification",\n
+            "message": "画面にロボット認証（CAPTCHA）が表示されています。認証を完了してから「続行」を押してください。"\n
+          },\n
+          "actions": [],\n
+          "complete": false\n
+        }\n
+        ```\n
+
+        **4. 次のアクションの検討 (Action Planning):**
         - 目的達成のために、次に取るべき最も合理的で具体的なアクションは何か？\n
         - **エラーからの回復:** エラーが発生した場合、同じアクションを繰り返すことは**絶対に禁止**です。代わりに、以下のような代替案を検討します。\n
             - **セレクタの変更:** 別の属性（`data-testid`, `id`, `class`）やテキストを使って要素を特定できないか？\n
@@ -189,10 +217,10 @@ def build_prompt(
         - **ループの回避:** 同じようなアクションを繰り返していないか？ **履歴を確認して既に実行済みのアクションは絶対に再実行しない。** 変化がない場合、それはループの兆候です。異なる戦略（例：別のリンクをクリックする、検索バーに別のキーワードを入力する）に切り替える必要があります。\n
         - **重要**: 履歴で同じ要素（target）に同じ値（value）を入力するアクションが既に実行されている場合は、そのアクションをスキップし、次のステップ（例：検索ボタンのクリック、候補の選択）に進んでください。\n
 
-        **4. アクションの出力 (Action Output):**\n
+        **5. アクションの出力 (Action Output):**\n
         - 検討結果に基づき、実行するアクションをJSON形式で出力します。\n
         - アクションの意図と、なぜそのアクションが合理的だと判断したのかを、JSONの前の説明文で簡潔に記述します。\n
-        - **注意**: 上記の思考プロセス（1-3）の詳細な内容は、ユーザーに見せる説明文には含めないでください。\n
+        - **注意**: 上記の思考プロセス（1-4）の詳細な内容は、ユーザーに見せる説明文には含めないでください。\n
 
         """
     
@@ -288,7 +316,11 @@ def build_prompt(
         "{\n"
         '  "memory": "覚えておくべき情報",   # 任意\n'
         '  "actions": [ <action_object> , ... ],\n'
-        '  "complete": true | false               # true ならタスク完了, false なら未完了で続行\n'
+        '  "complete": true | false,               # true ならタスク完了, false なら未完了で続行\n'
+        '  "pause_for_user": {                     # 任意：ユーザー介入が必要な場合\n'
+        '    "reason": "robot_verification|date_confirmation|price_confirmation|unclear_instruction|repeated_failure",\n'
+        '    "message": "ユーザーに表示するメッセージ"\n'
+        '  }\n'
         "}\n"
         "\n"
         "<action_object> は次のいずれか:\n"
@@ -463,6 +495,7 @@ def build_prompt(
         f"{add_img}\n"
         "## 現在のエラー状況\n"
         f"{error_line}"
+        + (f"## ユーザー介入コンテキスト\n{intervention_context}\n--------------------------------\n" if intervention_context else "")
     )
 
     #"---- 操作候補要素一覧 (操作対象は番号で指定 & この一覧にない要素の操作も可能 あくまで参考) ----\n"

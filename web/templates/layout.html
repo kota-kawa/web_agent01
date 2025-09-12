@@ -32,6 +32,22 @@
           </div>
         </div>
       </div>
+      
+      <!-- User Intervention Panel (hidden by default) -->
+      <div id="intervention-panel" style="display:none;background:#fff3cd;border-top:3px solid #ffc107;padding:15px;">
+        <div style="display:flex;align-items:center;margin-bottom:10px;">
+          <span style="font-weight:bold;color:#856404;margin-right:10px;">🔔 ユーザー確認が必要です</span>
+        </div>
+        <div id="intervention-message" style="margin-bottom:15px;padding:10px;background:rgba(255,255,255,0.8);border-radius:6px;color:#856404;font-size:14px;">
+        </div>
+        <div style="display:flex;gap:10px;">
+          <textarea id="intervention-input" rows="2" placeholder="追加の指示や確認内容を入力..." style="flex:1;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;resize:vertical;"></textarea>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button id="continue-button" style="background:#28a745;color:white;border:none;border-radius:6px;padding:8px 16px;font-size:13px;font-weight:bold;cursor:pointer;">続行</button>
+            <button id="skip-button" style="background:#6c757d;color:white;border:none;border-radius:6px;padding:8px 16px;font-size:13px;cursor:pointer;">スキップ</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 右側: VNC iframe -->
@@ -58,6 +74,7 @@
     window.MAX_STEPS = {{ max_steps }};
   </script>
   <script src="/static/html2canvas.min.js"></script>
+  <script src="/static/intervention.js"></script>
   <script src="/static/common_executor.js"></script>
   <script src="/static/browser_executor.js"></script>
   <script src="/static/chat_integration.js"></script>

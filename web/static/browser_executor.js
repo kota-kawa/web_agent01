@@ -369,6 +369,34 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     thinkingElement.querySelector(".spinner")?.remove();
   }
 
+  // Check if user intervention is required
+  if (window.userIntervention && window.userIntervention.requires(res)) {
+    const message = res.intervention_message || res.pause_for_user?.message || "確認が必要です";
+    const taskId = res.task_id;
+    
+    console.log("User intervention required:", message);
+    
+    // Show intervention panel and wait for user input
+    return new Promise((resolve) => {
+      window.userIntervention.show(taskId, message, async (userInput) => {
+        console.log("User provided intervention:", userInput);
+        
+        // Continue execution with user input
+        const continuationResult = await runTurn(
+          userInput, 
+          html, 
+          screenshot, 
+          showInUI, 
+          model, 
+          thinkingElement, 
+          prevError
+        );
+        
+        resolve(continuationResult);
+      });
+    });
+  }
+
   let newHtml = html;
   let newShot = screenshot;
   let errInfo = null;
@@ -624,6 +652,11 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   let identicalActionCount = 0;
   const MAX_IDENTICAL_ACTIONS = 2; // Allow max 2 identical actions before stopping
   
+  // Failure tracking for user consultation
+  let consecutiveFailures = 0;
+  const MAX_FAILURES_BEFORE_CONSULTATION = 3;
+  let lastSuccessfulStep = -1;
+  
   stopRequested   = false;
   window.stopRequested = false;  // Reset both local and global
   pausedRequested = false;  // 毎タスク開始時にリセット
@@ -644,6 +677,45 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
       if (shot) screenshot = shot;
       if (html) pageHtml = html;
       lastError = error;
+
+      // Track failures and request user consultation if needed
+      if (error) {
+        consecutiveFailures++;
+        console.warn(`Failure detected (${consecutiveFailures}/${MAX_FAILURES_BEFORE_CONSULTATION}):`, error);
+        
+        // Request user advice after consecutive failures
+        if (consecutiveFailures >= MAX_FAILURES_BEFORE_CONSULTATION && 
+            window.userIntervention && 
+            stepCount - lastSuccessfulStep > 1) {
+          
+          console.log("Requesting user consultation due to repeated failures");
+          
+          await new Promise((resolve) => {
+            const consultationMessage = `${consecutiveFailures}回の失敗が続いています。エラー: "${error}"。どのように対処すべきかアドバイスをお願いします。`;
+            
+            window.userIntervention.show(`consultation-${stepCount}`, consultationMessage, async (userAdvice) => {
+              console.log("User advice received:", userAdvice);
+              
+              // Reset failure count after user consultation
+              consecutiveFailures = 0;
+              
+              // Continue with user advice as new command
+              if (userAdvice && userAdvice.trim() !== "スキップ") {
+                cmd = userAdvice; // Update command with user advice
+              }
+              
+              resolve();
+            });
+          });
+        }
+      } else {
+        // Reset failure count on success
+        if (consecutiveFailures > 0) {
+          consecutiveFailures = 0;
+          lastSuccessfulStep = stepCount;
+          console.log("Success after failures, resetting failure count");
+        }
+      }
 
       // Enhanced loop detection: check for identical actions
       if (actions && actions.length > 0) {
