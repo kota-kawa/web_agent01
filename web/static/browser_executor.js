@@ -392,8 +392,8 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
       statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
     }, 1000);
 
-    // Poll for execution completion with immediate first attempt
-    const executionResult = await pollExecutionStatus(res.task_id, 30, 500); // Reduced initial interval
+    // Poll for execution completion with improved timing and tolerance
+    const executionResult = await pollExecutionStatus(res.task_id, 40, 300); // Increased attempts, reduced initial interval
     
     // Clear the update interval
     clearInterval(updateInterval);
@@ -426,16 +426,14 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         errInfo = executionResult.error || "Unknown execution error";
       }
     } else {
-      // More informative error message and attempt fallback
+      // Polling failed - attempt silent fallback without displaying confusing messages
       console.warn("Execution status polling failed for task:", res.task_id);
-      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました。フォールバック中...";
-      statusElement.style.color = "#ffc107";
       
-      // Try to fall back to synchronous execution if we have actions
+      // Try to fall back to synchronous execution silently if we have actions
       if (res.actions && res.actions.length > 0) {
-        console.log("Attempting fallback to synchronous execution after polling failure");
-        statusElement.textContent = "🔄 フォールバック実行中...";
-        statusElement.style.color = "#17a2b8";
+        console.log("Attempting silent fallback to synchronous execution after polling failure");
+        statusElement.textContent = "🔄 ブラウザ操作を実行中...";
+        statusElement.style.color = "#007bff";
         
         const acts = normalizeActions(res);
         if (acts && acts.length > 0) {
@@ -444,21 +442,22 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
             if (ret) {
               newHtml = ret.html || newHtml;
               errInfo = ret.error || null;
-              statusElement.textContent = "✅ フォールバック実行が完了しました";
+              statusElement.textContent = "✅ ブラウザ操作が完了しました";
               statusElement.style.color = "#28a745";
             } else {
-              statusElement.textContent = "❌ フォールバック実行も失敗しました";
+              statusElement.textContent = "❌ ブラウザ操作に失敗しました";
               statusElement.style.color = "#dc3545";
             }
           } catch (fallbackError) {
             console.error("Fallback execution failed:", fallbackError);
-            statusElement.textContent = "❌ フォールバック実行でエラーが発生しました";
+            statusElement.textContent = "❌ ブラウザ操作に失敗しました";
             statusElement.style.color = "#dc3545";
-            errInfo = `Polling failed and fallback error: ${fallbackError.message}`;
+            errInfo = `Execution error: ${fallbackError.message}`;
           }
         }
       } else {
-        statusElement.textContent = "⚠️ 実行状態の確認に失敗しました（フォールバック不可）";
+        statusElement.textContent = "⚠️ 実行に失敗しました";
+        statusElement.style.color = "#ffc107";
       }
     }
     
@@ -493,13 +492,13 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 /* ======================================
    Poll execution status
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 500) {
+async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 300) {
   const startTime = Date.now();
-  const maxDuration = maxAttempts * initialInterval * 2; // More generous timeout
+  const maxDuration = maxAttempts * initialInterval * 3; // More generous timeout
   let httpErrorCount = 0;
   let networkErrorCount = 0;
-  const maxHttpErrors = 8;     // Increased from 3
-  const maxNetworkErrors = 10; // Increased from 5
+  const maxHttpErrors = 12;    // Further increased tolerance
+  const maxNetworkErrors = 15; // Further increased tolerance
   
   console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts})`);
   
@@ -521,17 +520,17 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 5
         httpErrorCount++;
         console.warn(`HTTP error ${response.status} for task ${taskId} (attempt ${attempt + 1}, http errors: ${httpErrorCount})`);
         
-        // For server errors (5xx), be more patient
+        // For server errors (5xx), be more patient with increased backoff
         if (response.status >= 500 && httpErrorCount < maxHttpErrors) {
-          const backoffDelay = Math.min(initialInterval * Math.pow(1.5, httpErrorCount), 5000);
+          const backoffDelay = Math.min(initialInterval * Math.pow(1.8, httpErrorCount), 8000);
           console.log(`Server error detected, waiting ${backoffDelay}ms before retry...`);
           await sleep(backoffDelay);
           continue;
         }
         
-        // For client errors (4xx), fewer retries but still try
-        if (response.status >= 400 && response.status < 500 && httpErrorCount < 3) {
-          await sleep(initialInterval);
+        // For client errors (4xx), give more chances but with delays
+        if (response.status >= 400 && response.status < 500 && httpErrorCount < 5) {
+          await sleep(initialInterval * 1.5);
           continue;
         }
         
@@ -571,12 +570,12 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 5
       networkErrorCount++;
       console.error(`Network error polling task ${taskId} (attempt ${attempt + 1}, network errors: ${networkErrorCount}):`, e);
       
-      // Check if this is a retryable network error
+      // Check if this is a retryable network error - be more patient
       if (networkErrorCount < maxNetworkErrors && 
           (e.name === 'TypeError' || e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
         
-        // Exponential backoff for network errors
-        const backoffDelay = Math.min(initialInterval * Math.pow(2, networkErrorCount), 8000);
+        // Exponential backoff for network errors with more generous delays
+        const backoffDelay = Math.min(initialInterval * Math.pow(2.2, networkErrorCount), 12000);
         console.log(`Network error detected, waiting ${backoffDelay}ms before retry...`);
         await sleep(backoffDelay);
         continue;
