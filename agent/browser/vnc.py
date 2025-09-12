@@ -47,11 +47,10 @@ def get_html() -> str:
         return ""
 
 
-def _truncate_warning(warning_msg, max_length=7000):
-    """Truncate warning message to specified length if too long."""
-    if len(warning_msg) <= max_length:
-        return warning_msg
-    return warning_msg[:max_length-3] + "..."
+def _truncate_warning(warning_msg, max_length=None):
+    """Return warning message without truncation (character limits removed)."""
+    # Character limits removed for conversation history as requested
+    return warning_msg
 
 
 def execute_dsl(payload, timeout=120):

@@ -312,8 +312,8 @@ def store_warnings():
         if not warnings:
             return jsonify({"status": "success", "message": "No warnings to store"})
         
-        # Ensure all warnings are truncated to 7000 characters
-        truncated_warnings = [_truncate_warning(warning) for warning in warnings]
+        # Process warnings without character limits (as requested)
+        processed_warnings = [_truncate_warning(warning) for warning in warnings]
         
         # Load current history
         hist = load_hist()
@@ -333,8 +333,8 @@ def store_warnings():
             # Remove complete field temporarily
             complete_value = bot_response.pop("complete", True)
             
-            # Add truncated warnings
-            bot_response["warnings"] = truncated_warnings
+            # Add processed warnings (without character limits)
+            bot_response["warnings"] = processed_warnings
             
             # Re-add complete field at the end
             bot_response["complete"] = complete_value
@@ -345,8 +345,8 @@ def store_warnings():
             # Save updated history
             save_hist(hist)
             
-            log.info("Added %d warnings to conversation history (with character limits applied)", len(truncated_warnings))
-            return jsonify({"status": "success", "message": f"Stored {len(truncated_warnings)} warnings"})
+            log.info("Added %d warnings to conversation history (character limits removed)", len(processed_warnings))
+            return jsonify({"status": "success", "message": f"Stored {len(processed_warnings)} warnings"})
         else:
             log.warning("Invalid conversation history format - cannot add warnings")
             return jsonify({"status": "error", "message": "Invalid conversation history format"})
@@ -357,11 +357,10 @@ def store_warnings():
         return jsonify({"status": "error", "message": error_msg})
 
 
-def _truncate_warning(warning_msg, max_length=7000):
-    """Truncate warning message to specified length if too long."""
-    if len(warning_msg) <= max_length:
-        return warning_msg
-    return warning_msg[:max_length-3] + "..."
+def _truncate_warning(warning_msg, max_length=None):
+    """Return warning message without truncation (character limits removed)."""
+    # Character limits removed for conversation history as requested
+    return warning_msg
 
 
 @app.post("/automation/execute-dsl")
