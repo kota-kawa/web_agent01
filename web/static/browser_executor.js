@@ -103,24 +103,33 @@ async function sendDSL(acts) {
     }
   }
   
-  const maxRetries = 2; // Allow 1 retry attempt
+  const maxRetries = 3; // Increased from 2 for better reliability
   let lastError = null;
+  let consecutiveServerErrors = 0;
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // Check server health before critical operations (on retries)
+    // Enhanced server health check with adaptive retry strategy  
     if (attempt > 1) {
       console.log(`DSL retry attempt ${attempt}/${maxRetries}, checking server health...`);
+      
       const isMainServerHealthy = await checkServerHealth();
       const isAutomationHealthy = await checkAutomationServerHealth();
       
       if (!isMainServerHealthy && !isAutomationHealthy) {
         console.warn("Both main server and automation server appear unhealthy");
-        showSystemMessage("サーバーの状態を確認中です...");
-        await sleep(3000); // Wait 3 seconds for server recovery
-      } else if (isMainServerHealthy) {
-        console.log("Main server is healthy, proceeding with retry");
-      } else if (isAutomationHealthy) {
-        console.log("Automation server is healthy, proceeding with retry");
+        consecutiveServerErrors++;
+        
+        // Progressive wait times for consecutive server issues
+        const waitTime = Math.min(1000 + (consecutiveServerErrors * 1000), 5000);
+        showSystemMessage(`サーバーの状態を確認中です... (${waitTime/1000}秒待機)`);
+        await sleep(waitTime);
+      } else {
+        consecutiveServerErrors = 0; // Reset on successful health check
+        if (isMainServerHealthy) {
+          console.log("Main server is healthy, proceeding with retry");
+        } else if (isAutomationHealthy) {
+          console.log("Automation server is healthy, proceeding with retry");
+        }
       }
     }
     
@@ -134,16 +143,26 @@ async function sendDSL(acts) {
       const responseData = await r.json();
       
       if (!r.ok) {
-        // Handle error responses that now come as 200 + warnings
+        // Enhanced error handling with better retry decisions
         const errorMsg = responseData.message || responseData.error || "Unknown error";
         console.error("execute-dsl failed:", r.status, errorMsg);
         
-        // Check if this is a retryable error (500 errors)
-        if (r.status === 500 && attempt < maxRetries) {
+        // Enhanced retry logic based on error type and status code
+        if (r.status >= 500 && attempt < maxRetries) {
+          // Server errors - retry with exponential backoff
           lastError = { status: r.status, message: errorMsg, data: responseData };
-          console.log(`Server error (${r.status}), will retry after delay...`);
-          showSystemMessage(`サーバーエラーが発生しました。${maxRetries - attempt}回再試行します...`);
-          await sleep(1000 * attempt); // Exponential backoff: 1s, 2s
+          const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 8000); // 1s, 2s, 4s max 8s
+          console.log(`Server error (${r.status}), will retry after ${waitTime}ms...`);
+          showSystemMessage(`サーバーエラー(${r.status})が発生しました。${waitTime/1000}秒後に再試行します...`);
+          await sleep(waitTime);
+          continue;
+        } else if (r.status === 429 && attempt < maxRetries) {
+          // Rate limiting - longer wait
+          lastError = { status: r.status, message: errorMsg, data: responseData };
+          const waitTime = Math.min(3000 * attempt, 10000); // 3s, 6s, 9s max 10s
+          console.log(`Rate limited (${r.status}), will retry after ${waitTime}ms...`);
+          showSystemMessage(`レート制限により一時的に制限されています。${waitTime/1000}秒後に再試行します...`);
+          await sleep(waitTime);
           continue;
         }
         
@@ -160,12 +179,14 @@ async function sendDSL(acts) {
           warnings: responseData.warnings || [],
           correlation_id: responseData.correlation_id 
         };
+      // Enhanced success handling
       } else {
-        // Success - clear any retry messages
+        // Success - clear any retry messages and reset error counters
         if (attempt > 1) {
-          showSystemMessage("再試行が成功しました");
+          showSystemMessage(`✅ 再試行が成功しました (${attempt}回目)`);
         }
         
+        consecutiveServerErrors = 0; // Reset error counter on success
         appendHistory(acts);
         
         // Display warnings prominently if present
@@ -190,31 +211,60 @@ async function sendDSL(acts) {
       console.error("execute-dsl fetch error:", e);
       lastError = { type: "fetch", message: String(e) };
       
-      // Check if this is a retryable network error
-      if (attempt < maxRetries && (e.name === 'TypeError' || e.message.includes('Failed to fetch'))) {
-        console.log(`Network error, will retry after delay: ${e.message}`);
-        showSystemMessage(`通信エラーが発生しました。${maxRetries - attempt}回再試行します...`);
-        await sleep(1000 * attempt); // Exponential backoff
+      // Enhanced network error classification and retry logic
+      const isNetworkError = e.name === 'TypeError' || e.message.includes('Failed to fetch') || 
+                             e.message.includes('network') || e.message.includes('timeout');
+      
+      if (attempt < maxRetries && isNetworkError) {
+        // Progressive backoff for network issues
+        const waitTime = Math.min(1500 * attempt, 6000); // 1.5s, 3s, 4.5s max 6s
+        console.log(`Network error, will retry after ${waitTime}ms: ${e.message}`);
+        showSystemMessage(`通信エラーが発生しました。${waitTime/1000}秒後に再試行します... (${maxRetries - attempt}回残り)`);
+        await sleep(waitTime);
+        continue;
+      } else if (attempt < maxRetries) {
+        // Other errors - shorter wait
+        const waitTime = 1000 * attempt;
+        console.log(`General error, will retry after ${waitTime}ms: ${e.message}`);
+        showSystemMessage(`エラーが発生しました。${waitTime/1000}秒後に再試行します...`);
+        await sleep(waitTime);
         continue;
       }
       
       // Final failure or non-retryable error
-      const errorMsg = `通信エラー: ${e.message || e}`;
+      const errorMsg = isNetworkError ? 
+        `ネットワーク通信エラー: ${e.message || e}` : 
+        `予期しないエラー: ${e.message || e}`;
       showSystemMessage(errorMsg);
       return { html: "", error: String(e), warnings: [] };
     }
   }
   
-  // All retries exhausted
+  // Enhanced final error reporting with better user guidance
   if (lastError) {
-    const errorMsg = lastError.status ? 
-      `サーバーエラー (${lastError.status}): ${lastError.message}` : 
-      `通信エラー: ${lastError.message}`;
-    showSystemMessage(`${maxRetries}回の再試行後も失敗しました: ${errorMsg}`);
+    let errorMsg = "";
+    let userGuidance = "";
+    
+    if (lastError.status) {
+      errorMsg = `サーバーエラー (${lastError.status}): ${lastError.message}`;
+      if (lastError.status >= 500) {
+        userGuidance = "サーバー側の問題です。しばらく待ってから再試行してください。";
+      } else if (lastError.status === 429) {
+        userGuidance = "アクセス頻度が高すぎます。少し時間を置いてから再試行してください。";
+      } else {
+        userGuidance = "リクエストに問題があります。操作内容を確認してください。";
+      }
+    } else {
+      errorMsg = `通信エラー: ${lastError.message}`;
+      userGuidance = "ネットワーク接続を確認してから再試行してください。";
+    }
+    
+    showSystemMessage(`${maxRetries}回の再試行後も失敗しました: ${errorMsg}\n💡 ${userGuidance}`);
     return { 
       html: lastError.data?.html || "", 
       error: lastError.message, 
-      warnings: lastError.data?.warnings || [] 
+      warnings: lastError.data?.warnings || [],
+      guidance: userGuidance
     };
   }
   
@@ -382,7 +432,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     const executionResult = await pollExecutionStatus(res.task_id);
     
     if (executionResult) {
-      // Update status message based on result
+      // Enhanced error reporting based on execution result
       if (executionResult.status === "completed") {
         statusElement.textContent = "✅ ブラウザ操作が完了しました";
         statusElement.style.color = "#28a745";
@@ -408,17 +458,43 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
           }
         }
       } else if (executionResult.status === "failed") {
-        statusElement.textContent = "❌ ブラウザ操作に失敗しました";
-        statusElement.style.color = "#dc3545";
-        errInfo = executionResult.error || "Unknown execution error";
+        // Enhanced failure reporting with user guidance
+        const errorDetail = executionResult.error || "Unknown execution error";
+        statusElement.textContent = "⚠️ ブラウザ操作で問題が発生しました";
+        statusElement.style.color = "#fd7e14"; // Changed to warning color instead of error
+        
+        // Provide user guidance based on error type
+        let guidance = "";
+        if (errorDetail.includes("timeout") || errorDetail.includes("タイムアウト")) {
+          guidance = " - ページの読み込みに時間がかかっています。再試行をお試しください。";
+        } else if (errorDetail.includes("element not found") || errorDetail.includes("要素が見つかりません")) {
+          guidance = " - 対象の要素が見つかりませんでした。ページが完全に読み込まれてから再試行してください。";
+        } else if (errorDetail.includes("network") || errorDetail.includes("connection")) {
+          guidance = " - ネットワーク接続に問題があります。";
+        } else {
+          guidance = " - 詳細はページ下部の警告メッセージをご確認ください。";
+        }
+        
+        showSystemMessage(`操作中に問題が発生しました${guidance}`);
+        errInfo = errorDetail;
       } else if (executionResult.status === "stopped") {
         statusElement.textContent = "⏹ ブラウザ操作が停止されました";
-        statusElement.style.color = "#ffc107";
+        statusElement.style.color = "#6c757d";
         errInfo = "Operation was stopped by user";
       } else if (executionResult.status === "timeout") {
-        statusElement.textContent = "⏱ ブラウザ操作のタイムアウト - 処理は継続中です";
+        // Enhanced timeout handling with better user guidance
+        const timeoutInfo = executionResult.timeout_info || {};
+        const elapsedTime = Math.round((timeoutInfo.elapsed_ms || 0) / 1000);
+        
+        statusElement.textContent = "⏱ ブラウザ操作の完了確認がタイムアウトしました";
         statusElement.style.color = "#fd7e14";
-        errInfo = "Execution status polling timed out";
+        
+        showSystemMessage(
+          `操作の完了確認がタイムアウトしました (${elapsedTime}秒経過)。` +
+          `操作自体は継続中の可能性があります。ページの状態を確認してください。`
+        );
+        
+        errInfo = `Execution status polling timed out after ${elapsedTime}s`;
         // Don't treat timeout as a complete failure, just note it
       } else {
         statusElement.textContent = "🔄 ブラウザ操作の状態が不明です";
@@ -485,11 +561,12 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 /* ======================================
    Poll execution status with improved robustness
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 500) {
+async function pollExecutionStatus(taskId, maxAttempts = 60, initialInterval = 500) {
   const startTime = Date.now();
-  const maxDuration = 60000; // Maximum 60 seconds total wait time
+  const maxDuration = 90000; // Maximum 90 seconds total wait time (increased from 60s)
   let consecutiveErrors = 0;
-  const maxConsecutiveErrors = 5;
+  const maxConsecutiveErrors = 6; // Increased tolerance for consecutive errors
+  let adaptiveInterval = initialInterval;
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // Check stop flags before each poll attempt
@@ -498,12 +575,20 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
       return { status: "stopped", error: "Operation was stopped by user" };
     }
     
-    // Adaptive interval: start fast, then slow down
-    const interval = Math.min(initialInterval + (attempt * 100), 2000); // 500ms to 2s max
+    // Enhanced adaptive interval calculation
+    adaptiveInterval = Math.min(
+      initialInterval + (attempt * 75), // Slower ramp up: 500ms, 575ms, 650ms...
+      3000 // Cap at 3 seconds (increased from 2s)
+    );
+    
+    // Additional backoff for consecutive errors
+    if (consecutiveErrors > 0) {
+      adaptiveInterval = Math.min(adaptiveInterval * (1 + consecutiveErrors * 0.5), 5000);
+    }
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout per request
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // Increased timeout to 8s
       
       const response = await fetch(`/execution-status/${taskId}`, {
         signal: controller.signal
@@ -513,39 +598,62 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
       
       if (!response.ok) {
         consecutiveErrors++;
-        console.warn(`Failed to get execution status (attempt ${attempt + 1}): ${response.status}`);
+        console.warn(`Failed to get execution status (attempt ${attempt + 1}): ${response.status} ${response.statusText}`);
         
-        // If too many consecutive errors, give up
-        if (consecutiveErrors >= maxConsecutiveErrors) {
+        // Enhanced error tolerance based on status code
+        const isServerError = response.status >= 500;
+        const maxErrorsForThisType = isServerError ? maxConsecutiveErrors + 2 : maxConsecutiveErrors;
+        
+        if (consecutiveErrors >= maxErrorsForThisType) {
           console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
-          return null;
+          return { 
+            status: "failed", 
+            error: `Status polling failed after ${consecutiveErrors} consecutive errors (last: ${response.status})` 
+          };
         }
         
-        // For server errors, wait longer before retry
-        if (response.status >= 500) {
-          await sleep(Math.min(interval * 2, 3000));
-        } else {
-          await sleep(interval);
-        }
+        // Enhanced wait strategy based on error type
+        const waitTime = isServerError ? 
+          Math.min(adaptiveInterval * 2, 6000) :  // Longer wait for server errors
+          adaptiveInterval;
+          
+        console.log(`Waiting ${waitTime}ms before retry due to status ${response.status}...`);
+        await sleep(waitTime);
         continue;
       }
       
-      // Reset error counter on successful response
-      consecutiveErrors = 0;
+      // Reset error counter on successful response and log progress
+      if (consecutiveErrors > 0) {
+        console.log(`Recovered from ${consecutiveErrors} consecutive errors`);
+        consecutiveErrors = 0;
+      }
       
       const status = await response.json();
-      console.log(`Task ${taskId} status (attempt ${attempt + 1}):`, status.status);
+      
+      // Enhanced logging for debugging
+      if (attempt > 0 && attempt % 10 === 0) {
+        console.log(`Task ${taskId} status check #${attempt + 1}: ${status.status} (${Date.now() - startTime}ms elapsed)`);
+      }
       
       // Task completed (successfully or failed)
       if (status.status === "completed" || status.status === "failed") {
+        console.log(`Task ${taskId} finished with status: ${status.status} after ${attempt + 1} checks (${Date.now() - startTime}ms)`);
         return status;
       }
       
       // Check if we've exceeded the maximum duration
       if (Date.now() - startTime > maxDuration) {
-        console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms`);
-        // Return current status even if not complete, rather than null
-        return status || { status: "timeout", error: "Polling timeout exceeded" };
+        console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms after ${attempt + 1} attempts`);
+        // Return current status with timeout indication
+        return { 
+          ...status, 
+          status: status.status === "running" ? "timeout" : status.status,
+          timeout_info: {
+            elapsed_ms: Date.now() - startTime,
+            attempts: attempt + 1,
+            last_status: status.status
+          }
+        };
       }
       
       // Check stop flags again before sleeping
@@ -554,8 +662,8 @@ async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 5
         return { status: "stopped", error: "Operation was stopped by user" };
       }
       
-      // Wait before next poll
-      await sleep(interval);
+      // Wait before next poll with adaptive interval
+      await sleep(adaptiveInterval);
       
     } catch (e) {
       consecutiveErrors++;

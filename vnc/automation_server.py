@@ -52,12 +52,12 @@ def handle_exception(error):
         "correlation_id": correlation_id
     }), 200  # Return 200 instead of 500
 
-# Configurable timeouts and retry settings
-ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
-NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "30000"))  # ms  ナビゲーション専用
-WAIT_FOR_SELECTOR_TIMEOUT = int(os.getenv("WAIT_FOR_SELECTOR_TIMEOUT", "5000"))  # ms  セレクタ待機
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
+# Configurable timeouts and retry settings - Enhanced for better reliability
+ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "15000"))  # ms  個別アクション猶予 (increased from 10000)
+NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "45000"))  # ms  ナビゲーション専用 (increased from 30000)
+WAIT_FOR_SELECTOR_TIMEOUT = int(os.getenv("WAIT_FOR_SELECTOR_TIMEOUT", "8000"))  # ms  セレクタ待機 (increased from 5000)
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))  # Increased from 3 for better reliability
+LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "4"))  # Increased from 3
 CDP_URL = "http://localhost:9222"
 DEFAULT_URL = os.getenv("START_URL", "https://yahoo.co.jp")
 SPA_STABILIZE_TIMEOUT = int(
@@ -105,30 +105,34 @@ def _classify_error(error_str: str) -> tuple[str, bool]:
     
     # Page navigation errors (internal, actionable) - check first as they're specific
     if any(x in error_lower for x in ["navigating and changing", "page is navigating"]):
-        return "ページが読み込み中です - しばらく待ってから再試行してください", True
+        return "ページが読み込み中です - 少し待ってから再試行してください", True
     
     # Element/interaction errors (actionable) - check next as they're most common
     if any(x in error_lower for x in ["element not found", "locator not found", "not found"]):
-        return "要素が見つかりませんでした - セレクタを確認するか、ページの読み込みを待ってください", True
+        return "要素が見つかりませんでした - ページの読み込み完了を待つか、セレクタを見直してください", True
     if any(x in error_lower for x in ["timeout", "timed out"]) and not any(x in error_lower for x in ["dns", "connection", "network"]):
-        return "操作がタイムアウトしました - ページの応答が遅い可能性があります", True
+        return "操作がタイムアウトしました - ページの応答が遅いか、要素の読み込みに時間がかかっています", True
     if any(x in error_lower for x in ["not enabled", "not visible", "not interactable"]):
-        return "要素が操作できません - 要素が無効化されているか見えない状態です", True
+        return "要素が操作できません - 要素が無効化されているか、表示されていない状態です", True
+    
+    # Browser state errors (internal, often retryable)
+    if any(x in error_lower for x in ["browser not initialized", "page is none", "context closed"]):
+        return "ブラウザの初期化に問題があります - 自動的に再接続を試行します", True
     
     # Network/DNS errors (external)
     if any(x in error_lower for x in ["dns", "connection", "network", "err_name_not_resolved", "net::"]):
-        return "ネットワークエラー - サイトに接続できません", False
+        return "ネットワークエラー - インターネット接続またはサイトに問題があります", False
     
     # HTTP errors (external)
     if "403" in error_str or "forbidden" in error_lower:
-        return "アクセス拒否 - サイトがアクセスを拒否しました", False
+        return "アクセス拒否 - サイトがアクセスを拒否しています", False
     if "404" in error_str or ("not found" in error_lower and any(x in error_lower for x in ["page", "file", "resource"])):
-        return "ページが見つかりません", False
+        return "ページが見つかりません - URLを確認してください", False
     if "500" in error_str or "internal server error" in error_lower:
-        return "サイトの内部エラー", False
+        return "サイトの内部エラー - サイト側の問題です", False
     
-    # Default classification as internal
-    return f"内部処理エラー - {error_str}", True
+    # Default classification as internal (retryable for safety)
+    return f"一時的な処理エラー - 再試行をお試しください: {error_str}", True
 
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
@@ -382,14 +386,50 @@ async def _wait_cdp(t: int = 15) -> bool:
 
 
 async def _check_browser_health() -> bool:
-    """Check if browser and page are still functional."""
+    """Enhanced browser health check with multiple verification levels."""
     try:
         if PAGE is None or BROWSER is None:
             return False
         
-        # Simple health check - try to evaluate a basic script
-        await PAGE.evaluate("() => document.readyState")
+        # Level 1: Basic readiness check
+        try:
+            ready_state = await PAGE.evaluate("() => document.readyState")
+            if ready_state not in ["complete", "interactive"]:
+                log.debug("Browser health: page not ready (state: %s)", ready_state)
+                return False
+        except Exception as e:
+            log.debug("Browser health: readiness check failed: %s", e)
+            return False
+        
+        # Level 2: DOM interaction capability
+        try:
+            await PAGE.evaluate("() => document.body ? true : false")
+        except Exception as e:
+            log.debug("Browser health: DOM interaction failed: %s", e)
+            return False
+        
+        # Level 3: Page navigation state
+        try:
+            # Check if page is currently navigating
+            is_navigating = await PAGE.evaluate("""
+                () => {
+                    // Check various navigation indicators
+                    if (document.readyState === 'loading') return true;
+                    if (window.performance && window.performance.navigation) {
+                        return window.performance.navigation.type === 1; // RELOAD
+                    }
+                    return false;
+                }
+            """)
+            if is_navigating:
+                log.debug("Browser health: page is currently navigating")
+                return False
+        except Exception as e:
+            log.debug("Browser health: navigation state check failed: %s", e)
+            # Don't fail health check for this, just note it
+        
         return True
+        
     except Exception as e:
         log.warning("Browser health check failed: %s", e)
         return False
@@ -1256,25 +1296,46 @@ def _get_basic_guidance(action: str, error_msg: str) -> str:
 
 
 async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
-    """Run actions with execution lock to prevent concurrent execution issues."""
+    """Run actions with execution lock and enhanced recovery mechanisms."""
     async with _EXECUTION_LOCK:
+        # Pre-execution health check and recovery
+        if not await _check_browser_health():
+            log.warning("[%s] Browser unhealthy before execution, attempting recovery...", correlation_id)
+            try:
+                await _recreate_browser()
+                log.info("[%s] Browser recovery successful", correlation_id)
+            except Exception as e:
+                log.error("[%s] Browser recovery failed: %s", correlation_id, str(e))
+                return "", [f"ERROR:auto:[{correlation_id}] Browser initialization failed - {str(e)}"]
+        
         return await _run_actions(actions, correlation_id)
 
 
 async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
     all_warnings = []
+    action_success_count = 0
     
     for i, act in enumerate(actions):
-        # Smart pre-action waiting using Playwright's built-in mechanisms
+        # Enhanced pre-action preparation with multiple checks
         try:
-            # Wait for page to be in ready state before each action
-            await PAGE.wait_for_load_state("domcontentloaded", timeout=2000)
-        except Exception:
-            # Fallback to enhanced DOM stabilization only if needed
-            await _stabilize_page()
+            # 1. Ensure page is ready for interaction
+            await PAGE.wait_for_load_state("domcontentloaded", timeout=3000)
+            
+            # 2. Additional stability check for dynamic content
+            try:
+                await PAGE.wait_for_load_state("networkidle", timeout=1500)
+            except Exception:
+                # Fallback to enhanced DOM stabilization if network idle fails
+                await _stabilize_page()
+                
+        except Exception as pre_action_error:
+            log.debug("[%s] Pre-action preparation warning for action %d: %s", 
+                     correlation_id, i+1, str(pre_action_error))
+            # Continue with action execution, just note the preparation issue
         
         retries = int(act.get("retry", MAX_RETRIES))
         action_executed = False
+        last_action_error = None
         
         for attempt in range(1, retries + 1):
             try:
@@ -1282,19 +1343,28 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                 action_warnings = await _apply(act, is_final_retry)
                 all_warnings.extend(action_warnings)
                 action_executed = True
+                action_success_count += 1
                 
-                # Smart post-action waiting using Playwright's state management
+                # Enhanced post-action stabilization with timeout protection
                 try:
-                    # Wait for any pending network requests or DOM mutations to complete
+                    # Quick stability check after successful action
                     await PAGE.wait_for_load_state("networkidle", timeout=1000)
                 except Exception:
-                    # Fallback to enhanced DOM stabilization only if needed
-                    await _stabilize_page()
+                    # If network idle fails, use minimal stabilization
+                    try:
+                        await PAGE.wait_for_load_state("domcontentloaded", timeout=800)
+                    except Exception:
+                        # Last resort - very brief wait
+                        await PAGE.wait_for_timeout(100)
                 break
                 
             except Exception as e:
+                last_action_error = e
                 error_msg = f"Action {i+1} '{act.get('action', 'unknown')}' attempt {attempt}/{retries} failed: {str(e)}"
                 log.error("[%s] %s", correlation_id, error_msg)
+                
+                # Enhanced error classification for better retry decisions
+                friendly_msg, is_internal = _classify_error(str(e))
                 
                 if attempt == retries:
                     # Final retry failure - try once more with is_final_retry=True to get warnings
@@ -1302,41 +1372,102 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                         action_warnings = await _apply(act, is_final_retry=True)
                         all_warnings.extend(action_warnings)
                     except Exception as final_e:
-                        # If even final retry with warnings fails, add error message
-                        friendly_msg, is_internal = _classify_error(str(final_e))
-                        all_warnings.append(f"ERROR:auto:[{correlation_id}] {friendly_msg}")
+                        # If even final retry with warnings fails, add enhanced error message
+                        final_friendly_msg, final_is_internal = _classify_error(str(final_e))
+                        guidance = _get_action_guidance_for_error(act.get('action', 'unknown'), str(final_e))
+                        all_warnings.append(f"ERROR:auto:[{correlation_id}] {final_friendly_msg}. {guidance}")
                     
                     # Save debug artifacts for critical failures
-                    friendly_msg, is_internal = _classify_error(str(e))
                     if is_internal and SAVE_DEBUG_ARTIFACTS:
                         debug_info = await _save_debug_artifacts(f"{correlation_id}_action_{i+1}", error_msg)
                         if debug_info:
                             all_warnings.append(f"DEBUG:auto:{debug_info}")
                 else:
-                    # Use smart waiting with exponential backoff as fallback
-                    wait_time = min(1000 * (2 ** (attempt - 1)), 5000)  # Cap at 5 seconds
+                    # Enhanced retry wait strategy based on error type and browser health
+                    base_wait = min(1000 * (2 ** (attempt - 1)), 3000)  # Cap at 3 seconds
+                    
+                    # Check browser health and adjust wait time
+                    browser_healthy = await _check_browser_health()
+                    if not browser_healthy:
+                        log.warning("[%s] Browser unhealthy during retry, attempting quick recovery...", correlation_id)
+                        try:
+                            # Try quick browser recovery
+                            await _init_browser()
+                            if await _check_browser_health():
+                                log.info("[%s] Quick browser recovery successful", correlation_id)
+                                base_wait = base_wait * 0.5  # Reduce wait time after recovery
+                            else:
+                                log.warning("[%s] Quick browser recovery failed", correlation_id)
+                        except Exception as recovery_e:
+                            log.error("[%s] Browser recovery error: %s", correlation_id, str(recovery_e))
+                    
+                    # Smart waiting with health-based adjustment
+                    if browser_healthy or await _check_browser_health():
+                        wait_time = min(base_wait, 2000)  # Shorter wait if browser is healthy
+                    else:
+                        wait_time = base_wait
+                    
                     try:
-                        # Try to use Playwright's smart waiting mechanisms first
-                        if PAGE:
-                            await PAGE.wait_for_load_state("networkidle", timeout=min(wait_time, 2000))
+                        # Use Playwright's smart waiting mechanisms
+                        await PAGE.wait_for_load_state("networkidle", timeout=min(wait_time, 1500))
                     except Exception:
                         try:
-                            # Fallback to DOM stability check
                             await PAGE.wait_for_load_state("domcontentloaded", timeout=min(wait_time, 1000))
                         except Exception:
-                            # Last resort - use exponential backoff sleep
+                            # Last resort - use adjusted wait time
                             await asyncio.sleep(min(wait_time / 1000, 2.0))
         
-        # If action couldn't be executed due to critical errors, note it
+        # Enhanced action completion tracking
         if not action_executed:
             all_warnings.append(f"WARNING:auto:[{correlation_id}] Action {i+1} '{act.get('action', 'unknown')}' was skipped due to errors")
+        elif last_action_error:
+            # Action eventually succeeded but had issues
+            log.debug("[%s] Action %d completed after %d attempts", correlation_id, i+1, attempt)
     
-    # Use safe content retrieval to avoid navigation errors
+    # Enhanced final content retrieval with multiple fallbacks
     html = await _safe_get_page_content()
     if not html:
-        all_warnings.append(f"WARNING:auto:Could not retrieve final page content - page may be navigating")
+        all_warnings.append(f"WARNING:auto:[{correlation_id}] Could not retrieve final page content - page may be in transition")
+        
+        # Try alternative content retrieval methods
+        try:
+            if PAGE:
+                # Try to get at least the document title and URL for context
+                try:
+                    title = await PAGE.title()
+                    url = PAGE.url
+                    html = f"<html><head><title>{title}</title></head><body><!-- Page content unavailable, URL: {url} --></body></html>"
+                    log.debug("[%s] Using fallback HTML with page context", correlation_id)
+                except Exception:
+                    html = "<!-- Page content unavailable -->"
+        except Exception as content_e:
+            log.debug("[%s] Fallback content retrieval failed: %s", correlation_id, str(content_e))
+    
+    # Provide execution summary
+    if action_success_count > 0:
+        log.info("[%s] Completed %d/%d actions successfully", correlation_id, action_success_count, len(actions))
     
     return html, all_warnings
+
+
+def _get_action_guidance_for_error(action: str, error_msg: str) -> str:
+    """Provide specific guidance based on action type and error."""
+    guidance_map = {
+        "navigate": "URLを確認し、ネットワーク接続を確認してください",
+        "click": "要素が存在し、クリック可能な状態になるまで待機してください",
+        "type": "入力フィールドが表示され、編集可能な状態であることを確認してください",
+        "wait_for_selector": "セレクタが正しく、要素が表示されるまで十分な時間を設けてください",
+        "hover": "要素が表示されている状態で、マウスカーソルを要素上に移動してください"
+    }
+    
+    base_guidance = guidance_map.get(action, "操作対象の要素が正しく指定されているか確認してください")
+    
+    if "timeout" in error_msg.lower():
+        return f"{base_guidance}。タイムアウトが発生しているため、より長い待機時間を設定することを検討してください"
+    elif "not found" in error_msg.lower():
+        return f"{base_guidance}。要素が見つからないため、セレクタの見直しやページの読み込み完了を確認してください"
+    else:
+        return base_guidance
 
 
 # -------------------------------------------------- HTTP エンドポイント
