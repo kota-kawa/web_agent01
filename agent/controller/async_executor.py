@@ -80,6 +80,29 @@ class AsyncExecutor:
                 # Execute the Playwright operations
                 result = execute_func({"actions": actions})
                 
+                # Ensure we have a proper result dictionary
+                if not isinstance(result, dict):
+                    result = {"html": "", "warnings": [], "error": str(result)}
+                
+                # After execution completes, fetch updated HTML
+                if result.get("html") is not None:  # Only if execution didn't fail completely
+                    try:
+                        # Import here to avoid circular imports
+                        from agent.browser.vnc import get_html
+                        import time
+                        
+                        # Small delay to ensure DOM changes are reflected
+                        time.sleep(0.5)
+                        
+                        updated_html = get_html()
+                        if updated_html:
+                            result["updated_html"] = updated_html
+                            log.info("Retrieved updated HTML for task %s (%d chars)", task_id, len(updated_html))
+                        else:
+                            log.warning("Failed to retrieve updated HTML for task %s", task_id)
+                    except Exception as e:
+                        log.error("Error fetching updated HTML for task %s: %s", task_id, e)
+                
                 task.result = result
                 task.status = TaskStatus.COMPLETED
                 task.completed_at = time.time()
