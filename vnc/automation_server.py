@@ -399,6 +399,20 @@ async def _recreate_browser():
     """Recreate browser and page when health check fails."""
     global PW, BROWSER, PAGE
     
+    # Try to preserve current URL before recreating browser
+    current_url = DEFAULT_URL
+    try:
+        if PAGE:
+            current_url = PAGE.url
+            # Avoid preserving certain problematic URLs
+            if current_url.startswith("chrome://") or current_url.startswith("about:") or current_url.startswith("data:"):
+                current_url = DEFAULT_URL
+                log.debug("Current URL is problematic, using default instead: %s", DEFAULT_URL)
+            else:
+                log.debug("Preserving current URL during browser recreation: %s", current_url)
+    except Exception as e:
+        log.debug("Could not get current URL (%s), using default: %s", e, DEFAULT_URL)
+    
     try:
         if PAGE:
             try:
@@ -421,9 +435,9 @@ async def _recreate_browser():
     # Reset globals
     PW = BROWSER = PAGE = None
     
-    # Reinitialize
-    await _init_browser()
-async def _init_browser():
+    # Reinitialize with preserved URL
+    await _init_browser(preserve_url=current_url)
+async def _init_browser(preserve_url=None):
     global PW, BROWSER, PAGE
     if PAGE and await _check_browser_health():
         return
@@ -459,10 +473,36 @@ async def _init_browser():
         except Exception as e:
             log.error("add_init_script failed: %s", e)
 
+    # Navigate to preserved URL if provided, otherwise use default
+    target_url = preserve_url if preserve_url and preserve_url not in ["about:blank", ""] else DEFAULT_URL
+    
+    # Validate URL format
+    if preserve_url and preserve_url != DEFAULT_URL:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(target_url)
+            if not all([parsed.scheme, parsed.netloc]):
+                log.warning("Invalid preserved URL format: %s, using default", target_url)
+                target_url = DEFAULT_URL
+        except Exception:
+            log.warning("Could not validate preserved URL: %s, using default", target_url)
+            target_url = DEFAULT_URL
+    
     try:
-        await PAGE.goto(DEFAULT_URL, wait_until="load", timeout=NAVIGATION_TIMEOUT)
+        await PAGE.goto(target_url, wait_until="load", timeout=NAVIGATION_TIMEOUT)
+        if preserve_url and preserve_url != DEFAULT_URL:
+            log.info("Browser recreated and navigated to preserved URL: %s", target_url)
+        else:
+            log.info("Browser recreated and navigated to default URL: %s", target_url)
     except Exception as e:
-        log.warning("Failed to navigate to default URL: %s", e)
+        log.warning("Failed to navigate to %s: %s", target_url, e)
+        if preserve_url and preserve_url != DEFAULT_URL:
+            # Fallback to default URL if preserved URL fails
+            try:
+                await PAGE.goto(DEFAULT_URL, wait_until="load", timeout=NAVIGATION_TIMEOUT)
+                log.info("Fallback to default URL successful")
+            except Exception as fallback_e:
+                log.warning("Failed to navigate to default URL: %s", fallback_e)
         
     log.info("browser ready")
 
