@@ -77,6 +77,32 @@ async function checkServerHealth() {
   }
 }
 
+function logPollingDiagnostics(taskId, httpErrors, networkErrors, totalAttempts, duration) {
+  const diagnostics = {
+    taskId,
+    httpErrors,
+    networkErrors,
+    totalAttempts,
+    duration,
+    timestamp: new Date().toISOString()
+  };
+  
+  console.warn("Polling failed diagnostics:", diagnostics);
+  
+  // Store diagnostics for potential debugging
+  if (typeof window !== 'undefined') {
+    if (!window.pollingDiagnostics) {
+      window.pollingDiagnostics = [];
+    }
+    window.pollingDiagnostics.push(diagnostics);
+    
+    // Keep only last 10 diagnostics to prevent memory leak
+    if (window.pollingDiagnostics.length > 10) {
+      window.pollingDiagnostics = window.pollingDiagnostics.slice(-10);
+    }
+  }
+}
+
 /* ======================================
    Send DSL to Playwright server with retry logic
    ====================================== */
@@ -358,9 +384,19 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     statusElement.style.color = "#007bff";
     chatArea.appendChild(statusElement);
     chatArea.scrollTop = chatArea.scrollHeight;
+    
+    // Update status periodically during polling
+    let pollingStartTime = Date.now();
+    const updateInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - pollingStartTime) / 1000);
+      statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
+    }, 1000);
 
     // Poll for execution completion
     const executionResult = await pollExecutionStatus(res.task_id);
+    
+    // Clear the update interval
+    clearInterval(updateInterval);
     
     if (executionResult) {
       // Update status message
@@ -556,6 +592,11 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 1
   }
   
   console.warn(`Polling timeout for task ${taskId} after ${maxAttempts} attempts (HTTP errors: ${httpErrorCount}, Network errors: ${networkErrorCount})`);
+  
+  // Log diagnostics for debugging
+  const duration = Date.now() - startTime;
+  logPollingDiagnostics(taskId, httpErrorCount, networkErrorCount, maxAttempts, duration);
+  
   return null;
 }
 
