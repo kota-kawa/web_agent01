@@ -266,6 +266,9 @@ USE_INCOGNITO_CONTEXT = os.getenv("USE_INCOGNITO_CONTEXT", "false").lower() == "
 BROWSER_REFRESH_INTERVAL = int(os.getenv("BROWSER_REFRESH_INTERVAL", "50"))  # Refresh after N DSL executions
 _DSL_EXECUTION_COUNT = 0
 
+# Browser first initialization tracking
+_BROWSER_FIRST_INIT = True
+
 
 async def _check_and_refresh_browser(correlation_id: str = "") -> bool:
     """Check if browser should be refreshed and do it if needed."""
@@ -419,10 +422,10 @@ async def _recreate_browser():
     # Reset globals
     PW = BROWSER = PAGE = None
     
-    # Reinitialize
+    # Reinitialize (but don't reset first init flag, as this is a recreation)
     await _init_browser()
 async def _init_browser():
-    global PW, BROWSER, PAGE
+    global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT
     if PAGE and await _check_browser_health():
         return
         
@@ -457,10 +460,17 @@ async def _init_browser():
         except Exception as e:
             log.error("add_init_script failed: %s", e)
 
-    try:
-        await PAGE.goto(DEFAULT_URL, wait_until="load", timeout=NAVIGATION_TIMEOUT)
-    except Exception as e:
-        log.warning("Failed to navigate to default URL: %s", e)
+    # Only navigate to DEFAULT_URL on the very first initialization
+    if _BROWSER_FIRST_INIT:
+        try:
+            await PAGE.goto(DEFAULT_URL, wait_until="load", timeout=NAVIGATION_TIMEOUT)
+            log.info("Initial navigation to default URL: %s", DEFAULT_URL)
+        except Exception as e:
+            log.warning("Failed to navigate to default URL: %s", e)
+        
+        _BROWSER_FIRST_INIT = False
+    else:
+        log.info("Browser recreated - skipping navigation to default URL")
         
     log.info("browser ready")
 
