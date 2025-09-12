@@ -57,13 +57,35 @@ function normalizeActions(instr) {
    ====================================== */
 async function checkServerHealth() {
   try {
+    // Use the new health endpoint
+    const response = await fetch("/health", {
+      method: "GET",
+      signal: AbortSignal.timeout(5000) // 5 second timeout
+    });
+    
+    if (response.ok) {
+      const healthData = await response.json();
+      return healthData.status === "healthy";
+    } else {
+      console.warn("Health check returned non-OK status:", response.status);
+      return false;
+    }
+  } catch (e) {
+    console.warn("Health check failed:", e);
+    return false;
+  }
+}
+
+// Alternative health check using the automation server
+async function checkAutomationServerHealth() {
+  try {
     const response = await fetch("/automation/healthz", {
       method: "GET",
-      timeout: 5000
+      signal: AbortSignal.timeout(3000) // 3 second timeout
     });
     return response.ok;
   } catch (e) {
-    console.warn("Health check failed:", e);
+    console.warn("Automation server health check failed:", e);
     return false;
   }
 }
@@ -88,11 +110,17 @@ async function sendDSL(acts) {
     // Check server health before critical operations (on retries)
     if (attempt > 1) {
       console.log(`DSL retry attempt ${attempt}/${maxRetries}, checking server health...`);
-      const isHealthy = await checkServerHealth();
-      if (!isHealthy) {
-        console.warn("Server health check failed, proceeding with caution...");
+      const isMainServerHealthy = await checkServerHealth();
+      const isAutomationHealthy = await checkAutomationServerHealth();
+      
+      if (!isMainServerHealthy && !isAutomationHealthy) {
+        console.warn("Both main server and automation server appear unhealthy");
         showSystemMessage("サーバーの状態を確認中です...");
-        await sleep(2000); // Wait 2 seconds for server recovery
+        await sleep(3000); // Wait 3 seconds for server recovery
+      } else if (isMainServerHealthy) {
+        console.log("Main server is healthy, proceeding with retry");
+      } else if (isAutomationHealthy) {
+        console.log("Automation server is healthy, proceeding with retry");
       }
     }
     
@@ -409,9 +437,21 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         if (fallbackHtml && fallbackHtml !== newHtml) {
           newHtml = fallbackHtml;
           console.log("Using fallback HTML from vnc-source");
+          
+          // Update status to indicate we got some page state
+          statusElement.textContent = "⚠️ 実行状態の確認に失敗しましたが、ページ状態を取得しました";
+          statusElement.style.color = "#fd7e14";
         }
       } catch (e) {
         console.warn("Failed to get fallback HTML:", e);
+      }
+      
+      // Try to check if the server is still responsive
+      const serverHealthy = await checkServerHealth();
+      if (!serverHealthy) {
+        statusElement.textContent = "❌ サーバーとの通信に問題があります";
+        statusElement.style.color = "#dc3545";
+        errInfo = "Server communication failed";
       }
     }
     

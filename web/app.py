@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import requests
+import time
 from flask import (
     Flask,
     request,
@@ -267,6 +268,36 @@ def execute():
         response["async_execution"] = False
     
     return jsonify(response)
+
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint for monitoring server status."""
+    try:
+        # Check if basic components are working
+        executor = get_async_executor()
+        
+        # Simple health indicators
+        health_status = {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "async_executor": "available",
+            "tasks_count": len(executor.tasks)
+        }
+        
+        return jsonify(health_status), 200
+        
+    except Exception as e:
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] Health check failed: %s", correlation_id, e)
+        
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "correlation_id": correlation_id,
+            "timestamp": time.time()
+        }), 503
 
 
 @app.route("/execution-status/<task_id>", methods=["GET"])
