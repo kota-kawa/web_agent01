@@ -400,6 +400,22 @@ async def _recreate_browser():
     """Recreate browser and page when health check fails."""
     global PW, BROWSER, PAGE
     
+    # Save current URL before closing the browser to preserve task context
+    current_url = None
+    try:
+        if PAGE:
+            try:
+                current_url = await PAGE.url()
+                # Only preserve non-default URLs to avoid navigating back to Yahoo during tasks
+                if current_url and current_url != DEFAULT_URL and not current_url.startswith("about:"):
+                    log.info("Preserving current URL during browser recreation: %s", current_url)
+                else:
+                    current_url = None
+            except Exception:
+                current_url = None
+    except Exception:
+        current_url = None
+    
     try:
         if PAGE:
             try:
@@ -424,6 +440,14 @@ async def _recreate_browser():
     
     # Reinitialize (but don't reset first init flag, as this is a recreation)
     await _init_browser()
+    
+    # Navigate back to preserved URL if we had one
+    if current_url and PAGE:
+        try:
+            log.info("Navigating back to preserved URL after browser recreation: %s", current_url)
+            await PAGE.goto(current_url, wait_until="load", timeout=NAVIGATION_TIMEOUT)
+        except Exception as e:
+            log.warning("Failed to navigate back to preserved URL %s: %s", current_url, e)
 async def _init_browser():
     global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT
     if PAGE and await _check_browser_health():
@@ -1333,7 +1357,9 @@ def execute_dsl():
 @app.get("/source")
 def source():
     try:
-        _run(_init_browser())
+        # Only initialize browser if it's not already healthy
+        if not PAGE or not _run(_check_browser_health()):
+            _run(_init_browser())
         return Response(_run(_safe_get_page_content()), mimetype="text/plain")
     except Exception as e:
         log.error("source error: %s", e)
@@ -1343,7 +1369,9 @@ def source():
 @app.get("/screenshot")
 def screenshot():
     try:
-        _run(_init_browser())
+        # Only initialize browser if it's not already healthy
+        if not PAGE or not _run(_check_browser_health()):
+            _run(_init_browser())
         img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
@@ -1354,7 +1382,9 @@ def screenshot():
 @app.get("/elements")
 def elements():
     try:
-        _run(_init_browser())
+        # Only initialize browser if it's not already healthy
+        if not PAGE or not _run(_check_browser_health()):
+            _run(_init_browser())
         data = _run(_list_elements())
         return jsonify(data)
     except Exception as e:
