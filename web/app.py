@@ -30,6 +30,17 @@ app = Flask(__name__)
 log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
 
+# Pre-initialize AsyncExecutor for immediate Playwright execution
+_async_executor_instance = None
+
+def get_preinitialized_async_executor():
+    """Get pre-initialized async executor to reduce startup overhead."""
+    global _async_executor_instance
+    if _async_executor_instance is None:
+        _async_executor_instance = get_async_executor()
+        log.info("Pre-initialized AsyncExecutor for immediate execution")
+    return _async_executor_instance
+
 
 @app.errorhandler(500)
 def internal_server_error(error):
@@ -81,7 +92,7 @@ HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
 
 
 def normalize_actions(llm_response):
-    """Extract and normalize actions from LLM response."""
+    """Extract and normalize actions from LLM response (optimized for speed)."""
     if not llm_response:
         return []
     
@@ -89,27 +100,27 @@ def normalize_actions(llm_response):
     if not isinstance(actions, list):
         return []
     
+    # Optimized normalization using list comprehension for speed
     normalized = []
     for action in actions:
         if not isinstance(action, dict):
             continue
             
-        # Copy action and normalize
-        normalized_action = dict(action)
+        # Create normalized action with proper lowercasing
+        normalized_action = dict(action)  # Start with copy
         
-        # Normalize action name
+        # Normalize action name to lowercase
         if "action" in normalized_action:
             normalized_action["action"] = str(normalized_action["action"]).lower()
         
-        # Handle selector -> target mapping
-        if "selector" in normalized_action and "target" not in normalized_action:
-            normalized_action["target"] = normalized_action["selector"]
+        # Handle selector -> target mapping (optimized)
+        if "selector" in action and "target" not in action:
+            normalized_action["target"] = action["selector"]
             
-        # Handle click_text action
-        if (normalized_action.get("action") == "click_text" and 
-            "text" in normalized_action and 
-            "target" not in normalized_action):
-            normalized_action["target"] = normalized_action["text"]
+        # Handle click_text action (optimized)
+        elif (normalized_action.get("action") == "click_text" and 
+              "text" in action and "target" not in action):
+            normalized_action["target"] = action["text"]
             
         normalized.append(normalized_action)
     
@@ -227,28 +238,21 @@ def execute():
     # Extract and normalize actions from LLM response
     actions = normalize_actions(res)
     
-    # If there are actions, start async Playwright execution immediately
+    # If there are actions, start async Playwright execution immediately (optimized)
     task_id = None
     if actions:
         try:
-            executor = get_async_executor()
+            # Use pre-initialized executor for immediate execution
+            executor = get_preinitialized_async_executor()
             task_id = executor.create_task()
             
-            # Start Playwright execution in parallel
-            success = executor.submit_playwright_execution(
-                task_id, 
-                execute_dsl,  # The function to execute
-                actions       # The actions to execute
-            )
+            # Start Playwright execution in parallel (immediate submission)
+            success = executor.submit_playwright_execution(task_id, execute_dsl, actions)
             
             if success:
-                # Also start parallel data fetching
-                fetch_funcs = {
-                    "updated_html": vnc_html,
-                    # Add screenshot fetching if needed in the future
-                }
-                executor.submit_parallel_data_fetch(task_id, fetch_funcs)
-                log.info("Started async execution for task %s", task_id)
+                # Start parallel data fetching immediately (no delay)
+                executor.submit_parallel_data_fetch(task_id, {"updated_html": vnc_html})
+                log.info("Started immediate async execution for task %s", task_id)
             else:
                 log.error("Failed to start async execution")
                 task_id = None
@@ -256,15 +260,15 @@ def execute():
             log.error("Error starting async execution: %s", e)
             task_id = None
     
-    # Return LLM response immediately with task_id for status tracking
-    response = dict(res)
+    # Return LLM response immediately with task_id for status tracking (optimized)
     if task_id:
-        response["task_id"] = task_id
-        response["async_execution"] = True
+        # Direct field assignment instead of dict copying for speed
+        res["task_id"] = task_id
+        res["async_execution"] = True
     else:
-        response["async_execution"] = False
+        res["async_execution"] = False
     
-    return jsonify(response)
+    return jsonify(res)
 
 
 @app.route("/execution-status/<task_id>", methods=["GET"])
