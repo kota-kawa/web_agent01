@@ -242,7 +242,7 @@ def execute():
             executor = get_async_executor()
             task_id = executor.create_task()
             
-            # Start Playwright execution in parallel
+            # Start Playwright execution
             success = executor.submit_playwright_execution(
                 task_id, 
                 execute_dsl,  # The function to execute
@@ -250,12 +250,6 @@ def execute():
             )
             
             if success:
-                # Also start parallel data fetching
-                fetch_funcs = {
-                    "updated_html": vnc_html,
-                    # Add screenshot fetching if needed in the future
-                }
-                executor.submit_parallel_data_fetch(task_id, fetch_funcs)
                 log.info("Started async execution for task %s", task_id)
             else:
                 log.error("Failed to start async execution")
@@ -285,19 +279,26 @@ def get_execution_status(task_id):
         if status is None:
             return jsonify({"error": "Task not found"}), 404
         
-        # Clean up old tasks periodically
-        executor.cleanup_old_tasks()
+        # Clean up old tasks periodically (but don't let it block the response)
+        try:
+            executor.cleanup_old_tasks()
+        except Exception as cleanup_e:
+            log.warning("Cleanup during status check failed: %s", cleanup_e)
         
         return jsonify(status)
         
     except Exception as e:
         import uuid
         correlation_id = str(uuid.uuid4())[:8]
-        log.error("[%s] get_execution_status error: %s", correlation_id, e)
+        log.error("[%s] get_execution_status error for task %s: %s", correlation_id, task_id, e)
+        
+        # Return a more informative error response
         return jsonify({
             "error": f"Failed to get status - {str(e)}",
-            "correlation_id": correlation_id
-        }), 200
+            "correlation_id": correlation_id,
+            "task_id": task_id,
+            "status": "unknown"  # Provide a status field for client handling
+        }), 200  # Return 200 to avoid triggering generic error handling
 
 
 @app.post("/store-warnings")

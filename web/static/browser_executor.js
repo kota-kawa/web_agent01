@@ -370,9 +370,13 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
             await storeWarningsInHistory(executionResult.result.warnings);
           }
           
-          // Get updated HTML from parallel fetch
+          // Get updated HTML from execution result (improved)
           if (executionResult.result.updated_html) {
             newHtml = executionResult.result.updated_html;
+            console.log("Using updated HTML from async execution result");
+          } else if (executionResult.result.html) {
+            newHtml = executionResult.result.html;
+            console.log("Using HTML from async execution result");
           }
         }
       } else if (executionResult.status === "failed") {
@@ -383,10 +387,32 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         statusElement.textContent = "⏹ ブラウザ操作が停止されました";
         statusElement.style.color = "#ffc107";
         errInfo = "Operation was stopped by user";
+      } else if (executionResult.status === "timeout") {
+        statusElement.textContent = "⏱ ブラウザ操作のタイムアウト - 処理は継続中です";
+        statusElement.style.color = "#fd7e14";
+        errInfo = "Execution status polling timed out";
+        // Don't treat timeout as a complete failure, just note it
+      } else {
+        statusElement.textContent = "🔄 ブラウザ操作の状態が不明です";
+        statusElement.style.color = "#6c757d";
+        errInfo = "Unknown execution status";
       }
     } else {
-      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました";
+      // Handle the case where polling completely failed
+      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました - 操作は継続中の可能性があります";
       statusElement.style.color = "#ffc107";
+      console.warn("Polling failed completely for task", res.task_id);
+      
+      // Try to get current page state as fallback
+      try {
+        const fallbackHtml = await fetch("/vnc-source").then(r => r.ok ? r.text() : "").catch(() => "");
+        if (fallbackHtml && fallbackHtml !== newHtml) {
+          newHtml = fallbackHtml;
+          console.log("Using fallback HTML from vnc-source");
+        }
+      } catch (e) {
+        console.warn("Failed to get fallback HTML:", e);
+      }
     }
     
     // Get fresh screenshot after execution
@@ -417,11 +443,13 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 }
 
 /* ======================================
-   Poll execution status
+   Poll execution status with improved robustness
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
+async function pollExecutionStatus(taskId, maxAttempts = 45, initialInterval = 500) {
   const startTime = Date.now();
-  const maxDuration = maxAttempts * interval; // Maximum time to wait
+  const maxDuration = 60000; // Maximum 60 seconds total wait time
+  let consecutiveErrors = 0;
+  const maxConsecutiveErrors = 5;
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // Check stop flags before each poll attempt
@@ -430,21 +458,45 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
       return { status: "stopped", error: "Operation was stopped by user" };
     }
     
+    // Adaptive interval: start fast, then slow down
+    const interval = Math.min(initialInterval + (attempt * 100), 2000); // 500ms to 2s max
+    
     try {
-      const response = await fetch(`/execution-status/${taskId}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout per request
+      
+      const response = await fetch(`/execution-status/${taskId}`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
       if (!response.ok) {
-        console.error("Failed to get execution status:", response.status);
-        // Don't immediately return null, try a few more times
-        if (attempt > 3) {
+        consecutiveErrors++;
+        console.warn(`Failed to get execution status (attempt ${attempt + 1}): ${response.status}`);
+        
+        // If too many consecutive errors, give up
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+          console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
           return null;
         }
-        await sleep(interval);
+        
+        // For server errors, wait longer before retry
+        if (response.status >= 500) {
+          await sleep(Math.min(interval * 2, 3000));
+        } else {
+          await sleep(interval);
+        }
         continue;
       }
       
-      const status = await response.json();
-      console.log(`Task ${taskId} status:`, status.status);
+      // Reset error counter on successful response
+      consecutiveErrors = 0;
       
+      const status = await response.json();
+      console.log(`Task ${taskId} status (attempt ${attempt + 1}):`, status.status);
+      
+      // Task completed (successfully or failed)
       if (status.status === "completed" || status.status === "failed") {
         return status;
       }
@@ -452,7 +504,8 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
       // Check if we've exceeded the maximum duration
       if (Date.now() - startTime > maxDuration) {
         console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms`);
-        break;
+        // Return current status even if not complete, rather than null
+        return status || { status: "timeout", error: "Polling timeout exceeded" };
       }
       
       // Check stop flags again before sleeping
@@ -465,23 +518,37 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
       await sleep(interval);
       
     } catch (e) {
-      console.error("Error polling execution status:", e);
+      consecutiveErrors++;
+      
+      // Check for abort signal (our timeout)
+      if (e.name === 'AbortError') {
+        console.warn(`Request timeout for task ${taskId} (attempt ${attempt + 1})`);
+      } else {
+        console.error(`Error polling execution status (attempt ${attempt + 1}):`, e);
+      }
+      
       // Check stop flags even in error case
       if (stopRequested || window.stopRequested) {
         return { status: "stopped", error: "Operation was stopped by user" };
       }
       
-      // Continue polling on error, but limit attempts
-      if (attempt > 5) {
-        console.error("Too many polling errors, giving up");
+      // If too many consecutive errors, give up
+      if (consecutiveErrors >= maxConsecutiveErrors) {
+        console.error(`Too many consecutive errors (${consecutiveErrors}), giving up on task ${taskId}`);
         return null;
       }
-      await sleep(interval);
+      
+      // Use longer delay for network errors
+      const errorDelay = e.name === 'AbortError' || e.message.includes('fetch') 
+        ? Math.min(interval * 2, 3000) 
+        : interval;
+      await sleep(errorDelay);
     }
   }
   
-  console.warn(`Polling timeout for task ${taskId} after ${maxAttempts} attempts`);
-  return null;
+  console.warn(`Polling reached maximum attempts (${maxAttempts}) for task ${taskId}`);
+  // Return a timeout status rather than null to provide better user feedback
+  return { status: "timeout", error: `Polling timeout after ${maxAttempts} attempts` };
 }
 
 /* ======================================
