@@ -79,21 +79,19 @@ def build_prompt(
             "error",
             "timeout", "timed out", "waiting for",
             "not found", "not visible", "not attached", "not clickable", "not hoverable",
-            "traceback", "exception", "warning",
+            "traceback", "exception",
             "detached", "intercepted",
-            "page closed", "context closed", "navigation", "frame detached",
+            "page closed", "context closed", "frame detached",
             "execution context", "protocol error", "target closed", "page crashed",
-            "browser disconnected", 
+            "browser disconnected",
             "blocking", "covered by", "outside viewport",
-            "disabled", "readonly", "not editable", 
+            "disabled", "readonly", "not editable",
             "refused", "unreachable", "resolution", "failed", "retry attempt",
-            "stack:", "file:", "line:", # Stack trace indicators
         )
 
         # Also include lines that contain specific Playwright patterns
         playwright_patterns = (
-            "selector resolved to", "element state", "element is", "waiting for selector",
-            "waiting for element", "execution info", "console error", "page error",
+            "console error", "page error",
             "request timeout", "response timeout", "navigation timeout",
             "load timeout", "goto timeout", "action timeout", "assertion timeout"
         )
