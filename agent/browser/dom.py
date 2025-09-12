@@ -107,7 +107,7 @@ class DOMElementNode:
         return traverse(root)
 
     def to_lines(
-        self, depth: int = 0, max_lines: int | None = 200, _lines=None
+        self, depth: int = 0, max_lines: int | None = None, _lines=None
     ) -> List[str]:
         """Return indented text representation of the DOM tree."""
         if _lines is None:
@@ -129,5 +129,5 @@ class DOMElementNode:
             ch.to_lines(depth + 1, max_lines, _lines)
         return _lines
 
-    def to_text(self, max_lines: int | None = 200) -> str:
+    def to_text(self, max_lines: int | None = None) -> str:
         return "\n".join(self.to_lines(max_lines=max_lines))
