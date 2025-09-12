@@ -2,7 +2,6 @@ import os
 import json
 import logging
 import requests
-import time
 from flask import (
     Flask,
     request,
@@ -166,16 +165,8 @@ def memory():
 # ----- Reset endpoint -----
 @app.post("/reset")
 def reset():
-    """Reset conversation history by clearing the history file and canceling all tasks"""
+    """Reset conversation history by clearing the history file"""
     try:
-        # Cancel all running async tasks
-        try:
-            executor = get_async_executor()
-            cancelled_count = executor.cancel_all_tasks()
-            log.info("Reset: cancelled %d async tasks", cancelled_count)
-        except Exception as e:
-            log.warning("Failed to cancel async tasks during reset: %s", e)
-        
         # Clear the history by saving an empty list
         save_hist([])
         log.info("Conversation history reset successfully")
@@ -243,7 +234,7 @@ def execute():
             executor = get_async_executor()
             task_id = executor.create_task()
             
-            # Start Playwright execution
+            # Start Playwright execution in parallel
             success = executor.submit_playwright_execution(
                 task_id, 
                 execute_dsl,  # The function to execute
@@ -251,6 +242,12 @@ def execute():
             )
             
             if success:
+                # Also start parallel data fetching
+                fetch_funcs = {
+                    "updated_html": vnc_html,
+                    # Add screenshot fetching if needed in the future
+                }
+                executor.submit_parallel_data_fetch(task_id, fetch_funcs)
                 log.info("Started async execution for task %s", task_id)
             else:
                 log.error("Failed to start async execution")
@@ -270,36 +267,6 @@ def execute():
     return jsonify(response)
 
 
-@app.route("/health", methods=["GET"])
-def health_check():
-    """Health check endpoint for monitoring server status."""
-    try:
-        # Check if basic components are working
-        executor = get_async_executor()
-        
-        # Simple health indicators
-        health_status = {
-            "status": "healthy",
-            "timestamp": time.time(),
-            "async_executor": "available",
-            "tasks_count": len(executor.tasks)
-        }
-        
-        return jsonify(health_status), 200
-        
-    except Exception as e:
-        import uuid
-        correlation_id = str(uuid.uuid4())[:8]
-        log.error("[%s] Health check failed: %s", correlation_id, e)
-        
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e),
-            "correlation_id": correlation_id,
-            "timestamp": time.time()
-        }), 503
-
-
 @app.route("/execution-status/<task_id>", methods=["GET"])
 def get_execution_status(task_id):
     """Get the status of an async execution task."""
@@ -310,26 +277,19 @@ def get_execution_status(task_id):
         if status is None:
             return jsonify({"error": "Task not found"}), 404
         
-        # Clean up old tasks periodically (but don't let it block the response)
-        try:
-            executor.cleanup_old_tasks()
-        except Exception as cleanup_e:
-            log.warning("Cleanup during status check failed: %s", cleanup_e)
+        # Clean up old tasks periodically
+        executor.cleanup_old_tasks()
         
         return jsonify(status)
         
     except Exception as e:
         import uuid
         correlation_id = str(uuid.uuid4())[:8]
-        log.error("[%s] get_execution_status error for task %s: %s", correlation_id, task_id, e)
-        
-        # Return a more informative error response
+        log.error("[%s] get_execution_status error: %s", correlation_id, e)
         return jsonify({
             "error": f"Failed to get status - {str(e)}",
-            "correlation_id": correlation_id,
-            "task_id": task_id,
-            "status": "unknown"  # Provide a status field for client handling
-        }), 200  # Return 200 to avoid triggering generic error handling
+            "correlation_id": correlation_id
+        }), 200
 
 
 @app.post("/store-warnings")

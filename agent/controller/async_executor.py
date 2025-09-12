@@ -80,29 +80,6 @@ class AsyncExecutor:
                 # Execute the Playwright operations
                 result = execute_func({"actions": actions})
                 
-                # Ensure we have a proper result dictionary
-                if not isinstance(result, dict):
-                    result = {"html": "", "warnings": [], "error": str(result)}
-                
-                # After execution completes, fetch updated HTML
-                if result.get("html") is not None:  # Only if execution didn't fail completely
-                    try:
-                        # Import here to avoid circular imports
-                        from agent.browser.vnc import get_html
-                        import time
-                        
-                        # Small delay to ensure DOM changes are reflected
-                        time.sleep(0.5)
-                        
-                        updated_html = get_html()
-                        if updated_html:
-                            result["updated_html"] = updated_html
-                            log.info("Retrieved updated HTML for task %s (%d chars)", task_id, len(updated_html))
-                        else:
-                            log.warning("Failed to retrieve updated HTML for task %s", task_id)
-                    except Exception as e:
-                        log.error("Error fetching updated HTML for task %s: %s", task_id, e)
-                
                 task.result = result
                 task.status = TaskStatus.COMPLETED
                 task.completed_at = time.time()
@@ -186,20 +163,6 @@ class AsyncExecutor:
         for task_id in to_remove:
             del self.tasks[task_id]
             log.debug("Cleaned up old task %s", task_id)
-    
-    def cancel_all_tasks(self):
-        """Cancel all running and pending tasks."""
-        cancelled_count = 0
-        for task_id, task in list(self.tasks.items()):
-            if task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
-                task.status = TaskStatus.FAILED
-                task.error = "Cancelled by user reset"
-                task.completed_at = time.time()
-                cancelled_count += 1
-                log.info("Cancelled task %s due to reset", task_id)
-        
-        log.info("Cancelled %d tasks due to reset", cancelled_count)
-        return cancelled_count
     
     def shutdown(self):
         """Shutdown the executor."""
