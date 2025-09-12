@@ -19,8 +19,18 @@ def _extract_recent_warnings(hist, max_warnings=5):
                 if isinstance(bot_warnings, list):
                     # Add each warning with a prefix to show it's from recent history
                     for warning in bot_warnings:
-                        if len(warnings) < max_warnings:
-                            warnings.append(f"RECENT:{warning}")
+                        if len(warnings) >= max_warnings:
+                            break
+                        if not isinstance(warning, str):
+                            continue
+                        # Skip warnings that contain large HTML dumps or are overly long
+                        if (
+                            warning.startswith("INFO:playwright:html=")
+                            or "<!DOCTYPE html>" in warning
+                            or len(warning) > 1000
+                        ):
+                            continue
+                        warnings.append(f"RECENT:{warning}")
     
     return warnings
 

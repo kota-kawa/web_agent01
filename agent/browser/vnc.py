@@ -116,6 +116,14 @@ def execute_dsl(payload, timeout=120):
                 # Check all text fields for Playwright error patterns
                 for key, value in result.items():
                     if isinstance(value, str) and value:
+                        # Skip large HTML or other verbose content unrelated to errors
+                        if (
+                            key.lower() == "html"
+                            or value.lstrip().startswith("<!DOCTYPE html")
+                            or len(value) > 1000
+                        ):
+                            continue
+
                         # Look for Playwright error patterns (case-insensitive)
                         error_patterns = [
                             "timeout", "timed out", "waiting for", "locator", "element not found",
@@ -128,7 +136,7 @@ def execute_dsl(payload, timeout=120):
                             "blocking", "covered by", "outside viewport", "disabled element",
                             "readonly element", "not editable", "not clickable", "not hoverable"
                         ]
-                        
+
                         value_lower = value.lower()
                         for pattern in error_patterns:
                             if pattern in value_lower:
