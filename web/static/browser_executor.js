@@ -313,20 +313,12 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     screenshot = await captureScreenshot();
   }
 
+  // Send command to LLM and get immediate response
   const res = await sendCommand(cmd, html, screenshot, model, prevError);
 
   if (res.raw) console.log("LLM raw output:\n", res.raw);
 
-  // Extract actions immediately after getting LLM response
-  const acts = normalizeActions(res);
-
-  // Start Playwright execution immediately if there are actions
-  let playwrightPromise = null;
-  if (acts.length) {
-    playwrightPromise = sendDSL(acts);
-  }
-
-  // Update UI in parallel with Playwright execution
+  // Update UI immediately with LLM response
   if (showInUI && res.explanation) {
     if (placeholder) {
       placeholder.textContent = res.explanation;
@@ -340,12 +332,65 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     }
   }
 
-  // Wait for Playwright execution to complete
   let newHtml = html;
   let newShot = screenshot;
   let errInfo = null;
-  if (playwrightPromise) {
-    const ret = await playwrightPromise;
+
+  // Check if we have async execution
+  if (res.async_execution && res.task_id) {
+    console.log("Async execution started, task ID:", res.task_id);
+    
+    // Show execution status
+    const statusElement = document.createElement("p");
+    statusElement.classList.add("system-message");
+    statusElement.textContent = "🔄 ブラウザ操作を実行中...";
+    statusElement.style.color = "#007bff";
+    chatArea.appendChild(statusElement);
+    chatArea.scrollTop = chatArea.scrollHeight;
+
+    // Poll for execution completion
+    const executionResult = await pollExecutionStatus(res.task_id);
+    
+    if (executionResult) {
+      // Update status message
+      if (executionResult.status === "completed") {
+        statusElement.textContent = "✅ ブラウザ操作が完了しました";
+        statusElement.style.color = "#28a745";
+        
+        // Get execution results
+        if (executionResult.result) {
+          newHtml = executionResult.result.html || newHtml;
+          errInfo = executionResult.result.error || null;
+          
+          // Display warnings if any
+          if (executionResult.result.warnings && executionResult.result.warnings.length > 0) {
+            displayWarnings(executionResult.result.warnings, executionResult.result.correlation_id);
+            await storeWarningsInHistory(executionResult.result.warnings);
+          }
+          
+          // Get updated HTML from parallel fetch
+          if (executionResult.result.updated_html) {
+            newHtml = executionResult.result.updated_html;
+          }
+        }
+      } else if (executionResult.status === "failed") {
+        statusElement.textContent = "❌ ブラウザ操作に失敗しました";
+        statusElement.style.color = "#dc3545";
+        errInfo = executionResult.error || "Unknown execution error";
+      }
+    } else {
+      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました";
+      statusElement.style.color = "#ffc107";
+    }
+    
+    // Get fresh screenshot after execution
+    newShot = await captureScreenshot();
+    
+  } else if (res.actions && res.actions.length > 0) {
+    // Fallback to synchronous execution if async is not available
+    console.log("Falling back to synchronous execution");
+    const acts = normalizeActions(res);
+    const ret = await sendDSL(acts);
     if (ret) {
       newHtml = ret.html || newHtml;
       errInfo = ret.error || null;
@@ -353,7 +398,47 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     newShot = await captureScreenshot();
   }
 
-  return { cont: res.complete === false && acts.length > 0, explanation: res.explanation || "", memory: res.memory || "", html: newHtml, screenshot: newShot, error: errInfo };
+  return { 
+    cont: res.complete === false && (res.actions || []).length > 0, 
+    explanation: res.explanation || "", 
+    memory: res.memory || "", 
+    html: newHtml, 
+    screenshot: newShot, 
+    error: errInfo 
+  };
+}
+
+/* ======================================
+   Poll execution status
+   ====================================== */
+async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const response = await fetch(`/execution-status/${taskId}`);
+      if (!response.ok) {
+        console.error("Failed to get execution status:", response.status);
+        return null;
+      }
+      
+      const status = await response.json();
+      console.log(`Task ${taskId} status:`, status.status);
+      
+      if (status.status === "completed" || status.status === "failed") {
+        return status;
+      }
+      
+      // Wait before next poll
+      await sleep(interval);
+      
+    } catch (e) {
+      console.error("Error polling execution status:", e);
+      // Continue polling on error
+      await sleep(interval);
+    }
+  }
+  
+  console.warn(`Polling timeout for task ${taskId} after ${maxAttempts} attempts`);
+  return null;
 }
 
 /* ======================================

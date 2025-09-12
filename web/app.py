@@ -21,6 +21,7 @@ from agent.browser.vnc import (
 )
 from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
+from agent.controller.async_executor import get_async_executor
 from agent.utils.history import load_hist, save_hist
 from agent.utils.html import strip_html
 
@@ -77,6 +78,42 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
 LOG_DIR = os.getenv("LOG_DIR", "./")
 os.makedirs(LOG_DIR, exist_ok=True)
 HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
+
+
+def normalize_actions(llm_response):
+    """Extract and normalize actions from LLM response."""
+    if not llm_response:
+        return []
+    
+    actions = llm_response.get("actions", [])
+    if not isinstance(actions, list):
+        return []
+    
+    normalized = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+            
+        # Copy action and normalize
+        normalized_action = dict(action)
+        
+        # Normalize action name
+        if "action" in normalized_action:
+            normalized_action["action"] = str(normalized_action["action"]).lower()
+        
+        # Handle selector -> target mapping
+        if "selector" in normalized_action and "target" not in normalized_action:
+            normalized_action["target"] = normalized_action["selector"]
+            
+        # Handle click_text action
+        if (normalized_action.get("action") == "click_text" and 
+            "text" in normalized_action and 
+            "target" not in normalized_action):
+            normalized_action["target"] = normalized_action["text"]
+            
+        normalized.append(normalized_action)
+    
+    return normalized
 
 
 @app.route("/history", methods=["GET"])
@@ -179,11 +216,76 @@ def execute():
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
     prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg)
+    
+    # Call LLM first
     res = call_llm(prompt, model, shot)
 
+    # Save conversation history immediately
     hist.append({"user": cmd, "bot": res})
     save_hist(hist)
-    return jsonify(res)
+    
+    # Extract and normalize actions from LLM response
+    actions = normalize_actions(res)
+    
+    # If there are actions, start async Playwright execution immediately
+    task_id = None
+    if actions:
+        executor = get_async_executor()
+        task_id = executor.create_task()
+        
+        # Start Playwright execution in parallel
+        success = executor.submit_playwright_execution(
+            task_id, 
+            execute_dsl,  # The function to execute
+            actions       # The actions to execute
+        )
+        
+        if success:
+            # Also start parallel data fetching
+            fetch_funcs = {
+                "updated_html": vnc_html,
+                # Add screenshot fetching if needed in the future
+            }
+            executor.submit_parallel_data_fetch(task_id, fetch_funcs)
+            log.info("Started async execution for task %s", task_id)
+        else:
+            log.error("Failed to start async execution")
+            task_id = None
+    
+    # Return LLM response immediately with task_id for status tracking
+    response = dict(res)
+    if task_id:
+        response["task_id"] = task_id
+        response["async_execution"] = True
+    else:
+        response["async_execution"] = False
+    
+    return jsonify(response)
+
+
+@app.route("/execution-status/<task_id>", methods=["GET"])
+def get_execution_status(task_id):
+    """Get the status of an async execution task."""
+    try:
+        executor = get_async_executor()
+        status = executor.get_task_status(task_id)
+        
+        if status is None:
+            return jsonify({"error": "Task not found"}), 404
+        
+        # Clean up old tasks periodically
+        executor.cleanup_old_tasks()
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] get_execution_status error: %s", correlation_id, e)
+        return jsonify({
+            "error": f"Failed to get status - {str(e)}",
+            "correlation_id": correlation_id
+        }), 200
 
 
 @app.post("/store-warnings")
@@ -282,4 +384,14 @@ def outer():
 
 
 if __name__ == "__main__":
+    import atexit
+    
+    # Setup cleanup on shutdown
+    def cleanup():
+        executor = get_async_executor()
+        executor.shutdown()
+        log.info("Application shutdown cleanup completed")
+    
+    atexit.register(cleanup)
+    
     app.run(host="0.0.0.0", port=5000, debug=True)
