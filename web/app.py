@@ -312,7 +312,7 @@ def store_warnings():
         if not warnings:
             return jsonify({"status": "success", "message": "No warnings to store"})
         
-        # Ensure all warnings are truncated to 1000 characters
+        # Ensure all warnings are truncated to 7000 characters
         truncated_warnings = [_truncate_warning(warning) for warning in warnings]
         
         # Load current history
@@ -357,7 +357,7 @@ def store_warnings():
         return jsonify({"status": "error", "message": error_msg})
 
 
-def _truncate_warning(warning_msg, max_length=1000):
+def _truncate_warning(warning_msg, max_length=7000):
     """Truncate warning message to specified length if too long."""
     if len(warning_msg) <= max_length:
         return warning_msg
