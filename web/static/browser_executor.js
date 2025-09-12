@@ -57,14 +57,49 @@ function normalizeActions(instr) {
    ====================================== */
 async function checkServerHealth() {
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    
     const response = await fetch("/automation/healthz", {
       method: "GET",
-      timeout: 5000
+      signal: controller.signal
     });
+    
+    clearTimeout(timeoutId);
     return response.ok;
   } catch (e) {
-    console.warn("Health check failed:", e);
+    if (e.name === 'AbortError') {
+      console.warn("Health check timed out");
+    } else {
+      console.warn("Health check failed:", e);
+    }
     return false;
+  }
+}
+
+function logPollingDiagnostics(taskId, httpErrors, networkErrors, totalAttempts, duration) {
+  const diagnostics = {
+    taskId,
+    httpErrors,
+    networkErrors,
+    totalAttempts,
+    duration,
+    timestamp: new Date().toISOString()
+  };
+  
+  console.warn("Polling failed diagnostics:", diagnostics);
+  
+  // Store diagnostics for potential debugging
+  if (typeof window !== 'undefined') {
+    if (!window.pollingDiagnostics) {
+      window.pollingDiagnostics = [];
+    }
+    window.pollingDiagnostics.push(diagnostics);
+    
+    // Keep only last 10 diagnostics to prevent memory leak
+    if (window.pollingDiagnostics.length > 10) {
+      window.pollingDiagnostics = window.pollingDiagnostics.slice(-10);
+    }
   }
 }
 
@@ -349,9 +384,19 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     statusElement.style.color = "#007bff";
     chatArea.appendChild(statusElement);
     chatArea.scrollTop = chatArea.scrollHeight;
+    
+    // Update status periodically during polling
+    let pollingStartTime = Date.now();
+    const updateInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - pollingStartTime) / 1000);
+      statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
+    }, 1000);
 
     // Poll for execution completion
     const executionResult = await pollExecutionStatus(res.task_id);
+    
+    // Clear the update interval
+    clearInterval(updateInterval);
     
     if (executionResult) {
       // Update status message
@@ -381,8 +426,40 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         errInfo = executionResult.error || "Unknown execution error";
       }
     } else {
-      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました";
+      // More informative error message and attempt fallback
+      console.warn("Execution status polling failed for task:", res.task_id);
+      statusElement.textContent = "⚠️ 実行状態の確認に失敗しました。フォールバック中...";
       statusElement.style.color = "#ffc107";
+      
+      // Try to fall back to synchronous execution if we have actions
+      if (res.actions && res.actions.length > 0) {
+        console.log("Attempting fallback to synchronous execution after polling failure");
+        statusElement.textContent = "🔄 フォールバック実行中...";
+        statusElement.style.color = "#17a2b8";
+        
+        const acts = normalizeActions(res);
+        if (acts && acts.length > 0) {
+          try {
+            const ret = await sendDSL(acts);
+            if (ret) {
+              newHtml = ret.html || newHtml;
+              errInfo = ret.error || null;
+              statusElement.textContent = "✅ フォールバック実行が完了しました";
+              statusElement.style.color = "#28a745";
+            } else {
+              statusElement.textContent = "❌ フォールバック実行も失敗しました";
+              statusElement.style.color = "#dc3545";
+            }
+          } catch (fallbackError) {
+            console.error("Fallback execution failed:", fallbackError);
+            statusElement.textContent = "❌ フォールバック実行でエラーが発生しました";
+            statusElement.style.color = "#dc3545";
+            errInfo = `Polling failed and fallback error: ${fallbackError.message}`;
+          }
+        }
+      } else {
+        statusElement.textContent = "⚠️ 実行状態の確認に失敗しました（フォールバック不可）";
+      }
     }
     
     // Get fresh screenshot after execution
@@ -415,27 +492,67 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 /* ======================================
    Poll execution status
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
+async function pollExecutionStatus(taskId, maxAttempts = 30, initialInterval = 1000) {
   const startTime = Date.now();
-  const maxDuration = maxAttempts * interval; // Maximum time to wait
+  const maxDuration = maxAttempts * initialInterval * 2; // More generous timeout
+  let httpErrorCount = 0;
+  let networkErrorCount = 0;
+  const maxHttpErrors = 8;     // Increased from 3
+  const maxNetworkErrors = 10; // Increased from 5
+  
+  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts})`);
+  
+  // Optional health check before starting polling
+  try {
+    const healthOk = await checkServerHealth();
+    if (!healthOk) {
+      console.warn("Server health check failed, but continuing with polling...");
+    }
+  } catch (e) {
+    console.warn("Health check error, but continuing:", e);
+  }
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const response = await fetch(`/execution-status/${taskId}`);
+      
       if (!response.ok) {
-        console.error("Failed to get execution status:", response.status);
-        // Don't immediately return null, try a few more times
-        if (attempt > 3) {
+        httpErrorCount++;
+        console.warn(`HTTP error ${response.status} for task ${taskId} (attempt ${attempt + 1}, http errors: ${httpErrorCount})`);
+        
+        // For server errors (5xx), be more patient
+        if (response.status >= 500 && httpErrorCount < maxHttpErrors) {
+          const backoffDelay = Math.min(initialInterval * Math.pow(1.5, httpErrorCount), 5000);
+          console.log(`Server error detected, waiting ${backoffDelay}ms before retry...`);
+          await sleep(backoffDelay);
+          continue;
+        }
+        
+        // For client errors (4xx), fewer retries but still try
+        if (response.status >= 400 && response.status < 500 && httpErrorCount < 3) {
+          await sleep(initialInterval);
+          continue;
+        }
+        
+        // Too many HTTP errors
+        if (httpErrorCount >= maxHttpErrors) {
+          console.error(`Too many HTTP errors (${httpErrorCount}), giving up on task ${taskId}`);
           return null;
         }
-        await sleep(interval);
+        
+        await sleep(initialInterval);
         continue;
       }
       
+      // Reset error count on successful response
+      httpErrorCount = 0;
+      
       const status = await response.json();
-      console.log(`Task ${taskId} status:`, status.status);
+      console.log(`Task ${taskId} status: ${status.status} (attempt ${attempt + 1})`);
       
       if (status.status === "completed" || status.status === "failed") {
+        const duration = Date.now() - startTime;
+        console.log(`Task ${taskId} completed after ${duration}ms`);
         return status;
       }
       
@@ -445,21 +562,41 @@ async function pollExecutionStatus(taskId, maxAttempts = 30, interval = 1000) {
         break;
       }
       
-      // Wait before next poll
-      await sleep(interval);
+      // Exponential backoff for polling interval, but cap it
+      const currentInterval = Math.min(initialInterval * Math.pow(1.2, Math.floor(attempt / 5)), 3000);
+      await sleep(currentInterval);
       
     } catch (e) {
-      console.error("Error polling execution status:", e);
-      // Continue polling on error, but limit attempts
-      if (attempt > 5) {
-        console.error("Too many polling errors, giving up");
+      networkErrorCount++;
+      console.error(`Network error polling task ${taskId} (attempt ${attempt + 1}, network errors: ${networkErrorCount}):`, e);
+      
+      // Check if this is a retryable network error
+      if (networkErrorCount < maxNetworkErrors && 
+          (e.name === 'TypeError' || e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
+        
+        // Exponential backoff for network errors
+        const backoffDelay = Math.min(initialInterval * Math.pow(2, networkErrorCount), 8000);
+        console.log(`Network error detected, waiting ${backoffDelay}ms before retry...`);
+        await sleep(backoffDelay);
+        continue;
+      }
+      
+      // Too many network errors or non-retryable error
+      if (networkErrorCount >= maxNetworkErrors) {
+        console.error(`Too many network errors (${networkErrorCount}), giving up on task ${taskId}`);
         return null;
       }
-      await sleep(interval);
+      
+      await sleep(initialInterval);
     }
   }
   
-  console.warn(`Polling timeout for task ${taskId} after ${maxAttempts} attempts`);
+  console.warn(`Polling timeout for task ${taskId} after ${maxAttempts} attempts (HTTP errors: ${httpErrorCount}, Network errors: ${networkErrorCount})`);
+  
+  // Log diagnostics for debugging
+  const duration = Date.now() - startTime;
+  logPollingDiagnostics(taskId, httpErrorCount, networkErrorCount, maxAttempts, duration);
+  
   return null;
 }
 
