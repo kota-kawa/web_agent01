@@ -61,7 +61,9 @@ def execute_dsl(payload, timeout=120):
             log.info("DSL retry attempt %d/%d, checking server health...", attempt, max_retries)
             if not _check_health():
                 log.warning("Server health check failed on retry attempt %d", attempt)
-                time.sleep(2)  # Wait for potential recovery
+                # Use adaptive waiting based on attempt number instead of fixed delay
+                adaptive_wait = min(1.0 + (attempt - 1) * 0.5, 3.0)  # 1.5s, 2.0s, 2.5s, max 3.0s
+                time.sleep(adaptive_wait)
             else:
                 log.info("Server health check passed on retry attempt %d", attempt)
         
@@ -86,8 +88,11 @@ def execute_dsl(payload, timeout=120):
             last_error = "Request timeout - The operation took too long to complete"
             log.error("execute_dsl timeout on attempt %d", attempt)
             if attempt < max_retries:
-                wait_time = attempt * 1  # 1s, 2s exponential backoff
-                log.info("Retrying after %ds due to timeout...", wait_time)
+                # Adaptive backoff with health checking instead of fixed delay
+                base_wait = attempt * 1  # 1s, 2s base exponential backoff
+                # If server is responding to health checks, use shorter delay
+                wait_time = base_wait * 0.5 if _check_health() else base_wait
+                log.info("Retrying after %.1fs due to timeout...", wait_time)
                 time.sleep(wait_time)
                 continue
         except requests.HTTPError as e:
@@ -98,8 +103,10 @@ def execute_dsl(payload, timeout=120):
             
             # Retry on server errors (5xx) but not client errors (4xx)
             if attempt < max_retries and status_code >= 500:
-                wait_time = attempt * 1  # 1s, 2s exponential backoff
-                log.info("Retrying after %ds due to server error %d...", wait_time, status_code)
+                # Adaptive backoff based on server health for server errors
+                base_wait = attempt * 1  # 1s, 2s exponential backoff
+                wait_time = base_wait * 0.7 if _check_health() else base_wait
+                log.info("Retrying after %.1fs due to server error %d...", wait_time, status_code)
                 time.sleep(wait_time)
                 continue
             elif status_code >= 500:
@@ -112,16 +119,21 @@ def execute_dsl(payload, timeout=120):
             last_error = f"Connection error - Could not connect to automation server: {str(e)}"
             log.error("execute_dsl connection error on attempt %d: %s", attempt, last_error)
             if attempt < max_retries:
-                wait_time = attempt * 2  # 2s, 4s for connection errors
-                log.info("Retrying after %ds due to connection error...", wait_time)
+                # Longer wait for connection errors, but with health check optimization
+                base_wait = attempt * 2  # 2s, 4s for connection errors
+                # Much shorter wait if server becomes responsive
+                wait_time = base_wait * 0.3 if _check_health() else base_wait
+                log.info("Retrying after %.1fs due to connection error...", wait_time)
                 time.sleep(wait_time)
                 continue
         except requests.RequestException as e:
             last_error = f"Request error - {str(e)}"
             log.error("execute_dsl request error on attempt %d: %s", attempt, last_error)
             if attempt < max_retries:
-                wait_time = attempt * 1
-                log.info("Retrying after %ds due to request error...", wait_time)
+                # Adaptive wait based on server health for general request errors
+                base_wait = attempt * 1
+                wait_time = base_wait * 0.6 if _check_health() else base_wait
+                log.info("Retrying after %.1fs due to request error...", wait_time)
                 time.sleep(wait_time)
                 continue
         except Exception as e:

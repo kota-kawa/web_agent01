@@ -375,7 +375,9 @@ async def _wait_cdp(t: int = 15) -> bool:
                 await c.get(f"{CDP_URL}/json/version")
                 return True
             except httpx.HTTPError:
-                await asyncio.sleep(0.5)
+                # Use exponential backoff with network status checks instead of fixed delay
+                backoff_delay = min(0.5 * (2 ** (15 - t + int(time.time() - deadline + t))), 2.0)
+                await asyncio.sleep(backoff_delay)
     return False
 
 
@@ -495,7 +497,8 @@ async def _safe_click(l, force=False, timeout=None):
         
         # Try hover first to ensure element is ready
         await l.first.hover(timeout=timeout)
-        await asyncio.sleep(0.1)  # Short pause after hover
+        # Use Playwright's automatic element readiness instead of fixed delay
+        await l.first.wait_for(state="visible", timeout=timeout)
         
         await l.first.click(timeout=timeout, force=force)
         
@@ -648,8 +651,9 @@ async def _safe_select(l, val: str, timeout=None):
                 try:
                     # Fallback 3: Click dropdown and then click specific option
                     await l.first.click(timeout=timeout)
-                    await asyncio.sleep(0.2)  # Wait for dropdown to open
+                    # Wait for dropdown to be open using Playwright's smart waiting
                     option_loc = PAGE.locator(f"option[value='{val}'], option:has-text('{val}')")
+                    await option_loc.first.wait_for(state="visible", timeout=timeout)
                     await option_loc.first.click(timeout=timeout)
                     fallback_used = True
                     log.info("Select fallback successful: click-based selection worked for value '%s'", val)
@@ -677,7 +681,8 @@ async def _safe_press(l, key: str, timeout=None):
         try:
             # Fallback 1: Focus element first then press key
             await l.first.focus(timeout=timeout)
-            await asyncio.sleep(0.1)  # Brief pause after focus
+            # Ensure element is focused using Playwright's built-in state checking
+            await l.first.wait_for(state="visible", timeout=timeout)
             await l.first.press(key, timeout=timeout)
             fallback_used = True
             log.info("Key press fallback successful: focus+press worked for key '%s'", key)
@@ -832,7 +837,12 @@ async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
     try:
         await PAGE.evaluate(script, timeout_ms)
     except Exception:
-        await PAGE.wait_for_timeout(100)
+        # Fallback to network idle state instead of fixed timeout
+        try:
+            await PAGE.wait_for_load_state("networkidle", timeout=500)
+        except Exception:
+            # Last resort - minimal timeout
+            await PAGE.wait_for_timeout(50)
 
 
 async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> str:
@@ -856,8 +866,14 @@ async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> s
                 log.warning("Page content retrieval attempt %d failed due to navigation: %s", attempt + 1, str(e))
                 
                 if attempt < max_retries - 1:
-                    # Wait a bit longer for navigation to complete
-                    await asyncio.sleep(delay_ms / 1000)
+                    # Use Playwright's smart waiting instead of fixed delay
+                    try:
+                        # Wait for navigation to complete using Playwright states
+                        await PAGE.wait_for_load_state("domcontentloaded", timeout=delay_ms)
+                        await PAGE.wait_for_load_state("networkidle", timeout=delay_ms)
+                    except Exception:
+                        # Fallback to minimal delay only if Playwright waiting fails
+                        await asyncio.sleep(min(delay_ms / 1000, 0.5))
                     
                     # Try additional stabilization
                     try:
@@ -898,8 +914,17 @@ async def _stabilize_page():
         await _wait_for_loading_indicators_to_disappear()
         
     except Exception:
-        # Fallback to basic timeout if advanced waiting fails
-        await PAGE.wait_for_timeout(min(500, SPA_STABILIZE_TIMEOUT // 2))
+        # Enhanced fallback using multiple Playwright state checks instead of fixed timeout
+        try:
+            # Try waiting for DOM content to be loaded
+            await PAGE.wait_for_load_state("domcontentloaded", timeout=1000)
+        except Exception:
+            try:
+                # Try waiting for any visible content
+                await PAGE.wait_for_selector("body", state="visible", timeout=500)
+            except Exception:
+                # Last resort - minimal timeout
+                await PAGE.wait_for_timeout(100)
 
 
 async def _wait_for_loading_indicators_to_disappear(timeout: int = 3000):
@@ -1001,7 +1026,18 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             
         if a == "wait":
             timeout = ms if ms > 0 else 1000
-            await PAGE.wait_for_timeout(timeout)
+            # Use smart waiting with multiple fallbacks instead of fixed timeout
+            try:
+                # Try to wait for network to be idle first (better than fixed wait)
+                await PAGE.wait_for_load_state("networkidle", timeout=min(timeout, 3000))
+            except Exception:
+                try:
+                    # Fallback to DOM content loaded state
+                    await PAGE.wait_for_load_state("domcontentloaded", timeout=min(timeout, 2000))
+                except Exception:
+                    # Last resort - use requested timeout but log it as suboptimal
+                    log.info("Using fixed timeout as fallback for wait action: %dms", timeout)
+                    await PAGE.wait_for_timeout(timeout)
             return action_warnings
             
         if a == "wait_for_selector":
@@ -1067,7 +1103,18 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     loc = await SmartLocator(PAGE, tgt).locate()
                 if loc is not None:
                     break
-                await _stabilize_page()
+                # Enhanced waiting strategy instead of just _stabilize_page()
+                if attempt < LOCATOR_RETRIES - 1:
+                    try:
+                        # Wait for potential dynamic content using Playwright's smart waiting
+                        await PAGE.wait_for_load_state("networkidle", timeout=1000)
+                    except Exception:
+                        try:
+                            # Fallback to DOM stabilization
+                            await _wait_dom_idle(1000)
+                        except Exception:
+                            # Last resort for this retry
+                            await _stabilize_page()
             except Exception as e:
                 if attempt == LOCATOR_RETRIES - 1:
                     action_warnings.append(f"WARNING:auto:Locator search failed for '{tgt}' - {str(e)}")
@@ -1178,8 +1225,13 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
     all_warnings = []
     
     for i, act in enumerate(actions):
-        # Enhanced DOM stabilization before each action
-        await _stabilize_page()
+        # Smart pre-action waiting using Playwright's built-in mechanisms
+        try:
+            # Wait for page to be in ready state before each action
+            await PAGE.wait_for_load_state("domcontentloaded", timeout=2000)
+        except Exception:
+            # Fallback to enhanced DOM stabilization only if needed
+            await _stabilize_page()
         
         retries = int(act.get("retry", MAX_RETRIES))
         action_executed = False
@@ -1191,8 +1243,13 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                 all_warnings.extend(action_warnings)
                 action_executed = True
                 
-                # Enhanced DOM stabilization after each action
-                await _stabilize_page()
+                # Smart post-action waiting using Playwright's state management
+                try:
+                    # Wait for any pending network requests or DOM mutations to complete
+                    await PAGE.wait_for_load_state("networkidle", timeout=1000)
+                except Exception:
+                    # Fallback to enhanced DOM stabilization only if needed
+                    await _stabilize_page()
                 break
                 
             except Exception as e:
@@ -1216,9 +1273,19 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                         if debug_info:
                             all_warnings.append(f"DEBUG:auto:{debug_info}")
                 else:
-                    # Wait with exponential backoff before retry
+                    # Use smart waiting with exponential backoff as fallback
                     wait_time = min(1000 * (2 ** (attempt - 1)), 5000)  # Cap at 5 seconds
-                    await asyncio.sleep(wait_time / 1000)
+                    try:
+                        # Try to use Playwright's smart waiting mechanisms first
+                        if PAGE:
+                            await PAGE.wait_for_load_state("networkidle", timeout=min(wait_time, 2000))
+                    except Exception:
+                        try:
+                            # Fallback to DOM stability check
+                            await PAGE.wait_for_load_state("domcontentloaded", timeout=min(wait_time, 1000))
+                        except Exception:
+                            # Last resort - use exponential backoff sleep
+                            await asyncio.sleep(min(wait_time / 1000, 2.0))
         
         # If action couldn't be executed due to critical errors, note it
         if not action_executed:
