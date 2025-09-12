@@ -47,20 +47,29 @@ def get_html() -> str:
         return ""
 
 
+def _truncate_warning(warning_msg, max_length=1000):
+    """Truncate warning message to specified length if too long."""
+    if len(warning_msg) <= max_length:
+        return warning_msg
+    return warning_msg[:max_length-3] + "..."
+
+
 def execute_dsl(payload, timeout=120):
     """Forward DSL JSON to the automation server with retry logic."""
     if not payload.get("actions"):
         return {"html": "", "warnings": []}
     
     max_retries = 2  # Allow 1 retry attempt
-    last_error = None
+    all_errors = []  # Collect ALL errors from all attempts
     
     for attempt in range(1, max_retries + 1):
         # Check server health before retry attempts
         if attempt > 1:
             log.info("DSL retry attempt %d/%d, checking server health...", attempt, max_retries)
             if not _check_health():
-                log.warning("Server health check failed on retry attempt %d", attempt)
+                health_error = f"Server health check failed on retry attempt {attempt}"
+                log.warning(health_error)
+                all_errors.append(health_error)
                 time.sleep(2)  # Wait for potential recovery
             else:
                 log.info("Server health check passed on retry attempt %d", attempt)
@@ -73,17 +82,34 @@ def execute_dsl(payload, timeout=120):
             # Success - log if this was a retry
             if attempt > 1:
                 log.info("DSL execution succeeded on retry attempt %d", attempt)
+                # If we succeeded on retry, still include previous attempt errors as warnings
+                if all_errors:
+                    retry_warnings = [f"ERROR:auto:Retry attempt {i+1} - {error}" for i, error in enumerate(all_errors)]
+                    # Truncate each warning message to 1000 characters
+                    retry_warnings = [_truncate_warning(warning) for warning in retry_warnings]
+                    # Add retry warnings to the successful result
+                    if "warnings" not in result:
+                        result["warnings"] = []
+                    result["warnings"].extend(retry_warnings)
+                    # Also add success message
+                    result["warnings"].append(f"INFO:auto:Execution succeeded on retry attempt {attempt} after {len(all_errors)} failed attempts")
             
             # Handle both old error format and new warnings format
             if "error" in result:
                 # Convert old error format to new warnings format
                 error_msg = result.get("message", result.get("error", "Unknown error"))
-                return {"html": "", "warnings": [f"ERROR:auto:{error_msg}"]}
+                final_warning = _truncate_warning(f"ERROR:auto:{error_msg}")
+                return {"html": "", "warnings": [final_warning]}
+            
+            # Ensure any existing warnings are also truncated
+            if "warnings" in result and result["warnings"]:
+                result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
             
             return result
             
         except requests.Timeout:
-            last_error = "Request timeout - The operation took too long to complete"
+            current_error = "Request timeout - The operation took too long to complete"
+            all_errors.append(current_error)
             log.error("execute_dsl timeout on attempt %d", attempt)
             if attempt < max_retries:
                 wait_time = attempt * 1  # 1s, 2s exponential backoff
@@ -93,8 +119,9 @@ def execute_dsl(payload, timeout=120):
         except requests.HTTPError as e:
             # Log HTTP error details
             status_code = e.response.status_code if e.response else 0
-            last_error = f"HTTP {status_code} error - {str(e)}"
-            log.error("execute_dsl HTTP error on attempt %d: %s", attempt, last_error)
+            current_error = f"HTTP {status_code} error - {str(e)}"
+            all_errors.append(current_error)
+            log.error("execute_dsl HTTP error on attempt %d: %s", attempt, current_error)
             
             # Retry on server errors (5xx) but not client errors (4xx)
             if attempt < max_retries and status_code >= 500:
@@ -109,29 +136,43 @@ def execute_dsl(payload, timeout=120):
                 # Client error - don't retry
                 break
         except requests.ConnectionError as e:
-            last_error = f"Connection error - Could not connect to automation server: {str(e)}"
-            log.error("execute_dsl connection error on attempt %d: %s", attempt, last_error)
+            current_error = f"Connection error - Could not connect to automation server: {str(e)}"
+            all_errors.append(current_error)
+            log.error("execute_dsl connection error on attempt %d: %s", attempt, current_error)
             if attempt < max_retries:
                 wait_time = attempt * 2  # 2s, 4s for connection errors
                 log.info("Retrying after %ds due to connection error...", wait_time)
                 time.sleep(wait_time)
                 continue
         except requests.RequestException as e:
-            last_error = f"Request error - {str(e)}"
-            log.error("execute_dsl request error on attempt %d: %s", attempt, last_error)
+            current_error = f"Request error - {str(e)}"
+            all_errors.append(current_error)
+            log.error("execute_dsl request error on attempt %d: %s", attempt, current_error)
             if attempt < max_retries:
                 wait_time = attempt * 1
                 log.info("Retrying after %ds due to request error...", wait_time)
                 time.sleep(wait_time)
                 continue
         except Exception as e:
-            last_error = f"Unexpected error - {str(e)}"
-            log.error("execute_dsl unexpected error on attempt %d: %s", attempt, last_error)
+            current_error = f"Unexpected error - {str(e)}"
+            all_errors.append(current_error)
+            log.error("execute_dsl unexpected error on attempt %d: %s", attempt, current_error)
             break  # Don't retry unexpected errors
     
-    # All retries exhausted or non-retryable error
-    log.error("execute_dsl failed after %d attempts: %s", max_retries, last_error)
-    return {"html": "", "warnings": [f"ERROR:auto:Communication error after {max_retries} attempts - {last_error}"]}
+    # All retries exhausted or non-retryable error - return ALL accumulated errors
+    log.error("execute_dsl failed after %d attempts. All errors: %s", max_retries, all_errors)
+    
+    # Create detailed warnings from all collected errors
+    warning_messages = []
+    for i, error in enumerate(all_errors, 1):
+        warning_msg = f"ERROR:auto:Attempt {i}/{max_retries} - {error}"
+        warning_messages.append(_truncate_warning(warning_msg))
+    
+    # Add summary warning
+    summary_warning = f"ERROR:auto:All {max_retries} execution attempts failed. Total errors: {len(all_errors)}"
+    warning_messages.append(_truncate_warning(summary_warning))
+    
+    return {"html": "", "warnings": warning_messages}
 
 
 def get_elements() -> list:
