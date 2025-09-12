@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Intervention System Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .demo-section {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .intervention-panel {
+            background: #fff3cd;
+            border: 3px solid #ffc107;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .intervention-message {
+            background: rgba(255,255,255,0.8);
+            border-radius: 6px;
+            padding: 10px;
+            margin: 10px 0;
+            color: #856404;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-success { background: #28a745; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .code-block {
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            margin: 10px 0;
+            overflow-x: auto;
+        }
+        .status-indicator {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status-running { background: #007bff; color: white; }
+        .status-paused { background: #ffc107; color: #212529; }
+        .status-completed { background: #28a745; color: white; }
+    </style>
+</head>
+<body>
+    <h1>🤖 User Intervention System Demo</h1>
+    <p>This demo shows how the AI agent can pause execution and request user intervention when needed.</p>
+
+    <div class="demo-section">
+        <h2>🎯 Implemented Features</h2>
+        <ul>
+            <li><strong>LLM Pause Decision</strong>: AI can decide to pause when user confirmation is needed</li>
+            <li><strong>User Intervention Panel</strong>: UI appears when intervention is required</li>
+            <li><strong>Failure Consultation</strong>: After 3 consecutive failures, system asks for user advice</li>
+            <li><strong>Intervention Context</strong>: Previous interventions are included in conversation history</li>
+            <li><strong>Task State Management</strong>: Tasks can be paused, resumed, and track intervention state</li>
+        </ul>
+    </div>
+
+    <div class="demo-section">
+        <h2>🔔 Intervention Triggers</h2>
+        <p>The AI will automatically pause and ask for user intervention in these situations:</p>
+        <ul>
+            <li><strong>Robot Verification</strong>: CAPTCHA or "Are you a robot?" checks</li>
+            <li><strong>Date/Time Confirmation</strong>: When specific dates or times need user approval</li>
+            <li><strong>Price Confirmation</strong>: Before making purchases or payments</li>
+            <li><strong>Unclear Instructions</strong>: When user commands are ambiguous</li>
+            <li><strong>Repeated Failures</strong>: After 3+ consecutive operation failures</li>
+        </ul>
+    </div>
+
+    <div class="demo-section">
+        <h2>📱 User Intervention Panel Demo</h2>
+        <p>This is what users see when intervention is needed:</p>
+        
+        <div class="intervention-panel">
+            <div style="display:flex;align-items:center;margin-bottom:10px;">
+                <span style="font-weight:bold;color:#856404;margin-right:10px;">🔔 ユーザー確認が必要です</span>
+                <span class="status-indicator status-paused">PAUSED FOR USER</span>
+            </div>
+            <div class="intervention-message">
+                画面にロボット認証（CAPTCHA）が表示されています。認証を完了してから「続行」を押してください。
+            </div>
+            <div style="display:flex;gap:10px;">
+                <textarea rows="2" placeholder="追加の指示や確認内容を入力..." style="flex:1;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;resize:vertical;"></textarea>
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                    <button class="btn btn-success">続行</button>
+                    <button class="btn btn-secondary">スキップ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>💬 Example LLM Response with Intervention</h2>
+        <p>Here's how the AI requests user intervention:</p>
+        
+        <div class="code-block">
+{
+  "explanation": "ロボット認証が表示されています。確認をお願いします。",
+  "pause_for_user": {
+    "reason": "robot_verification",
+    "message": "画面にロボット認証（CAPTCHA）が表示されています。認証を完了してから「続行」を押してください。"
+  },
+  "actions": [],
+  "complete": false
+}
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🔄 Execution Flow</h2>
+        <ol>
+            <li><strong>Normal Execution</strong>: AI performs actions automatically</li>
+            <li><strong>Intervention Decision</strong>: AI detects situation requiring user input</li>
+            <li><strong>Pause & Notify</strong>: Execution pauses, intervention panel appears</li>
+            <li><strong>User Input</strong>: User provides additional context or confirmation</li>
+            <li><strong>Resume Execution</strong>: AI continues with user's input incorporated</li>
+        </ol>
+    </div>
+
+    <div class="demo-section">
+        <h2>⚠️ Failure Handling</h2>
+        <p>When the same operation fails 3 times consecutively, the system will automatically request user advice:</p>
+        
+        <div class="intervention-panel">
+            <div style="display:flex;align-items:center;margin-bottom:10px;">
+                <span style="font-weight:bold;color:#856404;margin-right:10px;">⚠️ 反復的な失敗を検出</span>
+                <span class="status-indicator status-warning">NEEDS ADVICE</span>
+            </div>
+            <div class="intervention-message">
+                3回の失敗が続いています。エラー: "Element not found: button.submit"。どのように対処すべきかアドバイスをお願いします。
+            </div>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🛠️ Technical Implementation</h2>
+        <h3>Backend Components:</h3>
+        <ul>
+            <li><strong>AsyncExecutor</strong>: Enhanced with intervention state management</li>
+            <li><strong>Flask Endpoints</strong>: /intervention/provide, /intervention/pause</li>
+            <li><strong>LLM Prompt</strong>: Updated with intervention decision logic</li>
+        </ul>
+        
+        <h3>Frontend Components:</h3>
+        <ul>
+            <li><strong>intervention.js</strong>: Handles intervention UI and communication</li>
+            <li><strong>Intervention Panel</strong>: Dynamic UI for user input</li>
+            <li><strong>Browser Executor</strong>: Modified to handle intervention responses</li>
+        </ul>
+    </div>
+
+    <div class="demo-section">
+        <h2>✅ Testing Results</h2>
+        <p>All core functionality has been tested and verified:</p>
+        <ul>
+            <li>✅ AsyncExecutor intervention state management</li>
+            <li>✅ Task pausing and resuming</li>
+            <li>✅ User intervention input handling</li>
+            <li>✅ Prompt building with intervention context</li>
+            <li>✅ LLM response format validation</li>
+            <li>✅ JavaScript syntax validation</li>
+            <li>✅ Python syntax validation</li>
+        </ul>
+    </div>
+
+    <div class="demo-section">
+        <h2>🚀 Ready for Use</h2>
+        <p>The user intervention system is now fully implemented and ready to use. Key benefits:</p>
+        <ul>
+            <li><strong>Seamless Integration</strong>: Minimal changes to existing codebase</li>
+            <li><strong>Intelligent Pausing</strong>: AI makes smart decisions about when to pause</li>
+            <li><strong>User-Friendly Interface</strong>: Clear, intuitive intervention panel</li>
+            <li><strong>Failure Recovery</strong>: Automatic consultation after repeated failures</li>
+            <li><strong>Context Preservation</strong>: Intervention history maintained in conversation</li>
+        </ul>
+    </div>
+
+    <script>
+        // Simple demo interactivity
+        document.addEventListener('DOMContentLoaded', function() {
+            const buttons = document.querySelectorAll('.btn');
+            buttons.forEach(button => {
+                button.addEventListener('click', function() {
+                    if (this.textContent === '続行') {
+                        alert('✅ ユーザー介入が送信されました。実行を続行します。');
+                    } else if (this.textContent === 'スキップ') {
+                        alert('⏭️ 操作をスキップしました。次のステップに進みます。');
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
