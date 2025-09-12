@@ -71,6 +71,12 @@ class AsyncExecutor:
             log.error("Task %s is not in pending state: %s", task_id, task.status)
             return False
             
+        def _truncate_warning(warning_msg, max_length=1000):
+            """Truncate warning message to specified length if too long."""
+            if len(warning_msg) <= max_length:
+                return warning_msg
+            return warning_msg[:max_length-3] + "..."
+            
         def run_execution():
             try:
                 task.status = TaskStatus.RUNNING
@@ -79,6 +85,19 @@ class AsyncExecutor:
                 
                 # Execute the Playwright operations
                 result = execute_func({"actions": actions})
+                
+                # Ensure warnings are properly formatted and truncated
+                if result and isinstance(result, dict):
+                    if "warnings" in result and result["warnings"]:
+                        # Truncate each warning to 1000 characters
+                        result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
+                    
+                    # If execution returned an error but not in warnings format, convert it
+                    if "error" in result and result["error"]:
+                        error_msg = result["error"]
+                        if "warnings" not in result:
+                            result["warnings"] = []
+                        result["warnings"].append(_truncate_warning(f"ERROR:auto:{error_msg}"))
                 
                 task.result = result
                 task.status = TaskStatus.COMPLETED
@@ -90,6 +109,14 @@ class AsyncExecutor:
                 task.error = str(e)
                 task.status = TaskStatus.FAILED
                 task.completed_at = time.time()
+                
+                # Create a result with warnings from the exception
+                error_warning = _truncate_warning(f"ERROR:auto:Async execution failed - {str(e)}")
+                task.result = {
+                    "html": "", 
+                    "warnings": [error_warning]
+                }
+                
                 log.error("Failed execution for task %s: %s", task_id, e)
         
         # Submit to thread pool

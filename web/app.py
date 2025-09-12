@@ -277,6 +277,11 @@ def get_execution_status(task_id):
         if status is None:
             return jsonify({"error": "Task not found"}), 404
         
+        # Ensure warnings in the result are properly truncated
+        if status and "result" in status and status["result"] and isinstance(status["result"], dict):
+            if "warnings" in status["result"] and status["result"]["warnings"]:
+                status["result"]["warnings"] = [_truncate_warning(warning) for warning in status["result"]["warnings"]]
+        
         # Clean up old tasks periodically
         executor.cleanup_old_tasks()
         
@@ -286,8 +291,9 @@ def get_execution_status(task_id):
         import uuid
         correlation_id = str(uuid.uuid4())[:8]
         log.error("[%s] get_execution_status error: %s", correlation_id, e)
+        error_warning = _truncate_warning(f"Failed to get status - {str(e)}")
         return jsonify({
-            "error": f"Failed to get status - {str(e)}",
+            "error": error_warning,
             "correlation_id": correlation_id
         }), 200
 
@@ -301,6 +307,9 @@ def store_warnings():
         
         if not warnings:
             return jsonify({"status": "success", "message": "No warnings to store"})
+        
+        # Ensure all warnings are truncated to 1000 characters
+        truncated_warnings = [_truncate_warning(warning) for warning in warnings]
         
         # Load current history
         hist = load_hist()
@@ -320,8 +329,8 @@ def store_warnings():
             # Remove complete field temporarily
             complete_value = bot_response.pop("complete", True)
             
-            # Add warnings
-            bot_response["warnings"] = warnings
+            # Add truncated warnings
+            bot_response["warnings"] = truncated_warnings
             
             # Re-add complete field at the end
             bot_response["complete"] = complete_value
@@ -332,15 +341,23 @@ def store_warnings():
             # Save updated history
             save_hist(hist)
             
-            log.info("Added %d warnings to conversation history", len(warnings))
-            return jsonify({"status": "success", "message": f"Stored {len(warnings)} warnings"})
+            log.info("Added %d warnings to conversation history (with character limits applied)", len(truncated_warnings))
+            return jsonify({"status": "success", "message": f"Stored {len(truncated_warnings)} warnings"})
         else:
             log.warning("Invalid conversation history format - cannot add warnings")
             return jsonify({"status": "error", "message": "Invalid conversation history format"})
             
     except Exception as e:
         log.error("store_warnings error: %s", e)
-        return jsonify({"status": "error", "message": f"Failed to store warnings: {str(e)}"})
+        error_msg = _truncate_warning(f"Failed to store warnings: {str(e)}")
+        return jsonify({"status": "error", "message": error_msg})
+
+
+def _truncate_warning(warning_msg, max_length=1000):
+    """Truncate warning message to specified length if too long."""
+    if len(warning_msg) <= max_length:
+        return warning_msg
+    return warning_msg[:max_length-3] + "..."
 
 
 @app.post("/automation/execute-dsl")
@@ -350,13 +367,20 @@ def forward_dsl():
         return jsonify({"html": "", "warnings": []})
     try:
         res_obj = execute_dsl(payload, timeout=120)
+        
+        # Ensure warnings are properly formatted and truncated
+        if res_obj and isinstance(res_obj, dict) and "warnings" in res_obj:
+            res_obj["warnings"] = [_truncate_warning(warning) for warning in res_obj["warnings"]]
+        
         return jsonify(res_obj)
     except requests.Timeout:
         log.error("forward_dsl timeout")
-        return jsonify({"html": "", "warnings": ["ERROR:auto:Request timeout - The operation took too long to complete"]})
+        timeout_warning = _truncate_warning("ERROR:auto:Request timeout - The operation took too long to complete")
+        return jsonify({"html": "", "warnings": [timeout_warning]})
     except Exception as e:
         log.error("forward_dsl error: %s", e)
-        return jsonify({"html": "", "warnings": [f"ERROR:auto:Communication error - {str(e)}"]})
+        error_warning = _truncate_warning(f"ERROR:auto:Communication error - {str(e)}")
+        return jsonify({"html": "", "warnings": [error_warning]})
 
 
 @app.route("/vnc-source", methods=["GET"])
