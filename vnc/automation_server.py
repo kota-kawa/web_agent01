@@ -151,6 +151,7 @@ _ACTIONS = [
     "eval_js",
     "click_blank_area",
     "close_popup",
+    "stop",
 ]
 payload_schema = {
     "type": "object",
@@ -169,6 +170,8 @@ payload_schema = {
                     "key": {"type": "string"},
                     "retry": {"type": "integer", "minimum": 1},
                     "attr": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "message": {"type": "string"},
                 },
                 "required": ["action"],
                 "additionalProperties": True,  # ★ 不明キーは許可
@@ -223,7 +226,12 @@ def _validate_action_params(act: Dict) -> List[str]:
         selector = act.get("target", "")
         if not _validate_selector(selector):
             warnings.append(f"ERROR:auto:Invalid selector '{selector}' for action '{action}' - Selector must be non-empty")
-    
+
+    elif action == "stop":
+        reason = act.get("reason", "")
+        if not reason:
+            warnings.append("ERROR:auto:Stop action requires non-empty 'reason'")
+
     # Validate timeout values
     ms = act.get("ms")
     if ms is not None:
@@ -1460,7 +1468,11 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
         # If action couldn't be executed due to critical errors, note it
         if not action_executed:
             all_warnings.append(f"WARNING:auto:[{correlation_id}] Action {i+1} '{act.get('action', 'unknown')}' was skipped due to errors")
-    
+
+        # Stop further action processing if stop action was executed
+        if act.get("action") == "stop":
+            break
+
     # Use safe content retrieval to avoid navigation errors
     html = await _safe_get_page_content()
     if not html:
