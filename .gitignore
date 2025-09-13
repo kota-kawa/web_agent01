@@ -40,3 +40,6 @@ logs/error.log
 # ビルドディレクトリを無視
 /build/
 __pycache__/
+
+# Demo files
+demo_popup_closing.py
