@@ -23,7 +23,7 @@ from agent.browser.vnc import (
 from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
 from agent.controller.async_executor import get_async_executor
-from agent.utils.history import load_hist, save_hist
+from agent.utils.history import load_hist, save_hist, append_history_entry
 from agent.utils.html import strip_html
 
 # --------------- Flask & Logger ----------------------------------
@@ -263,8 +263,7 @@ def execute():
     res = call_llm(prompt, model, shot)
 
     # Save conversation history immediately with current URL
-    hist.append({"user": cmd, "bot": res, "url": current_url})
-    save_hist(hist)
+    append_history_entry(cmd, res, current_url)
     
     # Extract and normalize actions from LLM response
     actions = normalize_actions(res)
