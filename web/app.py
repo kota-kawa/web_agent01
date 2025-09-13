@@ -18,6 +18,7 @@ from agent.browser.vnc import (
     execute_dsl,
     get_elements as vnc_elements,
     get_dom_tree as vnc_dom_tree,
+    get_url as vnc_url,
 )
 from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
@@ -201,6 +202,7 @@ def execute():
     model = data.get("model", "gemini")
     prev_error = data.get("error")
     hist = load_hist()
+    current_url = data.get("url") or vnc_url()
     elements, dom_err = vnc_dom_tree()
     if elements is None:
         try:
@@ -232,8 +234,8 @@ def execute():
     # Call LLM first
     res = call_llm(prompt, model, shot)
 
-    # Save conversation history immediately
-    hist.append({"user": cmd, "bot": res})
+    # Save conversation history immediately with current URL
+    hist.append({"user": cmd, "bot": res, "url": current_url})
     save_hist(hist)
     
     # Extract and normalize actions from LLM response
