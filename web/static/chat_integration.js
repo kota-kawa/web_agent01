@@ -4,33 +4,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const userInput   = document.getElementById("user-input");
   const chatArea    = document.getElementById("chat-area");
   const resetBtn    = document.getElementById("reset-button");
-  const inputStatus = document.getElementById("input-status");
 
-  // Update input status based on execution state
-  function updateInputStatus() {
+  // Update input placeholder based on execution state
+  function updateInputPlaceholder() {
     if (typeof window.isTaskExecuting === "function" && window.isTaskExecuting()) {
-      if (typeof window.getQueuedPromptCount === "function") {
-        const queueCount = window.getQueuedPromptCount();
-        if (queueCount > 0) {
-          inputStatus.textContent = `🔄 実行中 - 追加指示 ${queueCount}件 待機中`;
-          inputStatus.style.color = "#ff9800";
-        } else {
-          inputStatus.textContent = "🔄 実行中 - 追加指示を入力できます";
-          inputStatus.style.color = "#007bff";
-        }
-      } else {
-        inputStatus.textContent = "🔄 実行中";
-        inputStatus.style.color = "#007bff";
-      }
       userInput.placeholder = "追加の指示やアドバイスを入力...";
     } else {
-      inputStatus.textContent = "";
       userInput.placeholder = "ここに入力...";
     }
   }
 
-  // Monitor execution state and update input status
-  setInterval(updateInputStatus, 500);
+  // Monitor execution state and update input placeholder
+  setInterval(updateInputPlaceholder, 500);
 
   if (resetBtn) {
     resetBtn.addEventListener("click", async () => {
