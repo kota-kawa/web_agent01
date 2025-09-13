@@ -16,7 +16,7 @@ services:
     volumes:
       - .:/app
     environment:
-      - START_URL=https://www.yahoo.co.jp
+      - START_URL=about:blank
 
   web:
     build: ./web
@@ -24,7 +24,7 @@ services:
     command: python -u app.py
     environment:
       - PYTHONPATH=/app
-      - START_URL=https://www.yahoo.co.jp
+      - START_URL=about:blank
     env_file:
       - .env
     ports:
