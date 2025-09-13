@@ -8,8 +8,8 @@ for i in {1..30}; do
   echo "[chromium] waiting for X..." ; sleep 1
 done
 
-# 既定の起動 URL
-URL="${START_URL:-https://www.google.com}"
+# 既定の起動 URL を about:blank にして予期せぬ外部ページへの遷移を防ぐ
+URL="${START_URL:-about:blank}"
 
 if ! pgrep -f "--remote-debugging-port=9222" >/dev/null; then
   echo "[chromium] launching chromium..."

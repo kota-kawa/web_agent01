@@ -82,7 +82,8 @@ def handle_exception(error):
 
 # --------------- VNC / Playwright API ----------------------------
 VNC_API = "http://vnc:7000"  # Playwright 側の API
-START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp")
+# Default to a blank page to prevent unintended navigation to external sites
+START_URL = os.getenv("START_URL", "about:blank")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
 
 # --------------- Conversation History ----------------------------

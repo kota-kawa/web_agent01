@@ -14,7 +14,8 @@ const sleep = ms => new Promise(resolve => {
 const chatArea   = document.getElementById("chat-area");
 let stopRequested   = false;
 window.stopRequested = false;  // Make it globally accessible
-const START_URL = window.START_URL || "https://www.yahoo.co.jp";
+// Default to a blank page to avoid unexpected navigation
+const START_URL = window.START_URL || "about:blank";
 
 // screenshot helper
 async function captureScreenshot() {
