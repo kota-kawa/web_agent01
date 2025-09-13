@@ -149,6 +149,8 @@ _ACTIONS = [
     "wait_for_selector",
     "extract_text",
     "eval_js",
+    "click_blank_area",
+    "close_popup",
 ]
 payload_schema = {
     "type": "object",
@@ -979,7 +981,7 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
         # Check if PAGE is available for actions that need it
         page_required_actions = ["navigate", "go_back", "go_forward", "wait", "wait_for_selector", 
                                 "scroll", "eval_js", "click", "click_text", "type", "hover", 
-                                "select_option", "press_key", "extract_text"]
+                                "select_option", "press_key", "extract_text", "click_blank_area", "close_popup"]
         
         if a in page_required_actions and PAGE is None:
             error_msg = f"Browser not initialized - cannot execute {a} action"
@@ -1096,6 +1098,184 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     EVAL_RESULTS.append(result)
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:eval_js failed - {str(e)}")
+            return action_warnings
+            
+        if a == "click_blank_area":
+            try:
+                # JavaScript to find and click blank area
+                click_blank_script = """
+                (function() {
+                    const viewportWidth = window.innerWidth;
+                    const viewportHeight = window.innerHeight;
+                    
+                    function isBlankPoint(x, y) {
+                        const element = document.elementFromPoint(x, y);
+                        if (!element) return true;
+                        
+                        if (element.tagName === 'BODY' || element.tagName === 'HTML') {
+                            return true;
+                        }
+                        
+                        const style = window.getComputedStyle(element);
+                        const isInteractive = element.tagName.match(/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/) ||
+                                             element.hasAttribute('onclick') ||
+                                             element.hasAttribute('role') ||
+                                             style.cursor === 'pointer';
+                        
+                        if (!isInteractive && (!element.textContent || element.textContent.trim() === '')) {
+                            return true;
+                        }
+                        
+                        return false;
+                    }
+                    
+                    const candidates = [
+                        [50, 50],
+                        [viewportWidth - 50, 50],
+                        [50, viewportHeight - 50],
+                        [viewportWidth - 50, viewportHeight - 50],
+                        [viewportWidth / 2, 50],
+                        [viewportWidth / 2, viewportHeight - 50],
+                        [50, viewportHeight / 2],
+                        [viewportWidth - 50, viewportHeight / 2],
+                        [viewportWidth / 2, viewportHeight / 2]
+                    ];
+                    
+                    for (let [x, y] of candidates) {
+                        if (isBlankPoint(x, y)) {
+                            // Click at the blank coordinates
+                            const event = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: x,
+                                clientY: y
+                            });
+                            document.elementFromPoint(x, y).dispatchEvent(event);
+                            return {success: true, x: x, y: y};
+                        }
+                    }
+                    
+                    // Fallback click
+                    const event = new MouseEvent('click', {
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: 50,
+                        clientY: 50
+                    });
+                    document.elementFromPoint(50, 50).dispatchEvent(event);
+                    return {success: true, x: 50, y: 50, fallback: true};
+                })();
+                """
+                
+                result = await PAGE.evaluate(click_blank_script)
+                EVAL_RESULTS.append(result)
+                
+                if result.get('fallback'):
+                    action_warnings.append("INFO:auto:Used fallback coordinates for blank area click")
+                    
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:click_blank_area failed - {str(e)}")
+            return action_warnings
+            
+        if a == "close_popup":
+            try:
+                # Enhanced popup detection and closing
+                close_popup_script = """
+                (function() {
+                    // First, detect popups
+                    const popupSelectors = [
+                        '[role="dialog"]',
+                        '[role="alertdialog"]', 
+                        '.modal',
+                        '.popup',
+                        '.overlay',
+                        '.dialog',
+                        '.modal-backdrop',
+                        '.modal-overlay',
+                        '[data-testid*="modal"]',
+                        '[data-testid*="popup"]',
+                        '[data-testid*="dialog"]',
+                        '[class*="modal"]',
+                        '[class*="popup"]',
+                        '[class*="overlay"]',
+                        '[class*="dialog"]'
+                    ];
+                    
+                    let foundPopups = [];
+                    for (let selector of popupSelectors) {
+                        const elements = document.querySelectorAll(selector);
+                        for (let el of elements) {
+                            const style = window.getComputedStyle(el);
+                            if (style.display !== 'none' && 
+                                style.visibility !== 'hidden' && 
+                                style.opacity !== '0' &&
+                                el.offsetWidth > 0 && 
+                                el.offsetHeight > 0) {
+                                foundPopups.push(el);
+                            }
+                        }
+                    }
+                    
+                    if (foundPopups.length === 0) {
+                        return {found: false, message: 'No popups detected'};
+                    }
+                    
+                    // Try to click outside of all popup areas
+                    const viewportWidth = window.innerWidth;
+                    const viewportHeight = window.innerHeight;
+                    
+                    function isOutsidePopups(x, y) {
+                        for (let popup of foundPopups) {
+                            const rect = popup.getBoundingClientRect();
+                            if (x >= rect.left && x <= rect.right && 
+                                y >= rect.top && y <= rect.bottom) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    }
+                    
+                    const candidates = [
+                        [50, 50],
+                        [viewportWidth - 50, 50],
+                        [50, viewportHeight - 50],
+                        [viewportWidth - 50, viewportHeight - 50],
+                        [viewportWidth / 2, 50],
+                        [viewportWidth / 2, viewportHeight - 50]
+                    ];
+                    
+                    for (let [x, y] of candidates) {
+                        if (isOutsidePopups(x, y)) {
+                            const event = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: x,
+                                clientY: y
+                            });
+                            document.elementFromPoint(x, y).dispatchEvent(event);
+                            return {found: true, clicked: true, x: x, y: y, popupCount: foundPopups.length};
+                        }
+                    }
+                    
+                    return {found: true, clicked: false, message: 'Could not find area outside popups'};
+                })();
+                """
+                
+                result = await PAGE.evaluate(close_popup_script)
+                EVAL_RESULTS.append(result)
+                
+                if result.get('found') and result.get('clicked'):
+                    action_warnings.append(f"INFO:auto:Closed {result.get('popupCount', 0)} popup(s) by clicking outside at ({result.get('x')}, {result.get('y')})")
+                elif result.get('found') and not result.get('clicked'):
+                    action_warnings.append("WARNING:auto:Popup detected but could not find safe click area")
+                else:
+                    action_warnings.append("INFO:auto:No popups detected to close")
+                    
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:close_popup failed - {str(e)}")
             return action_warnings
 
         # -- ロケータ系

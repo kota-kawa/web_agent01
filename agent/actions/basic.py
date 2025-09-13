@@ -78,3 +78,27 @@ def stop(reason: str, message: str = "") -> Dict:
         message: Optional message to display to the user
     """
     return {"action": "stop", "reason": reason, "message": message}
+
+
+def click_blank_area() -> Dict:
+    """Click on a blank area of the page to close popups.
+    
+    This action finds an empty area on the page and clicks it, which is useful
+    for closing popups/modals that don't require specific element selectors.
+    
+    Returns:
+        Dictionary representing a blank area click action
+    """
+    return {"action": "click_blank_area"}
+
+
+def close_popup() -> Dict:
+    """Close popups by clicking on blank areas.
+    
+    Uses popup detection and blank area clicking to close modals/overlays
+    without needing to target specific close buttons or elements.
+    
+    Returns:
+        Dictionary representing a popup close action
+    """
+    return {"action": "close_popup"}
