@@ -43,3 +43,5 @@ __pycache__/
 
 # Demo files
 demo_popup_closing.py
+example_usage.py
+POPUP_CLOSING_README.md
