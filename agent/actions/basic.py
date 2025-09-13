@@ -65,3 +65,16 @@ def eval_js(script: str) -> Dict:
     by the automation server and can be fetched with :func:`get_eval_results`.
     """
     return {"action": "eval_js", "script": script}
+
+
+def stop(reason: str, message: str = "") -> Dict:
+    """Stop execution and wait for user input.
+    
+    Use this when the LLM needs user confirmation, advice, or intervention.
+    Examples: captcha solving, date/price confirmations, repeated failures.
+    
+    Args:
+        reason: Type of stop (e.g., "captcha", "confirmation", "repeated_failures")
+        message: Optional message to display to the user
+    """
+    return {"action": "stop", "reason": reason, "message": message}

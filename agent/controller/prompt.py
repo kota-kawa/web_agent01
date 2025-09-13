@@ -171,10 +171,17 @@ def build_prompt(
 
         **2. 状況分析 (Observation & Analysis):**\n
         - **画面情報:** `現在のページのDOMツリー` と `スクリーンショット` から、ページの構造、表示されている要素、インタラクティブな部品（ボタン、リンク、フォームなど）を完全に把握します。\n
+        - **特別な状況の検出**: 以下の状況では `stop` アクションの使用を検討してください:\n
+            - **CAPTCHA検出**: ページにreCAPTCHA、画像認証、文字認証などが表示されている\n
+            - **重要な確認**: 価格、日付、重要な個人情報の入力前の最終確認\n
+            - **繰り返し失敗**: 同じアクションが3回以上失敗している\n
+            - **予期しない状況**: 想定外のページや要素が表示されている\n
+            - **危険な操作**: 削除、購入、送金など取り返しのつかない操作の直前\n
         - **履歴の詳細確認:** `## これまでの会話履歴` を**必ず詳細に確認**し、以下を特定します：\n
             - **既に実行済みのアクション**: どの要素に何を入力したか、どのボタンをクリックしたか、どのページに遷移したかを正確に把握\n
             - **入力済みの値**: フォームフィールドに既に入力された内容（例：検索キーワード「箱根」が既に入力済みかどうか）\n
             - **現在の進行状況**: タスクのどの段階まで完了しているか\n
+            - **過去の失敗**: 同じアクションを繰り返し失敗していないか\n
         - **重要**: 同じアクション（例：同じ要素への同じ値の入力）を**絶対に繰り返してはいけません**\n
         - **直前のエラー:** 「現在のエラー状況」に情報があるか？ もしあれば、そのエラーメッセージ (例: "Timeout", "not found", "not visible") の原因を具体的に推測します。「なぜタイムアウトしたのか？」「なぜ要素が見つからなかったのか？」を自問します。\n
         - **変化の確認:** 直前のアクションでページの何が変化したか？ 新しい要素は出現したか？ 何かが消えたか？ ページ遷移は発生したか？\n
@@ -225,6 +232,11 @@ def build_prompt(
         - 広告やプロモーションの内容はすべて無視してよいです。\n
         - 重要：エラーやその他の失敗が発生した場合は、同じ操作を繰り返さないでください。\n
         - 連続してエラーが発生したりループに陥ったと判断した場合は、ページを更新する・戻る・別の要素を試すなど、これまでと異なるアプローチを検討してください。\n
+        - **重要な状況での停止判断**: 以下の場合は `stop` アクションを使用してユーザーの介入を求めてください:\n
+            - CAPTCHA、画像認証、文字認証が表示された場合\n
+            - 同じ要素が3回以上見つからない場合\n
+            - 購入、削除など重要な操作の直前での最終確認\n
+            - 予期しないページや状況が発生した場合\n
         - フォームに入力する際は、必ず下にスクロールしてフォーム全体に入力してください。\n
         - PDF が開いている場合は、PDF に関する質問に回答する必要があります。それ以外の場合、PDF を操作したり、ダウンロードしたり、ボタンを押したりすることはできません。\n
         - ページ全体ではなく、ページ内のコンテナをスクロールする必要がある場合は、コンテナをクリックしてからキーを押し、水平方向にスクロールします。\n\n
@@ -306,7 +318,8 @@ def build_prompt(
         '  { "action": "press_key",      "key": "Enter", "target": "css=input" }\n'
         '  { "action": "wait_for_selector", "target": "css=button.ok", "ms": 3000 }\n'
         '  { "action": "extract_text",    "target": "css=div.content" }\n'
-        '  { "action": "eval_js",        "script": "document.title" }\n\n\n'
+        '  { "action": "eval_js",        "script": "document.title" }\n'
+        '  { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }\n\n\n'
         "\n\n"
         "|ルール|\n"
         "1. 現ページで表示されている要素のみ操作してよい。ページ遷移後の要素の操作は、次のステップで生成しなくてはいけない。つまりページ遷移が必要かつ、複数のアクションがあった場合には、ページ遷移が最後のアクションである必要がある。\n"
@@ -369,6 +382,10 @@ def build_prompt(
         "  def eval_js(script: str) -> Dict:\n"
         '      return {"action": "eval_js", "script": script}\n'
         "#   DOM 状態の確認や動的値の取得に使い、戻り値は後から取得可能\n"
+        "# stop: 実行を停止してユーザーの入力を待機するアクション\n"
+        "  def stop(reason: str, message: str = \"\") -> Dict:\n"
+        '      return {"action": "stop", "reason": reason, "message": message}\n'
+        "#   LLMが確認やアドバイスが必要な時に使用。captcha、日付・価格確認、エラー続発時など\n"
         """
     ============= ブラウザ操作 DSL 出力ルール（必読・厳守）======================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -399,7 +416,9 @@ def build_prompt(
     | select_option     | target, value                             | —                  | ドロップダウン選択   |\n
     | press_key         | key                                       | target (任意)      | キー送信             |\n
     | wait_for_selector | target, ms                                | —                  | 要素待機             |\n
-    | extract_text      | target                                    | attr (任意)        | テキスト取得         |\n    | eval_js          | script                                   | —         | JavaScript 実行      |\n
+    | extract_text      | target                                    | attr (任意)        | テキスト取得         |\n
+    | eval_js           | script                                    | —                  | JavaScript 実行      |\n
+    | stop              | reason                                    | message (任意)     | 実行停止・ユーザー入力待機 |\n
 
 
     **上記以外の action 名・キーは絶対に出力しない。**\n
@@ -446,6 +465,7 @@ def build_prompt(
         "{ \"actions\": [ { \"action\": \"press_key\", \"key\": \"Tab\", \"target\": \"css=input[name=q]\" } ], \"complete\": false }\n"
         "{ \"actions\": [ { \"action\": \"extract_text\", \"target\": \"css=div.content\" } ], \"complete\": false }\n"
         "{ \"actions\": [ { \"action\": \"eval_js\", \"script\": \"document.title\" } ], \"complete\": false }\n"
+        "{ \"actions\": [ { \"action\": \"stop\", \"reason\": \"captcha_confirmation\", \"message\": \"Please solve the captcha that appeared\" } ], \"complete\": false }\n"
         "{ \"actions\": [], \"complete\": true }\n"
     ========================================================================
     """
