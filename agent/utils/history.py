@@ -59,3 +59,34 @@ def save_hist(h):
                 os.remove(temp_file)
         except Exception:
             pass
+
+
+def append_history_entry(user, bot, url=None):
+    """Append a single conversation interaction ensuring URL is stored.
+
+    Parameters
+    ----------
+    user : str
+        The user command or message.
+    bot : Any
+        The bot response to persist.
+    url : str, optional
+        The page URL at the time of interaction. If ``None``, an attempt is
+        made to retrieve the current URL from the VNC browser module.
+    """
+
+    try:
+        history = load_hist()
+
+        if url is None:
+            try:
+                from agent.browser.vnc import get_url
+                url = get_url()
+            except Exception:
+                url = None
+
+        history.append({"user": user, "bot": bot, "url": url})
+        save_hist(history)
+    except Exception as e:
+        log.error("append_history_entry error: %s", e)
+
