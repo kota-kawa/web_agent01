@@ -309,6 +309,154 @@ function showSystemMessage(msg) {
 }
 
 /* ======================================
+   Handle stop requests and user intervention
+   ====================================== */
+async function checkForStopRequest() {
+  try {
+    const response = await fetch("/automation/stop-request");
+    if (response.ok) {
+      const stopRequest = await response.json();
+      return stopRequest;
+    }
+  } catch (e) {
+    console.warn("Failed to check for stop request:", e);
+  }
+  return null;
+}
+
+async function handleUserIntervention(stopRequest) {
+  return new Promise((resolve) => {
+    // Create intervention UI
+    const interventionDiv = document.createElement("div");
+    interventionDiv.classList.add("user-intervention");
+    interventionDiv.style.cssText = `
+      background: #fff3cd;
+      border: 1px solid #ffeaa7;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 16px 0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    `;
+
+    const title = document.createElement("h4");
+    title.textContent = "⏸️ 実行が一時停止されました";
+    title.style.cssText = "margin: 0 0 12px 0; color: #856404;";
+    
+    const reasonText = document.createElement("p");
+    reasonText.textContent = `理由: ${stopRequest.reason}`;
+    reasonText.style.cssText = "margin: 8px 0; font-weight: bold; color: #856404;";
+    
+    const messageText = document.createElement("p");
+    if (stopRequest.message) {
+      messageText.textContent = `メッセージ: ${stopRequest.message}`;
+      messageText.style.cssText = "margin: 8px 0; color: #856404;";
+    }
+    
+    const inputLabel = document.createElement("label");
+    inputLabel.textContent = "指示やアドバイスを入力してください:";
+    inputLabel.style.cssText = "display: block; margin: 16px 0 8px 0; font-weight: bold; color: #856404;";
+    
+    const textArea = document.createElement("textarea");
+    textArea.style.cssText = `
+      width: 100%;
+      height: 80px;
+      padding: 8px;
+      border: 1px solid #ffeaa7;
+      border-radius: 4px;
+      font-family: inherit;
+      resize: vertical;
+    `;
+    textArea.placeholder = "例: CAPTCHAを解決しました、「続行」をクリックしてください";
+    
+    const buttonContainer = document.createElement("div");
+    buttonContainer.style.cssText = "margin-top: 16px; text-align: right;";
+    
+    const resumeButton = document.createElement("button");
+    resumeButton.textContent = "続行";
+    resumeButton.style.cssText = `
+      background: #28a745;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 8px;
+    `;
+    
+    const cancelButton = document.createElement("button");
+    cancelButton.textContent = "キャンセル";
+    cancelButton.style.cssText = `
+      background: #6c757d;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+    `;
+    
+    // Event handlers
+    resumeButton.onclick = async () => {
+      const userResponse = textArea.value.trim();
+      
+      try {
+        // Send user response to backend
+        const response = await fetch("/automation/stop-response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ response: userResponse })
+        });
+        
+        if (response.ok) {
+          // Remove intervention UI
+          interventionDiv.remove();
+          
+          // Add user response to chat if provided
+          if (userResponse) {
+            const userMsg = document.createElement("p");
+            userMsg.classList.add("user-message");
+            userMsg.innerHTML = `<strong>👤 ユーザー介入:</strong> ${userResponse}`;
+            userMsg.style.cssText = "background: #e8f5e8; padding: 8px; border-radius: 4px; margin: 8px 0;";
+            chatArea.appendChild(userMsg);
+            chatArea.scrollTop = chatArea.scrollHeight;
+          }
+          
+          resolve(userResponse);
+        } else {
+          throw new Error("Failed to send user response");
+        }
+      } catch (e) {
+        console.error("Error sending user response:", e);
+        alert("応答の送信に失敗しました。もう一度お試しください。");
+      }
+    };
+    
+    cancelButton.onclick = () => {
+      interventionDiv.remove();
+      resolve(null); // Cancel intervention
+    };
+    
+    // Build UI
+    interventionDiv.appendChild(title);
+    interventionDiv.appendChild(reasonText);
+    if (stopRequest.message) {
+      interventionDiv.appendChild(messageText);
+    }
+    interventionDiv.appendChild(inputLabel);
+    interventionDiv.appendChild(textArea);
+    buttonContainer.appendChild(cancelButton);
+    buttonContainer.appendChild(resumeButton);
+    interventionDiv.appendChild(buttonContainer);
+    
+    // Add to chat area
+    chatArea.appendChild(interventionDiv);
+    chatArea.scrollTop = chatArea.scrollHeight;
+    
+    // Focus on text area
+    textArea.focus();
+  });
+}
+
+/* ======================================
    Store warnings in conversation history
    ====================================== */
 async function storeWarningsInHistory(warnings) {
@@ -331,6 +479,33 @@ async function storeWarningsInHistory(warnings) {
     }
   } catch (e) {
     console.error("Error storing warnings in history:", e);
+  }
+}
+
+/* ======================================
+   Store user intervention in conversation history
+   ====================================== */
+async function storeUserIntervention(userResponse) {
+  try {
+    // Add the user intervention as a new conversation entry
+    const response = await fetch("/execute", {
+      method: "POST", 
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        command: `[ユーザー介入] ${userResponse}`,
+        pageSource: null,
+        screenshot: null,
+        model: "intervention"
+      })
+    });
+    
+    if (response.ok) {
+      console.log("User intervention stored in conversation history");
+    } else {
+      console.warn("Failed to store user intervention:", response.status);
+    }
+  } catch (e) {
+    console.warn("Error storing user intervention:", e);
   }
 }
 
@@ -413,6 +588,29 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
           if (executionResult.result.warnings && executionResult.result.warnings.length > 0) {
             displayWarnings(executionResult.result.warnings, executionResult.result.correlation_id);
             await storeWarningsInHistory(executionResult.result.warnings);
+            
+            // Check for stop request in warnings
+            const stopWarnings = executionResult.result.warnings.filter(w => w.startsWith("STOP:auto:"));
+            if (stopWarnings.length > 0) {
+              // Check for actual stop request from automation server
+              const stopRequest = await checkForStopRequest();
+              if (stopRequest) {
+                statusElement.textContent = "⏸️ 実行が一時停止されました";
+                statusElement.style.color = "#ffc107";
+                
+                // Handle user intervention
+                const userResponse = await handleUserIntervention(stopRequest);
+                if (userResponse !== null) {
+                  // Update conversation history with user intervention
+                  await storeUserIntervention(userResponse);
+                  statusElement.textContent = "▶️ ユーザー介入後、実行を再開";
+                  statusElement.style.color = "#17a2b8";
+                } else {
+                  statusElement.textContent = "⏹️ ユーザーによって実行がキャンセルされました";
+                  statusElement.style.color = "#6c757d";
+                }
+              }
+            }
           }
           
           // Get updated HTML from parallel fetch

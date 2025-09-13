@@ -257,6 +257,9 @@ WARNINGS: List[str] = []
 # Execution lock to prevent concurrent DSL execution
 _EXECUTION_LOCK = asyncio.Lock()
 
+# Global variable to store stop requests for user intervention
+_STOP_REQUEST = None
+
 # Debug artifacts directory
 DEBUG_DIR = os.getenv("DEBUG_DIR", "./debug_artifacts")
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "true").lower() == "true"
@@ -986,6 +989,26 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             else:
                 raise Exception(error_msg)
 
+        # -- stop action (user intervention)
+        if a == "stop":
+            reason = act.get("reason", "user_intervention")
+            message = act.get("message", "")
+            
+            # Create a stop request that will be handled by the frontend
+            stop_info = {
+                "reason": reason,
+                "message": message,
+                "timestamp": time.time()
+            }
+            
+            # Store the stop request globally so it can be retrieved
+            global _STOP_REQUEST
+            _STOP_REQUEST = stop_info
+            
+            # Add a warning to indicate the stop action was executed
+            action_warnings.append(f"STOP:auto:Execution paused - {reason}: {message}")
+            return action_warnings
+
         # -- navigate / wait / scroll はロケータ不要
         if a == "navigate":
             if not _validate_url(tgt):
@@ -1400,6 +1423,29 @@ def extracted():
 @app.get("/eval_results")
 def eval_results():
     return jsonify(EVAL_RESULTS)
+
+
+@app.get("/stop-request")
+def get_stop_request():
+    """Get current stop request if any."""
+    global _STOP_REQUEST
+    if _STOP_REQUEST:
+        return jsonify(_STOP_REQUEST)
+    return jsonify(None)
+
+
+@app.post("/stop-response")
+def post_stop_response():
+    """Handle user response to stop request."""
+    global _STOP_REQUEST
+    data = request.get_json(force=True)
+    user_response = data.get("response", "")
+    
+    # Clear the stop request
+    _STOP_REQUEST = None
+    
+    # Return the user response for inclusion in conversation history
+    return jsonify({"status": "success", "user_response": user_response})
 
 
 @app.get("/healthz")

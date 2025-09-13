@@ -386,6 +386,35 @@ def forward_dsl():
         return jsonify({"html": "", "warnings": [error_warning]})
 
 
+@app.route("/automation/stop-request", methods=["GET"])
+def get_stop_request():
+    """Get current stop request from automation server."""
+    try:
+        res = requests.get(f"{VNC_API}/stop-request", timeout=10)
+        if res.ok:
+            return jsonify(res.json())
+        else:
+            return jsonify(None)
+    except Exception as e:
+        log.error("get_stop_request error: %s", e)
+        return jsonify(None)
+
+
+@app.route("/automation/stop-response", methods=["POST"])
+def post_stop_response():
+    """Forward user response to automation server."""
+    try:
+        data = request.get_json(force=True)
+        res = requests.post(f"{VNC_API}/stop-response", json=data, timeout=10)
+        if res.ok:
+            return jsonify(res.json())
+        else:
+            return jsonify({"status": "error", "message": "Failed to send response"})
+    except Exception as e:
+        log.error("post_stop_response error: %s", e)
+        return jsonify({"status": "error", "message": str(e)})
+
+
 @app.route("/vnc-source", methods=["GET"])
 def vhtml():
     return Response(vnc_html(), mimetype="text/plain")
