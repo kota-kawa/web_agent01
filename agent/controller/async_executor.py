@@ -132,6 +132,23 @@ class AsyncExecutor:
                 log.info("Completed execution for task %s in %.2fs", 
                         task_id, task.completed_at - task.started_at)
                 
+                # Update conversation history with current URL after successful execution
+                try:
+                    from agent.browser.vnc import get_url
+                    from agent.utils.history import load_hist, save_hist
+                    
+                    current_url = get_url()
+                    if current_url:  # Only update if we got a valid URL
+                        hist = load_hist()
+                        if hist:  # Only update if history exists
+                            hist[-1]["url"] = current_url
+                            save_hist(hist)
+                            log.debug("Updated conversation history URL to: %s", current_url)
+                    else:
+                        log.debug("No URL available to update conversation history")
+                except Exception as url_error:
+                    log.error("Failed to update conversation history URL: %s", url_error)
+                
             except Exception as e:
                 task.error = str(e)
                 task.status = TaskStatus.FAILED
