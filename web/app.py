@@ -194,11 +194,25 @@ def update_last_history_url(url=None):
     try:
         hist = load_hist()
         if not hist:
+            log.debug("No conversation history found to update with URL")
             return
 
         # Use provided URL or fetch from VNC server
-        hist[-1]["url"] = url or vnc_url()
-        save_hist(hist)
+        current_url = url
+        if not current_url:
+            try:
+                current_url = vnc_url()
+            except Exception as vnc_error:
+                log.error("Failed to get URL from VNC server: %s", vnc_error)
+                return
+        
+        if current_url:  # Only update if we have a valid URL
+            hist[-1]["url"] = current_url
+            save_hist(hist)
+            log.debug("Updated conversation history URL to: %s", current_url)
+        else:
+            log.warning("No valid URL available to update conversation history")
+            
     except Exception as e:
         log.error("update_last_history_url error: %s", e)
 
