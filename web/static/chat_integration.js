@@ -131,7 +131,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   /* ----- 送信ボタンイベント ----- */
-  sendButton.addEventListener("click", async (evt) => {
+  sendButton.addEventListener("click", (evt) => {
     evt.preventDefault();
     const text = userInput.value.trim();
     if (!text) return;
@@ -141,7 +141,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Task is executing, add to queue instead
       if (typeof window.addPromptToQueue === "function") {
         window.addPromptToQueue(text);
-        
+
         /* ユーザーメッセージを追加 */
         const u = document.createElement("p");
         u.classList.add("user-message");
@@ -149,7 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
         u.style.cssText = "background: #fff3e0; border-left: 3px solid #ff9800;";
         chatArea.appendChild(u);
         chatArea.scrollTop = chatArea.scrollHeight;
-        
+
         userInput.value = "";
         return;
       }
@@ -157,8 +157,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Prevent double submission for new tasks
     if (sendButton.disabled) return;
-    
-    // Disable UI only for initial task submission (not for additional prompts)
+
+    // Disable briefly to avoid duplicate start
     sendButton.disabled = true;
     sendButton.textContent = "実行中...";
 
@@ -177,23 +177,20 @@ document.addEventListener("DOMContentLoaded", () => {
     chatArea.appendChild(b);
     chatArea.scrollTop = chatArea.scrollHeight;
 
-    try {
-      const model = "gemini";  // デフォルトモデルを使用
-      /* ----- マルチターン実行開始 ----- */
-      if (typeof window.executeTask === "function") {
-        await window.executeTask(text, model, b);
-      } else {
-        console.error("executeTask function not found.");
-        b.textContent = "実行機能が見つかりません。";
-      }
-    } catch (err) {
-      console.error(err);
-      b.textContent = "AI の応答に失敗しました: " + err.message;
-    } finally {
-      // Re-enable UI after execution
-      sendButton.disabled = false;
-      sendButton.textContent = "送信";
-      userInput.focus();
+    const model = "gemini";  // デフォルトモデルを使用
+    if (typeof window.executeTask === "function") {
+      window.executeTask(text, model, b).catch(err => {
+        console.error(err);
+        b.textContent = "AI の応答に失敗しました: " + err.message;
+      });
+    } else {
+      console.error("executeTask function not found.");
+      b.textContent = "実行機能が見つかりません。";
     }
+
+    // Re-enable UI immediately to allow additional prompts
+    sendButton.disabled = false;
+    sendButton.textContent = "送信";
+    userInput.focus();
   });
 });
