@@ -1582,6 +1582,19 @@ def source():
         return Response("", mimetype="text/plain")
 
 
+@app.get("/url")
+def current_url():
+    try:
+        # Only initialize browser if it's not already healthy
+        if not PAGE or not _run(_check_browser_health()):
+            _run(_init_browser())
+        url = _run(PAGE.url()) if PAGE else ""
+        return jsonify({"url": url})
+    except Exception as e:
+        log.error("url error: %s", e)
+        return jsonify({"url": ""})
+
+
 @app.get("/screenshot")
 def screenshot():
     try:

@@ -28,6 +28,18 @@ def get_html() -> str:
         return ""
 
 
+def get_url() -> str:
+    """Fetch current page URL from the VNC automation server."""
+    try:
+        res = requests.get(f"{VNC_API}/url", timeout=5)
+        res.raise_for_status()
+        data = res.json()
+        return data.get("url", "")
+    except Exception as e:
+        log.error("get_url error: %s", e)
+        return ""
+
+
 def _truncate_warning(warning_msg, max_length=None):
     """Return warning message without truncation (character limits removed)."""
     # Character limits removed for conversation history as requested
