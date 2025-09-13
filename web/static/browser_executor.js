@@ -3,7 +3,14 @@
 /* ======================================
    Utility
    ====================================== */
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+let stopController = null;
+const sleep = ms => new Promise(resolve => {
+  const id = setTimeout(resolve, ms);
+  stopController?.signal.addEventListener("abort", () => {
+    clearTimeout(id);
+    resolve();
+  }, { once: true });
+});
 const chatArea   = document.getElementById("chat-area");
 let stopRequested   = false;
 window.stopRequested = false;  // Make it globally accessible
@@ -18,7 +25,7 @@ async function captureScreenshot() {
     //return canvas.toDataURL("image/png");
   
       // バックエンドの Playwright API を直接呼び出してスクリーンショットを取得
-    const response = await fetch("/screenshot");
+    const response = await fetch("/screenshot", { signal: stopController?.signal });
     if (!response.ok) {
         console.error("screenshot fetch failed:", response.status, await response.text());
         return null;
@@ -139,7 +146,8 @@ async function sendDSL(acts) {
       const r = await fetch("/automation/execute-dsl", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actions: acts })
+        body: JSON.stringify({ actions: acts }),
+        signal: stopController?.signal,
       });
       
       const responseData = await r.json();
@@ -317,7 +325,7 @@ function showSystemMessage(msg) {
    ====================================== */
 async function checkForStopRequest() {
   try {
-    const response = await fetch("/automation/stop-request");
+    const response = await fetch("/automation/stop-request", { signal: stopController?.signal });
     if (response.ok) {
       const stopRequest = await response.json();
       return stopRequest;
@@ -407,7 +415,8 @@ async function handleUserIntervention(stopRequest) {
         const response = await fetch("/automation/stop-response", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ response: userResponse })
+          body: JSON.stringify({ response: userResponse }),
+          signal: stopController?.signal,
         });
         
         if (response.ok) {
@@ -472,7 +481,8 @@ async function storeWarningsInHistory(warnings) {
     const response = await fetch("/store-warnings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ warnings: warnings })
+      body: JSON.stringify({ warnings: warnings }),
+      signal: stopController?.signal,
     });
     
     const result = await response.json();
@@ -493,14 +503,15 @@ async function storeUserIntervention(userResponse) {
   try {
     // Add the user intervention as a new conversation entry
     const response = await fetch("/execute", {
-      method: "POST", 
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         command: `[ユーザー介入] ${userResponse}`,
         pageSource: null,
         screenshot: null,
         model: "intervention"
-      })
+      }),
+      signal: stopController?.signal,
     });
     
     if (response.ok) {
@@ -519,7 +530,7 @@ async function storeUserIntervention(userResponse) {
 async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemini", placeholder = null, prevError = null) {
   let html = pageHtml;
   if (!html) {
-    html = await fetch("/vnc-source")
+    html = await fetch("/vnc-source", { signal: stopController?.signal })
       .then(r => (r.ok ? r.text() : ""))
       .catch(() => "");
   }
@@ -716,7 +727,8 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      const response = await fetch(`/execution-status/${taskId}`);
+      if (stopRequested || stopController?.signal.aborted) return null;
+      const response = await fetch(`/execution-status/${taskId}`, { signal: stopController?.signal });
       
       if (!response.ok) {
         httpErrorCount++;
@@ -750,6 +762,7 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
       httpErrorCount = 0;
       
       const status = await response.json();
+      if (stopRequested || stopController?.signal.aborted) return null;
       console.log(`Task ${taskId} status: ${status.status} (attempt ${attempt + 1})`);
       
       if (status.status === "completed" || status.status === "failed") {
@@ -769,26 +782,27 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
       await sleep(currentInterval);
       
     } catch (e) {
+      if (stopRequested || stopController?.signal.aborted) return null;
       networkErrorCount++;
       console.error(`Network error polling task ${taskId} (attempt ${attempt + 1}, network errors: ${networkErrorCount}):`, e);
-      
+
       // Check if this is a retryable network error - be more patient
-      if (networkErrorCount < maxNetworkErrors && 
+      if (networkErrorCount < maxNetworkErrors &&
           (e.name === 'TypeError' || e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
-        
+
         // Exponential backoff for network errors with more generous delays
         const backoffDelay = Math.min(initialInterval * Math.pow(2.2, networkErrorCount), 12000);
         console.log(`Network error detected, waiting ${backoffDelay}ms before retry...`);
         await sleep(backoffDelay);
         continue;
       }
-      
+
       // Too many network errors or non-retryable error
       if (networkErrorCount >= maxNetworkErrors) {
         console.error(`Too many network errors (${networkErrorCount}), giving up on task ${taskId}`);
         return null;
       }
-      
+
       await sleep(initialInterval);
     }
   }
@@ -806,11 +820,14 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
    Multi-turn executor
    ====================================== */
 async function executeTask(cmd, model = "gemini", placeholder = null) {
+  stopController = new AbortController();
+  window.stopController = stopController;
+
   const MAX_STEPS = typeof window.MAX_STEPS === "number" ? window.MAX_STEPS : 10;
   let stepCount = 0;
   let keepLoop  = true;
   let firstIter = true;
-  let pageHtml  = await fetch("/vnc-source")
+  let pageHtml  = await fetch("/vnc-source", { signal: stopController.signal })
     .then(r => (r.ok ? r.text() : ""))
     .catch(() => "");
   let screenshot = null;
@@ -942,9 +959,10 @@ document.getElementById("executeButton")?.addEventListener("click", () => {
 
 const stopBtn = document.getElementById("stop-button");
 if (stopBtn) {
-  stopBtn.addEventListener("click", () => { 
-    stopRequested = true; 
-    window.stopRequested = true; 
+  stopBtn.addEventListener("click", () => {
+    stopRequested = true;
+    window.stopRequested = true;
+    stopController?.abort();
   });
 }
 
