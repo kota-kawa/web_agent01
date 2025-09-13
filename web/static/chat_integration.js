@@ -4,6 +4,33 @@ document.addEventListener("DOMContentLoaded", () => {
   const userInput   = document.getElementById("user-input");
   const chatArea    = document.getElementById("chat-area");
   const resetBtn    = document.getElementById("reset-button");
+  const inputStatus = document.getElementById("input-status");
+
+  // Update input status based on execution state
+  function updateInputStatus() {
+    if (typeof window.isTaskExecuting === "function" && window.isTaskExecuting()) {
+      if (typeof window.getQueuedPromptCount === "function") {
+        const queueCount = window.getQueuedPromptCount();
+        if (queueCount > 0) {
+          inputStatus.textContent = `🔄 実行中 - 追加指示 ${queueCount}件 待機中`;
+          inputStatus.style.color = "#ff9800";
+        } else {
+          inputStatus.textContent = "🔄 実行中 - 追加指示を入力できます";
+          inputStatus.style.color = "#007bff";
+        }
+      } else {
+        inputStatus.textContent = "🔄 実行中";
+        inputStatus.style.color = "#007bff";
+      }
+      userInput.placeholder = "追加の指示やアドバイスを入力...";
+    } else {
+      inputStatus.textContent = "";
+      userInput.placeholder = "ここに入力...";
+    }
+  }
+
+  // Monitor execution state and update input status
+  setInterval(updateInputStatus, 500);
 
   if (resetBtn) {
     resetBtn.addEventListener("click", async () => {
@@ -109,13 +136,31 @@ document.addEventListener("DOMContentLoaded", () => {
     const text = userInput.value.trim();
     if (!text) return;
 
-    // Prevent double submission
+    // Check if a task is currently executing
+    if (typeof window.isTaskExecuting === "function" && window.isTaskExecuting()) {
+      // Task is executing, add to queue instead
+      if (typeof window.addPromptToQueue === "function") {
+        window.addPromptToQueue(text);
+        
+        /* ユーザーメッセージを追加 */
+        const u = document.createElement("p");
+        u.classList.add("user-message");
+        u.innerHTML = `<strong>📝 追加指示:</strong> ${text}`;
+        u.style.cssText = "background: #fff3e0; border-left: 3px solid #ff9800;";
+        chatArea.appendChild(u);
+        chatArea.scrollTop = chatArea.scrollHeight;
+        
+        userInput.value = "";
+        return;
+      }
+    }
+
+    // Prevent double submission for new tasks
     if (sendButton.disabled) return;
     
-    // Disable UI during execution
+    // Disable UI only for initial task submission (not for additional prompts)
     sendButton.disabled = true;
     sendButton.textContent = "実行中...";
-    userInput.disabled = true;
 
     /* ユーザーメッセージを追加 */
     const u = document.createElement("p");
@@ -148,7 +193,6 @@ document.addEventListener("DOMContentLoaded", () => {
       // Re-enable UI after execution
       sendButton.disabled = false;
       sendButton.textContent = "送信";
-      userInput.disabled = false;
       userInput.focus();
     }
   });
