@@ -3,6 +3,75 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+DOM_SNAPSHOT_SCRIPT = """
+(() => {
+  function computeXPath(el) {
+    if (el === document.body) return '/html/body';
+    let xpath = '';
+    while (el && el.nodeType === Node.ELEMENT_NODE) {
+      let index = 1;
+      let sibling = el.previousElementSibling;
+      while (sibling) {
+        if (sibling.tagName === el.tagName) index++;
+        sibling = sibling.previousElementSibling;
+      }
+      xpath = '/' + el.tagName.toLowerCase() + '[' + index + ']' + xpath;
+      el = el.parentElement;
+    }
+    return xpath;
+  }
+
+  function isVisible(el) {
+    if (!(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isInteractive(el) {
+    const interactiveTags = ['a','button','input','select','textarea','option','summary'];
+    const interactiveRoles = ['button','link','textbox','checkbox','radio','menuitem','tab','switch','combobox'];
+    if (interactiveTags.includes(el.tagName.toLowerCase())) return true;
+    const role = el.getAttribute('role');
+    if (role && interactiveRoles.includes(role)) return true;
+    if (el.tabIndex >= 0) return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  let counter = 1;
+  function serialize(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent.trim();
+      if (!text) return null;
+      return {nodeType: 'text', text};
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return null;
+    const visible = isVisible(node);
+    const interactive = visible && isInteractive(node);
+    const attrs = {};
+    for (const attr of Array.from(node.attributes)) {
+      attrs[attr.name] = attr.value;
+    }
+    const children = Array.from(node.childNodes).map(serialize).filter(Boolean);
+    const result = {
+      tagName: node.tagName.toLowerCase(),
+      attributes: attrs,
+      xpath: computeXPath(node),
+      isVisible: visible,
+      isInteractive: interactive,
+      isTopElement: interactive,
+      highlightIndex: interactive ? counter++ : undefined,
+      children,
+    };
+    return result;
+  }
+
+  return serialize(document.body);
+})()
+"""
+
 
 @dataclass
 class DOMElementNode:
@@ -36,93 +105,17 @@ class DOMElementNode:
         )
 
     @classmethod
-    def from_html(cls, html: str) -> "DOMElementNode":
-        """Parse raw HTML into a simplified DOMElementNode tree."""
-        from bs4 import BeautifulSoup, NavigableString, Tag
+    def from_page(cls, page) -> "DOMElementNode":
+        """Retrieve DOM information directly from a Playwright page.
 
-        soup = BeautifulSoup(html, "lxml")
-        # Remove <script> and <style> tags entirely to keep the DOM concise
-        for t in soup.find_all(["script", "style"]):
-            t.decompose()
+        The DOM tree along with visibility and interactivity flags is computed
+        inside the browser to avoid Python-side heuristics.
+        """
+        dom_dict = page.evaluate(DOM_SNAPSHOT_SCRIPT)
+        return cls.from_json(dom_dict)
 
-        counter = 1
-        interactive_tags = {
-            "a",
-            "button",
-            "input",
-            "select",
-            "textarea",
-            "option",
-            "summary",
-        }
-        # ARIA roles that typically indicate an interactive element
-        interactive_roles = {
-            "button",
-            "link",
-            "textbox",
-            "checkbox",
-            "radio",
-            "menuitem",
-            "tab",
-            "switch",
-            "combobox",
-        }
-        interactive_attrs = {"onclick", "tabindex", "contenteditable"}
-
-        def get_xpath(el: Tag) -> str:
-            parts = []
-            while el and isinstance(el, Tag):
-                idx = 1
-                sib = el.previous_sibling
-                while sib:
-                    if isinstance(sib, Tag) and sib.name == el.name:
-                        idx += 1
-                    sib = sib.previous_sibling
-                parts.append(f"{el.name}[{idx}]")
-                el = el.parent
-            return "/" + "/".join(reversed(parts))
-
-        def traverse(node) -> Optional[DOMElementNode]:
-            nonlocal counter
-            if isinstance(node, NavigableString):
-                text = str(node).strip()
-                if not text:
-                    return None
-                return cls(tagName="#text", text=text)
-            if not isinstance(node, Tag):
-                return None
-            if node.name in {"script", "style"}:
-                return None
-
-            children = [c for c in (traverse(ch) for ch in node.children) if c]
-            attrs = {
-                k: (" ".join(v) if isinstance(v, list) else str(v))
-                for k, v in node.attrs.items()
-            }
-
-            xpath = get_xpath(node)
-            interactive = (
-                node.name in interactive_tags
-                or node.get("role") in interactive_roles
-                or any(attr in node.attrs for attr in interactive_attrs)
-            )
-            hidx = counter if interactive else None
-            if interactive:
-                counter += 1
-
-            return cls(
-                tagName=node.name,
-                attributes=attrs,
-                xpath=xpath,
-                isVisible=True,
-                isInteractive=interactive,
-                isTopElement=interactive,
-                highlightIndex=hidx,
-                children=children,
-            )
-
-        root = soup.body or soup
-        return traverse(root)
+    # Backwards compatible alias
+    from_html = from_page
 
     def to_lines(
         self, depth: int = 0, max_lines: int | None = None, _lines=None
