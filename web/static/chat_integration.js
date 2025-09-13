@@ -130,7 +130,7 @@ document.addEventListener("DOMContentLoaded", () => {
         /* ユーザーメッセージを追加 */
         const u = document.createElement("p");
         u.classList.add("user-message");
-        u.innerHTML = `<strong>📝 追加指示:</strong> ${text}`;
+        u.innerHTML = `<strong>📝 追加指示をキューに追加:</strong> ${text}`;
         u.style.cssText = "background: #fff3e0; border-left: 3px solid #ff9800;";
         chatArea.appendChild(u);
         chatArea.scrollTop = chatArea.scrollHeight;
