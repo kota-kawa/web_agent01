@@ -40,7 +40,7 @@ class DOMElementNode:
         """Parse raw HTML into a simplified DOMElementNode tree."""
         from bs4 import BeautifulSoup, NavigableString, Tag
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "lxml")
         # Remove <script> and <style> tags entirely to keep the DOM concise
         for t in soup.find_all(["script", "style"]):
             t.decompose()
@@ -53,7 +53,21 @@ class DOMElementNode:
             "select",
             "textarea",
             "option",
+            "summary",
         }
+        # ARIA roles that typically indicate an interactive element
+        interactive_roles = {
+            "button",
+            "link",
+            "textbox",
+            "checkbox",
+            "radio",
+            "menuitem",
+            "tab",
+            "switch",
+            "combobox",
+        }
+        interactive_attrs = {"onclick", "tabindex", "contenteditable"}
 
         def get_xpath(el: Tag) -> str:
             parts = []
@@ -87,7 +101,11 @@ class DOMElementNode:
             }
 
             xpath = get_xpath(node)
-            interactive = node.name in interactive_tags
+            interactive = (
+                node.name in interactive_tags
+                or node.get("role") in interactive_roles
+                or any(attr in node.attrs for attr in interactive_attrs)
+            )
             hidx = counter if interactive else None
             if interactive:
                 counter += 1

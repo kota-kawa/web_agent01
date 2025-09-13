@@ -1,24 +1,5 @@
 import requests
 import logging
-from .dom import DOMElementNode
-
-VNC_API = "http://vnc:7000"
-log = logging.getLogger(__name__)
-
-
-def get_html() -> str:
-    """Fetch current page HTML from the VNC automation server."""
-    try:
-        res = requests.get(f"{VNC_API}/source", timeout=(5, 30))
-        res.raise_for_status()
-        return res.text
-    except Exception as e:
-        log.error("get_html error: %s", e)
-        return ""
-
-
-import requests
-import logging
 import time
 from .dom import DOMElementNode
 
@@ -274,7 +255,7 @@ def get_elements() -> list:
         return res.json()
     except Exception as e:
         log.error("get_elements error: %s", e)
-        return []
+        raise
 
 
 def get_extracted() -> list:
@@ -285,7 +266,7 @@ def get_extracted() -> list:
         return res.json()
     except Exception as e:
         log.error("get_extracted error: %s", e)
-        return []
+        raise
 
 
 def get_eval_results() -> list:
@@ -296,20 +277,41 @@ def get_eval_results() -> list:
         return res.json()
     except Exception as e:
         log.error("get_eval_results error: %s", e)
-        return []
+        raise
 
 
-def eval_js(script: str):
-    """Execute JavaScript and return its result if any."""
+def eval_js(script: str, wait_timeout: float = 5.0, poll_interval: float = 0.5):
+    """Execute JavaScript and wait for its result if available.
+
+    The automation server stores eval results separately. This function now
+    polls until a new result is available or the timeout is reached.
+    """
+
     payload = {"actions": [{"action": "eval_js", "script": script}]}
+
+    # Record current number of results to detect the new one
+    try:
+        before = len(get_eval_results())
+    except Exception:
+        before = 0
+
     result = execute_dsl(payload)
-    
-    # Check for warnings/errors
+
     if result.get("warnings"):
         log.warning("eval_js warnings: %s", result["warnings"])
-    
-    eval_results = get_eval_results()
-    return eval_results[-1] if eval_results else None
+
+    start = time.time()
+    while time.time() - start < wait_timeout:
+        try:
+            results = get_eval_results()
+        except Exception as e:
+            raise RuntimeError("failed to retrieve eval results") from e
+
+        if len(results) > before:
+            return results[-1]
+        time.sleep(poll_interval)
+
+    raise TimeoutError("Timed out waiting for eval_js result")
 
 
 def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
