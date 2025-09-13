@@ -839,8 +839,7 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
     // Check for queued prompts and process them
     if (promptQueue.length > 0) {
       const queuedPrompt = promptQueue.shift();
-      showSystemMessage(`📝 追加指示を処理中: "${queuedPrompt}"`);
-      
+
       // Process the queued prompt by updating the current command
       cmd = queuedPrompt;
       
@@ -982,7 +981,6 @@ window.executeTask = executeTask;
 window.addPromptToQueue = function(prompt) {
   if (isExecutingTask) {
     promptQueue.push(prompt);
-    showSystemMessage(`📝 実行中のため追加指示をキューに追加しました: "${prompt}"`);
     return true;
   }
   return false;
