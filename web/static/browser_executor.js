@@ -35,6 +35,10 @@ async function captureScreenshot() {
 let pausedRequested = false;   // 一時停止フラグ
 let resumeResolver  = null;    // 再開時に resolve するコールバック
 
+// Queue system for additional prompts during execution
+let promptQueue = [];
+let isExecutingTask = false;
+
 /* ======================================
    Normalize DSL actions
    ====================================== */
@@ -824,10 +828,28 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   stopRequested   = false;
   window.stopRequested = false;  // Reset both local and global
   pausedRequested = false;  // 毎タスク開始時にリセット
+  
+  // Set execution state
+  isExecutingTask = true;
+  promptQueue = []; // Clear any existing queued prompts
 
   while (keepLoop && stepCount < MAX_STEPS) {
     if (stopRequested || window.stopRequested) break;
 
+    // Check for queued prompts and process them
+    if (promptQueue.length > 0) {
+      const queuedPrompt = promptQueue.shift();
+      showSystemMessage(`📝 追加指示を処理中: "${queuedPrompt}"`);
+      
+      // Process the queued prompt by updating the current command
+      cmd = queuedPrompt;
+      
+      // Reset loop detection counters since we have new instructions
+      actionHistory = [];
+      identicalActionCount = 0;
+      repeatCnt = 0;
+      lastMsg = "";
+    }
    
     if (pausedRequested) {
       showSystemMessage("⏸ タスクを一時停止中。ブラウザを手動操作できます。");
@@ -893,6 +915,9 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
     stepCount += 1;
   }
 
+  // Clear execution state
+  isExecutingTask = false;
+
   const done = document.createElement("p");
   done.classList.add("system-message");
   if (stopRequested || window.stopRequested) {
@@ -952,3 +977,21 @@ if (resumeBtn) {
 
 
 window.executeTask = executeTask;
+
+// Global functions for prompt queue management
+window.addPromptToQueue = function(prompt) {
+  if (isExecutingTask) {
+    promptQueue.push(prompt);
+    showSystemMessage(`📝 実行中のため追加指示をキューに追加しました: "${prompt}"`);
+    return true;
+  }
+  return false;
+};
+
+window.isTaskExecuting = function() {
+  return isExecutingTask;
+};
+
+window.getQueuedPromptCount = function() {
+  return promptQueue.length;
+};
