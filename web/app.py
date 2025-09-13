@@ -189,6 +189,20 @@ def reset():
         return jsonify(error=str(e)), 500
 
 
+def update_last_history_url(url=None):
+    """Update the most recent conversation entry with the current page URL."""
+    try:
+        hist = load_hist()
+        if not hist:
+            return
+
+        # Use provided URL or fetch from VNC server
+        hist[-1]["url"] = url or vnc_url()
+        save_hist(hist)
+    except Exception as e:
+        log.error("update_last_history_url error: %s", e)
+
+
 # --------------- API ---------------------------------------------
 @app.post("/execute")
 def execute():
@@ -280,10 +294,14 @@ def get_execution_status(task_id):
     try:
         executor = get_async_executor()
         status = executor.get_task_status(task_id)
-        
+
         if status is None:
             return jsonify({"error": "Task not found"}), 404
-        
+
+        # When task completes, update conversation history with current URL
+        if status.get("status") == "completed":
+            update_last_history_url()
+
         # Include all warnings without character limits
         if status and "result" in status and status["result"] and isinstance(status["result"], dict):
             if "warnings" in status["result"] and status["result"]["warnings"]:
@@ -373,11 +391,14 @@ def forward_dsl():
         return jsonify({"html": "", "warnings": []})
     try:
         res_obj = execute_dsl(payload, timeout=120)
-        
+
+        # Update conversation history with the current URL after execution
+        update_last_history_url()
+
         # Include all warnings without character limits
         if res_obj and isinstance(res_obj, dict) and "warnings" in res_obj:
             res_obj["warnings"] = [_truncate_warning(warning) for warning in res_obj["warnings"]]
-        
+
         return jsonify(res_obj)
     except requests.Timeout:
         log.error("forward_dsl timeout")
