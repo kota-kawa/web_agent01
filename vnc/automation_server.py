@@ -416,19 +416,19 @@ async def _recreate_browser():
     
     # Save current URL before closing the browser to preserve task context
     current_url = None
-    try:
-        if PAGE:
-            try:
-                current_url = await PAGE.url()
-                # Only preserve non-default URLs to avoid navigating back to Yahoo during tasks
-                if current_url and current_url != DEFAULT_URL and not current_url.startswith("about:"):
-                    log.info("Preserving current URL during browser recreation: %s", current_url)
-                else:
-                    current_url = None
-            except Exception:
+    if PAGE:
+        try:
+            current_url = await PAGE.url()
+            # Avoid restoring internal about: pages
+            if current_url and not current_url.startswith("about:"):
+                log.info(
+                    "Preserving current URL during browser recreation: %s",
+                    current_url,
+                )
+            else:
                 current_url = None
-    except Exception:
-        current_url = None
+        except Exception:
+            current_url = None
     
     try:
         if PAGE:
