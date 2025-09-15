@@ -1570,11 +1570,6 @@ def execute_dsl():
     try:
         _run(_init_browser())
         
-        # Check browser health before execution
-        if not _run(_check_browser_health()):
-            log.warning("[%s] Browser unhealthy, recreating...", correlation_id)
-            _run(_recreate_browser())
-        
         # Optionally create clean context
         if USE_INCOGNITO_CONTEXT:
             _run(_create_clean_context())
@@ -1592,6 +1587,24 @@ def execute_dsl():
     except Exception as e:
         error_msg = f"[{correlation_id}] ExecutionError - {str(e)}"
         log.exception("DSL execution failed: %s", error_msg)
+        
+        # Check if this might be a browser issue and attempt recreation
+        error_str = str(e).lower()
+        if any(keyword in error_str for keyword in ["browser", "page", "context", "target closed", "session closed"]):
+            log.warning("[%s] Browser-related error detected, attempting recreation...", correlation_id)
+            try:
+                _run(_recreate_browser())
+                warnings.append(f"INFO:auto:[{correlation_id}] Browser recreated due to error")
+                
+                # Retry execution once after browser recreation
+                html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
+                warnings.extend(action_warns)
+                return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+                
+            except Exception as retry_error:
+                log.error("[%s] Retry after browser recreation failed: %s", correlation_id, retry_error)
+                warnings.append(f"ERROR:auto:[{correlation_id}] Browser recreation retry failed - {str(retry_error)}")
+        
         warnings.append(f"ERROR:auto:{error_msg}")
         
         # Save debug artifacts on critical failure
@@ -1611,52 +1624,79 @@ def execute_dsl():
 @app.get("/source")
 def source():
     try:
-        # Only initialize browser if it's not already healthy
-        if not PAGE or not _run(_check_browser_health()):
+        # Initialize browser only if PAGE is None - let errors handle browser recreation
+        if not PAGE:
             _run(_init_browser())
         return Response(_run(_safe_get_page_content()), mimetype="text/plain")
     except Exception as e:
         log.error("source error: %s", e)
-        return Response("", mimetype="text/plain")
+        # Attempt browser recreation on error
+        try:
+            _run(_recreate_browser())
+            return Response(_run(_safe_get_page_content()), mimetype="text/plain")
+        except Exception as recreate_error:
+            log.error("source recreation failed: %s", recreate_error)
+            return Response("", mimetype="text/plain")
 
 
 @app.get("/url")
 def current_url():
     try:
-        # Only initialize browser if it's not already healthy
-        if not PAGE or not _run(_check_browser_health()):
+        # Initialize browser only if PAGE is None - let errors handle browser recreation
+        if not PAGE:
             _run(_init_browser())
         url = _run(PAGE.url()) if PAGE else ""
         return jsonify({"url": url})
     except Exception as e:
         log.error("url error: %s", e)
-        return jsonify({"url": ""})
+        # Attempt browser recreation on error
+        try:
+            _run(_recreate_browser())
+            url = _run(PAGE.url()) if PAGE else ""
+            return jsonify({"url": url})
+        except Exception as recreate_error:
+            log.error("url recreation failed: %s", recreate_error)
+            return jsonify({"url": ""})
 
 
 @app.get("/screenshot")
 def screenshot():
     try:
-        # Only initialize browser if it's not already healthy
-        if not PAGE or not _run(_check_browser_health()):
+        # Initialize browser only if PAGE is None - let errors handle browser recreation
+        if not PAGE:
             _run(_init_browser())
         img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
         log.error("screenshot error: %s", e)
-        return Response("", mimetype="text/plain")
+        # Attempt browser recreation on error
+        try:
+            _run(_recreate_browser())
+            img = _run(PAGE.screenshot(type="png"))
+            return Response(base64.b64encode(img), mimetype="text/plain")
+        except Exception as recreate_error:
+            log.error("screenshot recreation failed: %s", recreate_error)
+            return Response("", mimetype="text/plain")
 
 
 @app.get("/elements")
 def elements():
     try:
-        # Only initialize browser if it's not already healthy
-        if not PAGE or not _run(_check_browser_health()):
+        # Initialize browser only if PAGE is None - let errors handle browser recreation
+        if not PAGE:
             _run(_init_browser())
         data = _run(_list_elements())
         return jsonify(data)
     except Exception as e:
         log.error("elements error: %s", e)
-        return jsonify([])
+        # Attempt browser recreation on error
+        try:
+            _run(_recreate_browser())
+            data = _run(_list_elements())
+            return jsonify(data)
+        except Exception as recreate_error:
+            log.error("elements recreation failed: %s", recreate_error)
+            return jsonify([])
 
 
 @app.get("/extracted")

@@ -583,8 +583,8 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
       statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
     }, 1000);
 
-    // Poll for execution completion with improved timing and tolerance
-    const executionResult = await pollExecutionStatus(res.task_id, 40, 300); // Increased attempts, reduced initial interval
+    // Poll for execution completion with optimized timing
+    const executionResult = await pollExecutionStatus(res.task_id, 60, 100); // Increased attempts, reduced initial interval
     
     // Clear the update interval
     clearInterval(updateInterval);
@@ -638,6 +638,16 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         statusElement.textContent = "❌ ブラウザ操作に失敗しました";
         statusElement.style.color = "#dc3545";
         errInfo = executionResult.error || "Unknown execution error";
+        
+        // If the error indicates a timeout, provide helpful feedback
+        if (executionResult.error && (
+            executionResult.error.includes("timeout") || 
+            executionResult.error.includes("polling") ||
+            executionResult.error.includes("attempts exceeded"))) {
+          statusElement.textContent = "⏱️ ブラウザ操作がタイムアウトしました";
+          statusElement.style.color = "#ffc107";
+          showSystemMessage("⚠️ 操作に時間がかかりすぎたため中断されました。ページの読み込みが完了してから再度お試しください。");
+        }
       }
     } else {
       // Polling failed - attempt silent fallback without displaying confusing messages
@@ -704,32 +714,28 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 }
 
 /* ======================================
-   Poll execution status
+   Poll execution status with optimized timing
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 300) {
+async function pollExecutionStatus(taskId, maxAttempts = 60, initialInterval = 100) {
   const startTime = Date.now();
-  const maxDuration = maxAttempts * initialInterval * 3; // More generous timeout
+  const maxDuration = 180000; // 3 minutes maximum polling duration
   let httpErrorCount = 0;
   let networkErrorCount = 0;
-  const maxHttpErrors = 12;    // Further increased tolerance
-  const maxNetworkErrors = 15; // Further increased tolerance
+  const maxHttpErrors = 15;    // Increased tolerance
+  const maxNetworkErrors = 20; // Increased tolerance
   
-  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts})`);
+  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts}, starting interval: ${initialInterval}ms)`);
   
-  // Optional health check before starting polling
-  try {
-    const healthOk = await checkServerHealth();
-    if (!healthOk) {
-      console.warn("Server health check failed, but continuing with polling...");
-    }
-  } catch (e) {
-    console.warn("Health check error, but continuing:", e);
-  }
-  
+  // Start polling immediately (no initial delay)
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       if (stopRequested || stopController?.signal.aborted) return null;
-      const response = await fetch(`/execution-status/${taskId}`, { signal: stopController?.signal });
+      
+      const response = await fetch(`/execution-status/${taskId}`, { 
+        signal: stopController?.signal,
+        // Add timeout to fetch to prevent hanging
+        timeout: 10000 
+      });
       
       if (!response.ok) {
         httpErrorCount++;
@@ -737,25 +743,27 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
         
         // For server errors (5xx), be more patient with increased backoff
         if (response.status >= 500 && httpErrorCount < maxHttpErrors) {
-          const backoffDelay = Math.min(initialInterval * Math.pow(1.8, httpErrorCount), 8000);
+          const backoffDelay = Math.min(initialInterval * Math.pow(2, Math.min(httpErrorCount, 8)), 10000);
           console.log(`Server error detected, waiting ${backoffDelay}ms before retry...`);
           await sleep(backoffDelay);
           continue;
         }
         
-        // For client errors (4xx), give more chances but with delays
-        if (response.status >= 400 && response.status < 500 && httpErrorCount < 5) {
-          await sleep(initialInterval * 1.5);
+        // For client errors (4xx), give some chances but with delays
+        if (response.status >= 400 && response.status < 500 && httpErrorCount < 8) {
+          const backoffDelay = Math.min(initialInterval * Math.pow(1.5, httpErrorCount), 5000);
+          await sleep(backoffDelay);
           continue;
         }
         
-        // Too many HTTP errors
+        // Too many HTTP errors - fail with timeout
         if (httpErrorCount >= maxHttpErrors) {
           console.error(`Too many HTTP errors (${httpErrorCount}), giving up on task ${taskId}`);
-          return null;
+          return { status: "failed", error: "Too many HTTP errors during polling" };
         }
         
-        await sleep(initialInterval);
+        // Default short delay for other HTTP errors
+        await sleep(Math.min(initialInterval * 2, 1000));
         continue;
       }
       
@@ -775,11 +783,21 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
       // Check if we've exceeded the maximum duration
       if (Date.now() - startTime > maxDuration) {
         console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms`);
-        break;
+        return { status: "failed", error: "Polling timeout exceeded" };
       }
       
-      // Exponential backoff for polling interval, but cap it
-      const currentInterval = Math.min(initialInterval * Math.pow(1.2, Math.floor(attempt / 5)), 3000);
+      // Dynamic polling interval: start fast, then slow down
+      let currentInterval;
+      if (attempt < 5) {
+        currentInterval = initialInterval; // First 5 attempts: 100ms
+      } else if (attempt < 15) {
+        currentInterval = initialInterval * 2; // Next 10 attempts: 200ms
+      } else if (attempt < 30) {
+        currentInterval = initialInterval * 5; // Next 15 attempts: 500ms
+      } else {
+        currentInterval = initialInterval * 10; // Remaining attempts: 1000ms
+      }
+      
       await sleep(currentInterval);
       
     } catch (e) {
@@ -789,10 +807,11 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
 
       // Check if this is a retryable network error - be more patient
       if (networkErrorCount < maxNetworkErrors &&
-          (e.name === 'TypeError' || e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
+          (e.name === 'TypeError' || e.name === 'AbortError' || 
+           e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
 
-        // Exponential backoff for network errors with more generous delays
-        const backoffDelay = Math.min(initialInterval * Math.pow(2.2, networkErrorCount), 12000);
+        // Exponential backoff for network errors with generous delays
+        const backoffDelay = Math.min(initialInterval * Math.pow(2.5, Math.min(networkErrorCount, 10)), 15000);
         console.log(`Network error detected, waiting ${backoffDelay}ms before retry...`);
         await sleep(backoffDelay);
         continue;
@@ -801,10 +820,11 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
       // Too many network errors or non-retryable error
       if (networkErrorCount >= maxNetworkErrors) {
         console.error(`Too many network errors (${networkErrorCount}), giving up on task ${taskId}`);
-        return null;
+        return { status: "failed", error: "Too many network errors during polling" };
       }
 
-      await sleep(initialInterval);
+      // Short delay for unexpected errors
+      await sleep(Math.min(initialInterval * 3, 2000));
     }
   }
   
@@ -814,7 +834,7 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
   const duration = Date.now() - startTime;
   logPollingDiagnostics(taskId, httpErrorCount, networkErrorCount, maxAttempts, duration);
   
-  return null;
+  return { status: "failed", error: "Maximum polling attempts exceeded" };
 }
 
 /* ======================================
