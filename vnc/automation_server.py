@@ -419,8 +419,11 @@ async def _recreate_browser():
     if PAGE:
         try:
             current_url = await PAGE.url()
-            # Avoid restoring internal about: pages
-            if current_url and not current_url.startswith("about:"):
+            # Avoid restoring internal about: pages and default/initial URLs
+            if (current_url and 
+                not current_url.startswith("about:") and 
+                current_url != DEFAULT_URL and
+                current_url.strip() != ""):
                 log.info(
                     "Preserving current URL during browser recreation: %s",
                     current_url,
@@ -457,11 +460,46 @@ async def _recreate_browser():
     
     # Navigate back to preserved URL if we had one
     if current_url and PAGE:
-        try:
-            log.info("Navigating back to preserved URL after browser recreation: %s", current_url)
-            await PAGE.goto(current_url, wait_until="load", timeout=NAVIGATION_TIMEOUT)
-        except Exception as e:
-            log.warning("Failed to navigate back to preserved URL %s: %s", current_url, e)
+        # Multiple retry attempts with different strategies to ensure URL restoration
+        restore_attempts = [
+            {"wait_until": "load", "timeout": NAVIGATION_TIMEOUT},
+            {"wait_until": "domcontentloaded", "timeout": NAVIGATION_TIMEOUT // 2},
+            {"wait_until": "networkidle", "timeout": NAVIGATION_TIMEOUT // 3},
+        ]
+        
+        url_restored = False
+        for i, attempt_params in enumerate(restore_attempts):
+            try:
+                log.info("Navigating back to preserved URL after browser recreation (attempt %d/%d): %s", 
+                        i + 1, len(restore_attempts), current_url)
+                await PAGE.goto(current_url, **attempt_params)
+                
+                # Verify we successfully navigated to the intended URL
+                try:
+                    final_url = await PAGE.url()
+                    if final_url == current_url or final_url.startswith(current_url):
+                        log.info("Successfully restored URL after browser recreation: %s", final_url)
+                        url_restored = True
+                        break
+                    else:
+                        log.warning("URL restoration attempt %d resulted in different URL: %s (expected: %s)", 
+                                  i + 1, final_url, current_url)
+                except Exception as url_check_error:
+                    # If we can't verify the URL but navigation didn't throw, assume success
+                    log.warning("Could not verify URL after navigation attempt %d: %s", i + 1, url_check_error)
+                    url_restored = True
+                    break
+                    
+            except Exception as e:
+                log.warning("URL restoration attempt %d failed for %s: %s", i + 1, current_url, e)
+                if i < len(restore_attempts) - 1:
+                    # Wait briefly before next attempt
+                    await asyncio.sleep(1)
+        
+        if not url_restored:
+            log.error("Failed to restore URL after browser recreation despite multiple attempts: %s", current_url)
+            # Do NOT navigate to DEFAULT_URL as fallback - stay where we are
+            log.info("Browser recreation complete - remaining on current page instead of falling back to default URL")
 async def _init_browser():
     global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT
     if PAGE and await _check_browser_health():
