@@ -231,7 +231,7 @@ def execute():
     prev_error = data.get("error")
     hist = load_hist()
     current_url = data.get("url") or vnc_url()
-    elements, dom_err = vnc_dom_tree()
+    elements, viewport_info, dom_err = vnc_dom_tree()
     if elements is None:
         try:
             fallback = vnc_elements()
@@ -257,7 +257,7 @@ def execute():
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg)
+    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg, viewport_info)
     
     # Call LLM first
     res = call_llm(prompt, model, shot)

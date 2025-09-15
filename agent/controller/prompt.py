@@ -50,6 +50,7 @@ def build_prompt(
     screenshot: bool = False,
     elements: DOMElementNode | list | None = None,
     error: str | None = None,
+    viewport_info: dict | None = None,
 ) -> str:
     """Return full system prompt for the LLM."""
 
@@ -182,7 +183,13 @@ def build_prompt(
         nodes: list[DOMElementNode] = []
         if isinstance(elements, DOMElementNode):
             _collect_interactive(elements, nodes)
-            dom_text = elements.to_text(max_lines=None)
+            # Use the new simplified text representation
+            try:
+                simplified_text, selector_map = elements.to_simplified_text(viewport_info)
+                dom_text = simplified_text
+            except Exception as e:
+                log.warning("Failed to generate simplified DOM text, falling back to standard format: %s", e)
+                dom_text = elements.to_text(max_lines=None)
         elif isinstance(elements, list):
             for n in elements:
                 if isinstance(n, DOMElementNode):
