@@ -326,24 +326,14 @@ def eval_js(script: str, wait_timeout: float = 5.0, poll_interval: float = 0.5):
     raise TimeoutError("Timed out waiting for eval_js result")
 
 
-def get_dom_tree() -> tuple[DOMElementNode | None, dict | None, str | None]:
+def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
     """Retrieve the DOM tree using browser-side evaluation.
 
-    Returns a tuple of (DOM tree or None, viewport info or None, error message or None).
+    Returns a tuple of (DOM tree or None, error message or None).
     """
     try:
-        dom_data = eval_js(DOM_SNAPSHOT_SCRIPT)
-        
-        # Handle new format with viewport info
-        if isinstance(dom_data, dict) and "dom" in dom_data:
-            dom_tree = DOMElementNode.from_json(dom_data["dom"])
-            viewport_info = dom_data.get("viewport", {})
-            return dom_tree, viewport_info, None
-        else:
-            # Fallback for old format
-            dom_tree = DOMElementNode.from_json(dom_data)
-            return dom_tree, None, None
-            
+        dom_dict = eval_js(DOM_SNAPSHOT_SCRIPT)
+        return DOMElementNode.from_json(dom_dict), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
-        return None, None, str(e)
+        return None, str(e)
