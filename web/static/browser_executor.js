@@ -583,8 +583,8 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
       statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
     }, 1000);
 
-    // Poll for execution completion with improved timing and tolerance
-    const executionResult = await pollExecutionStatus(res.task_id, 40, 300); // Increased attempts, reduced initial interval
+    // Poll for execution completion with adaptive timing - start with 100ms intervals
+    const executionResult = await pollExecutionStatus(res.task_id, 40, 100, 30000); // 40 attempts, 100ms initial, 30s max duration
     
     // Clear the update interval
     clearInterval(updateInterval);
@@ -640,39 +640,21 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
         errInfo = executionResult.error || "Unknown execution error";
       }
     } else {
-      // Polling failed - attempt silent fallback without displaying confusing messages
-      console.warn("Execution status polling failed for task:", res.task_id);
+      // Polling failed or timed out - implement self-correction loop
+      console.warn("Execution status polling failed or timed out for task:", res.task_id);
       
-      // Try to fall back to synchronous execution silently if we have actions
-      if (res.actions && res.actions.length > 0) {
-        console.log("Attempting silent fallback to synchronous execution after polling failure");
-        statusElement.textContent = "🔄 ブラウザ操作を実行中...";
-        statusElement.style.color = "#007bff";
-        
-        const acts = normalizeActions(res);
-        if (acts && acts.length > 0) {
-          try {
-            const ret = await sendDSL(acts);
-            if (ret) {
-              newHtml = ret.html || newHtml;
-              errInfo = ret.error || null;
-              statusElement.textContent = "✅ ブラウザ操作が完了しました";
-              statusElement.style.color = "#28a745";
-            } else {
-              statusElement.textContent = "❌ ブラウザ操作に失敗しました";
-              statusElement.style.color = "#dc3545";
-            }
-          } catch (fallbackError) {
-            console.error("Fallback execution failed:", fallbackError);
-            statusElement.textContent = "❌ ブラウザ操作に失敗しました";
-            statusElement.style.color = "#dc3545";
-            errInfo = `Execution error: ${fallbackError.message}`;
-          }
-        }
-      } else {
-        statusElement.textContent = "⚠️ 実行に失敗しました";
-        statusElement.style.color = "#ffc107";
-      }
+      statusElement.textContent = "⚠️ 実行がタイムアウトしました";
+      statusElement.style.color = "#ffc107";
+      
+      // Capture the error information for the self-correction loop
+      const pollingError = `Execution polling failed/timed out for task ${res.task_id}. This may indicate server overload, network issues, or the action took longer than expected to complete.`;
+      errInfo = pollingError;
+      
+      // Display error information in UI
+      showSystemMessage(`⚠️ ${pollingError}`);
+      
+      // Set the error info to be passed to the next runTurn call for self-correction
+      // This will be handled by the calling function (executeTask) which should retry with error context
     }
     
     // Get fresh screenshot after execution
@@ -706,15 +688,16 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 /* ======================================
    Poll execution status
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 300) {
+async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 100, maxDuration = 30000) {
   const startTime = Date.now();
-  const maxDuration = maxAttempts * initialInterval * 3; // More generous timeout
   let httpErrorCount = 0;
   let networkErrorCount = 0;
   const maxHttpErrors = 12;    // Further increased tolerance
   const maxNetworkErrors = 15; // Further increased tolerance
+  let currentInterval = initialInterval; // Track current interval for adaptive polling
+  const maxInterval = 2000; // Cap maximum interval at 2000ms
   
-  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts})`);
+  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts}, initial interval: ${initialInterval}ms, max duration: ${maxDuration}ms)`);
   
   // Optional health check before starting polling
   try {
@@ -772,14 +755,16 @@ async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 3
         return status;
       }
       
-      // Check if we've exceeded the maximum duration
+      // Check if we've exceeded the maximum duration - ensure reliable timeout handling
       if (Date.now() - startTime > maxDuration) {
         console.warn(`Polling timeout for task ${taskId} - exceeded ${maxDuration}ms`);
-        break;
+        const duration = Date.now() - startTime;
+        logPollingDiagnostics(taskId, httpErrorCount, networkErrorCount, attempt + 1, duration);
+        return null; // Reliably return null on timeout
       }
       
-      // Exponential backoff for polling interval, but cap it
-      const currentInterval = Math.min(initialInterval * Math.pow(1.2, Math.floor(attempt / 5)), 3000);
+      // Adaptive polling with exponential backoff: interval * 1.5, capped at maxInterval
+      currentInterval = Math.min(currentInterval * 1.5, maxInterval);
       await sleep(currentInterval);
       
     } catch (e) {
@@ -879,7 +864,26 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
       const { cont, explanation, memory, html, screenshot: shot, error, actions } = await runTurn(cmd, pageHtml, screenshot, true, model, firstIter ? placeholder : null, lastError);
       if (shot) screenshot = shot;
       if (html) pageHtml = html;
-      lastError = error;
+      
+      // Implement self-correction loop for polling failures/timeouts
+      if (error && (error.includes("polling failed") || error.includes("timed out"))) {
+        console.log("Detected polling failure/timeout, implementing self-correction...");
+        showSystemMessage("🔄 実行エラーを検出しました。AIが問題を分析して再試行します...");
+        
+        // Pass the error as context for the next iteration
+        lastError = error;
+        
+        // Don't stop the loop - let the AI analyze the error and try a different approach
+        keepLoop = true;
+        firstIter = false;
+        
+        // Add a small delay before retrying
+        await sleep(1000);
+        continue;
+      } else {
+        // Reset error if no polling failure
+        lastError = error;
+      }
 
       // Enhanced loop detection: check for identical actions
       if (actions && actions.length > 0) {

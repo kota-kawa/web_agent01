@@ -1568,26 +1568,65 @@ def execute_dsl():
         data["actions"] = data["actions"][:MAX_DSL_ACTIONS]
 
     try:
+        # Initialize browser only if needed (but don't check health proactively)
         _run(_init_browser())
-        
-        # Check browser health before execution
-        if not _run(_check_browser_health()):
-            log.warning("[%s] Browser unhealthy, recreating...", correlation_id)
-            _run(_recreate_browser())
         
         # Optionally create clean context
         if USE_INCOGNITO_CONTEXT:
             _run(_create_clean_context())
+        
+        # Try to execute actions first - only recreate browser on specific playwright errors
+        try:
+            html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
+            warnings.extend(action_warns)
             
-        html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
-        warnings.extend(action_warns)
-        
-        # Check if periodic browser refresh is needed
-        refresh_done = _run(_check_and_refresh_browser(correlation_id))
-        if refresh_done:
-            warnings.append(f"INFO:auto:[{correlation_id}] Browser context refreshed for stability")
-        
-        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+            # Check if periodic browser refresh is needed
+            refresh_done = _run(_check_and_refresh_browser(correlation_id))
+            if refresh_done:
+                warnings.append(f"INFO:auto:[{correlation_id}] Browser context refreshed for stability")
+            
+            return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+            
+        except Exception as action_error:
+            # Check if this is a playwright-related fatal error that requires browser recreation
+            error_str = str(action_error).lower()
+            is_playwright_fatal = (
+                isinstance(action_error, PwError) or
+                "browser has been closed" in error_str or
+                "target closed" in error_str or
+                "connection closed" in error_str or
+                "page has been closed" in error_str
+            )
+            
+            if is_playwright_fatal:
+                log.warning("[%s] Playwright fatal error detected, recreating browser: %s", correlation_id, action_error)
+                _run(_recreate_browser())
+                
+                # Retry action execution after browser recreation
+                try:
+                    html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
+                    warnings.extend(action_warns)
+                    warnings.append(f"INFO:auto:[{correlation_id}] Browser recreated due to fatal error and execution retried")
+                    return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+                except Exception as retry_error:
+                    # If retry also fails, treat as general error
+                    error_msg = f"[{correlation_id}] ExecutionError (after browser recreation) - {str(retry_error)}"
+                    log.warning("Action execution failed even after browser recreation: %s", error_msg)
+                    warnings.append(f"WARNING:auto:{error_msg}")
+                    # Continue to return partial results with warnings
+            else:
+                # General error - log as warning but don't recreate browser
+                error_msg = f"[{correlation_id}] ActionWarning - {str(action_error)}"
+                log.warning("Action execution encountered non-fatal error: %s", error_msg)
+                warnings.append(f"WARNING:auto:{error_msg}")
+            
+            # Return current page HTML even on action failure to provide context
+            try:
+                html = _run(_safe_get_page_content()) if PAGE else ""
+            except Exception:
+                html = ""
+                
+            return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
         
     except Exception as e:
         error_msg = f"[{correlation_id}] ExecutionError - {str(e)}"
