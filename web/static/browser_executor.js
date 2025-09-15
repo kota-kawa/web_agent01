@@ -578,27 +578,16 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
     
     // Start polling immediately with optimized timing
     let pollingStartTime = Date.now();
-    let updateInterval = setInterval(() => {
+    const updateInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - pollingStartTime) / 1000);
       statusElement.textContent = `🔄 ブラウザ操作を実行中... (${elapsed}秒)`;
     }, 1000);
 
-    // Add safety timeout to prevent stuck status messages (max 5 minutes)
-    const safetyTimeout = setTimeout(() => {
-      clearInterval(updateInterval);
-      if (statusElement.textContent.includes("実行中")) {
-        statusElement.textContent = "⚠️ タイムアウト: ブラウザ操作が長時間実行中です";
-        statusElement.style.color = "#ffc107";
-        console.warn(`Safety timeout triggered for task ${res.task_id}`);
-      }
-    }, 300000); // 5 minutes safety timeout
-
-    // Poll for execution completion with optimized timing for immediate response
-    const executionResult = await pollExecutionStatus(res.task_id, 60, 50); // More attempts, much faster initial polling
+    // Poll for execution completion with improved timing and tolerance
+    const executionResult = await pollExecutionStatus(res.task_id, 40, 300); // Increased attempts, reduced initial interval
     
-    // Clear both the update interval and safety timeout
+    // Clear the update interval
     clearInterval(updateInterval);
-    clearTimeout(safetyTimeout);
     
     if (executionResult) {
       // Update status message
@@ -654,12 +643,6 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
       // Polling failed - attempt silent fallback without displaying confusing messages
       console.warn("Execution status polling failed for task:", res.task_id);
       
-      // Ensure status is updated even if polling failed
-      if (statusElement.textContent.includes("実行中")) {
-        statusElement.textContent = "⚠️ ステータス確認に失敗しました";
-        statusElement.style.color = "#ffc107";
-      }
-      
       // Try to fall back to synchronous execution silently if we have actions
       if (res.actions && res.actions.length > 0) {
         console.log("Attempting silent fallback to synchronous execution after polling failure");
@@ -685,9 +668,6 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
             statusElement.style.color = "#dc3545";
             errInfo = `Execution error: ${fallbackError.message}`;
           }
-        } else {
-          statusElement.textContent = "⚠️ 実行可能な操作が見つかりません";
-          statusElement.style.color = "#ffc107";
         }
       } else {
         statusElement.textContent = "⚠️ 実行に失敗しました";
@@ -726,15 +706,15 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
 /* ======================================
    Poll execution status
    ====================================== */
-async function pollExecutionStatus(taskId, maxAttempts = 60, initialInterval = 50) {
+async function pollExecutionStatus(taskId, maxAttempts = 40, initialInterval = 300) {
   const startTime = Date.now();
-  const maxDuration = Math.max(maxAttempts * initialInterval * 3, 60000); // At least 60 seconds timeout
+  const maxDuration = maxAttempts * initialInterval * 3; // More generous timeout
   let httpErrorCount = 0;
   let networkErrorCount = 0;
-  const maxHttpErrors = 15;    // Increased tolerance for more attempts
-  const maxNetworkErrors = 18; // Increased tolerance for more attempts
+  const maxHttpErrors = 12;    // Further increased tolerance
+  const maxNetworkErrors = 15; // Further increased tolerance
   
-  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts}, initial interval: ${initialInterval}ms)`);
+  console.log(`Starting to poll task ${taskId} (max attempts: ${maxAttempts})`);
   
   // Optional health check before starting polling
   try {
@@ -798,18 +778,8 @@ async function pollExecutionStatus(taskId, maxAttempts = 60, initialInterval = 5
         break;
       }
       
-      // Aggressive early polling for first 10 attempts (10ms intervals)
-      // Then faster polling for next 20 attempts (50-100ms)
-      // Then normal exponential backoff
-      let currentInterval;
-      if (attempt < 10) {
-        currentInterval = 10; // Very fast for immediate completions
-      } else if (attempt < 30) {
-        currentInterval = Math.min(initialInterval * Math.pow(1.1, attempt - 10), 200); // Gradual increase
-      } else {
-        currentInterval = Math.min(initialInterval * Math.pow(1.2, Math.floor((attempt - 30) / 5)), 3000); // Normal backoff
-      }
-      
+      // Exponential backoff for polling interval, but cap it
+      const currentInterval = Math.min(initialInterval * Math.pow(1.2, Math.floor(attempt / 5)), 3000);
       await sleep(currentInterval);
       
     } catch (e) {

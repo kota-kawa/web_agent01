@@ -199,6 +199,7 @@ def build_prompt(
         あなたは注意深く、同じ失敗を繰り返さず、常に代替案を検討することができます。
         最終的な目標は、ユーザーに命令されたタスクを達成することです。
 
+
         **思考と行動に関する厳格な指示**
         あなたは行動を決定する前に、必ず以下の思考プロセスを**内部的に**、かつ忠実に実行してください。
         
@@ -330,31 +331,31 @@ def build_prompt(
         その計画は臨機応変に変更してよい。
         途中でのプランニング再実行は、明らかにプラン通りに進まなくなったときのみ行い、最高頻度でも5回に1回程度とする。
         Webページから得た重要な情報は、最終回答に必要であれば `memory` フィールドに記録する。不要な場合は `memory` を省略してよい。
-        その後に ```json フェンス内で DSL を出力。
+    その後に ```json フェンス内で DSL を出力。
 
-        ```json の中身は以下のフォーマット:
-        {
-        "memory": "覚えておくべき情報",   # 任意
-        "actions": [ <action_object> , ... ],
-        "complete": true | false               # true ならタスク完了, false なら未完了で続行
-        }
+    ```json の中身は以下のフォーマット:
+    {
+    "memory": "覚えておくべき情報",   # 任意
+    "actions": [ <action_object> , ... ],
+    "complete": true | false               # true ならタスク完了, false なら未完了で続行
+    }
 
-        <action_object> は次のいずれか:
-        { "action": "navigate",       "target": "https://example.com" }
-        { "action": "click",          "target": "css=button.submit" }
-        { "action": "click_text",     "text":   "次へ" }
-        { "action": "type",           "target": "css=input[name=q]", "value": "検索ワード" }
-        { "action": "wait",           "ms": 1000 }
-        { "action": "scroll",         "target": "css=div.list", "direction": "down", "amount": 400 }
-        { "action": "go_back" }
-        { "action": "go_forward" }
-        { "action": "hover",          "target": "css=div.menu" }
-        { "action": "select_option",   "target": "css=select", "value": "option1" }
-        { "action": "press_key",      "key": "Enter", "target": "css=input" }
-        { "action": "wait_for_selector", "target": "css=button.ok", "ms": 3000 }
-        { "action": "extract_text",    "target": "css=div.content" }
-        { "action": "eval_js",        "script": "document.title" }
-        { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
+    <action_object> は次のいずれか:
+    { "action": "navigate",       "target": "https://example.com" }
+    { "action": "click",          "target": "css=button.submit" }
+    { "action": "click_text",     "text":   "次へ" }
+    { "action": "type",           "target": "css=input[name=q]", "value": "検索ワード" }
+    { "action": "wait",           "ms": 1000 }
+    { "action": "scroll",         "target": "css=div.list", "direction": "down", "amount": 400 }
+    { "action": "go_back" }
+    { "action": "go_forward" }
+    { "action": "hover",          "target": "css=div.menu" }
+    { "action": "select_option",   "target": "css=select", "value": "option1" }
+    { "action": "press_key",      "key": "Enter", "target": "css=input" }
+    { "action": "wait_for_selector", "target": "css=button.ok", "ms": 3000 }
+    { "action": "extract_text",    "target": "css=div.content" }
+    { "action": "eval_js",        "script": "document.title" }
+    { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
 
     |ルール|
     1. 現ページで表示されている要素のみ操作してよい。ページ遷移後の要素の操作は、次のステップで生成しなくてはいけない。つまりページ遷移が必要かつ、複数のアクションがあった場合には、ページ遷移が最後のアクションである必要がある。
@@ -373,54 +374,54 @@ def build_prompt(
     12. 最大 {MAX_STEPS} ステップ以内にタスクを完了できない場合は `complete:true` で終了してください。
 
     Python で利用できるアクションヘルパー関数:
-    #click: 指定したターゲットをクリックするアクション
-    def click(target: str) -> Dict:
-        return {"action": "click", "target": target}
-    #click_text: 指定したテキストを持つ要素をクリックするアクション
-    def click_text(text: str) -> Dict:
-        return {"action": "click_text", "text": text, "target": text}
-    # navigate: 指定した URL へナビゲートするアクション
-    def navigate(url: str) -> Dict:
-        return {"action": "navigate", "target": url}
-    # type_text: 指定したターゲットにテキストを入力するアクション
-    def type_text(target: str, value: str) -> Dict:
-        return {"action": "type", "target": target, "value": value}
-    # wait: 一定時間待機するアクション
-    def wait(ms: int = 500, retry: int | None = None) -> Dict:
-        act = {"action": "wait", "ms": ms}
-        if retry is not None: act["retry"] = retry
-        return act
-    # wait_for_selector: 指定したセレクタが出現するまで待機するアクション
-    def wait_for_selector(target: str, ms: int = 3000) -> Dict:
-        return {"action": "wait_for_selector", "target": target, "ms": ms}
-    # go_back: ブラウザの「戻る」操作を行うアクション
-    def go_back() -> Dict:
-        return {"action": "go_back"}
-    # go_forward: ブラウザの「進む」操作を行うアクション
-    def go_forward() -> Dict:
-        return {"action": "go_forward"}
-    # hover: 指定したターゲットにマウスカーソルを移動させるアクション
-    def hover(target: str) -> Dict:
-        return {"action": "hover", "target": target}
-    # select_option: セレクト要素から指定した値を選択するアクション
-    def select_option(target: str, value: str) -> Dict:
-        return {"action": "select_option", "target": target, "value": value}
-    # press_key: 指定したキーを押下するアクション
-    def press_key(key: str, target: str | None = None) -> Dict:
-        act = {"action": "press_key", "key": key}
-        if target: act["target"] = target
-        return act
-    # extract_text: 指定したターゲットからテキストを抽出するアクション
-    def extract_text(target: str) -> Dict:
-        return {"action": "extract_text", "target": target}
-    # eval_js: 任意の JavaScript を実行して結果を保存するアクション
-    def eval_js(script: str) -> Dict:
-        return {"action": "eval_js", "script": script}
-    #   DOM 状態の確認や動的値の取得に使い、戻り値は後から取得可能
-    # stop: 実行を停止してユーザーの入力を待機するアクション
-    def stop(reason: str, message: str = "") -> Dict:
-        return {"action": "stop", "reason": reason, "message": message}
-    #   LLMが確認やアドバイスが必要な時に使用。captcha、日付・価格確認、エラー続発時など
+        #click: 指定したターゲットをクリックするアクション
+        def click(target: str) -> Dict:
+            return {"action": "click", "target": target}
+        #click_text: 指定したテキストを持つ要素をクリックするアクション
+        def click_text(text: str) -> Dict:
+            return {"action": "click_text", "text": text, "target": text}
+        # navigate: 指定した URL へナビゲートするアクション
+        def navigate(url: str) -> Dict:
+            return {"action": "navigate", "target": url}
+        # type_text: 指定したターゲットにテキストを入力するアクション
+        def type_text(target: str, value: str) -> Dict:
+            return {"action": "type", "target": target, "value": value}
+        # wait: 一定時間待機するアクション
+        def wait(ms: int = 500, retry: int | None = None) -> Dict:
+            act = {"action": "wait", "ms": ms}
+            if retry is not None: act["retry"] = retry
+            return act
+        # wait_for_selector: 指定したセレクタが出現するまで待機するアクション
+        def wait_for_selector(target: str, ms: int = 3000) -> Dict:
+            return {"action": "wait_for_selector", "target": target, "ms": ms}
+        # go_back: ブラウザの「戻る」操作を行うアクション
+        def go_back() -> Dict:
+            return {"action": "go_back"}
+        # go_forward: ブラウザの「進む」操作を行うアクション
+        def go_forward() -> Dict:
+            return {"action": "go_forward"}
+        # hover: 指定したターゲットにマウスカーソルを移動させるアクション
+        def hover(target: str) -> Dict:
+            return {"action": "hover", "target": target}
+        # select_option: セレクト要素から指定した値を選択するアクション
+        def select_option(target: str, value: str) -> Dict:
+            return {"action": "select_option", "target": target, "value": value}
+        # press_key: 指定したキーを押下するアクション
+        def press_key(key: str, target: str | None = None) -> Dict:
+            act = {"action": "press_key", "key": key}
+            if target: act["target"] = target
+            return act
+        # extract_text: 指定したターゲットからテキストを抽出するアクション
+        def extract_text(target: str) -> Dict:
+            return {"action": "extract_text", "target": target}
+        # eval_js: 任意の JavaScript を実行して結果を保存するアクション
+        def eval_js(script: str) -> Dict:
+            return {"action": "eval_js", "script": script}
+        #   DOM 状態の確認や動的値の取得に使い、戻り値は後から取得可能
+        # stop: 実行を停止してユーザーの入力を待機するアクション
+        def stop(reason: str, message: str = "") -> Dict:
+            return {"action": "stop", "reason": reason, "message": message}
+        #   LLMが確認やアドバイスが必要な時に使用。captcha、日付・価格確認、エラー続発時など
 
     ============= ブラウザ操作 DSL 出力ルール（必読・厳守）======================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -527,8 +528,7 @@ def build_prompt(
         "{ "actions": [], "complete": true }
 "
     ========================================================================
-    
-    --------------------------------
+
     ---- 現在のページのDOMツリー ----
     {dom_text}
     --------------------------------
