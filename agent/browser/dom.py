@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-DOM_SNAPSHOT_SCRIPT = """
+DOM_SNAPSHOT_SCRIPT = r"""
 (() => {
   function computeXPath(el) {
     if (el === document.body) return '/html/body';
