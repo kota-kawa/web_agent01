@@ -332,8 +332,16 @@ def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
     Returns a tuple of (DOM tree or None, error message or None).
     """
     try:
-        dom_dict = eval_js(DOM_SNAPSHOT_SCRIPT)
-        return DOMElementNode.from_json(dom_dict), None
+        result = eval_js(DOM_SNAPSHOT_SCRIPT)
+        if isinstance(result, dict) and "domTree" in result:
+            # New format with viewport info
+            dom_tree = DOMElementNode.from_json(result["domTree"])
+            if dom_tree:
+                dom_tree.viewportInfo = result.get("viewportInfo")
+            return dom_tree, None
+        else:
+            # Backward compatibility
+            return DOMElementNode.from_json(result), None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
         return None, str(e)
