@@ -693,7 +693,7 @@ async function runTurn(cmd, pageHtml, screenshot, showInUI = true, model = "gemi
   }
 
   return { 
-    cont: res.complete === false && (res.actions || []).length > 0, 
+    cont: res.complete === false, 
     explanation: res.explanation || "", 
     memory: res.memory || "", 
     html: newHtml, 
