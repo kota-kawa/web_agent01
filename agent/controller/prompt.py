@@ -183,7 +183,7 @@ def build_prompt(
         if isinstance(elements, DOMElementNode):
             _collect_interactive(elements, nodes)
             dom_text = elements.to_text(max_lines=None)
-            print(dom_text)
+            #print(dom_text)
         elif isinstance(elements, list):
             for n in elements:
                 if isinstance(n, DOMElementNode):
