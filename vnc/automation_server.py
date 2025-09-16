@@ -20,6 +20,26 @@ from playwright.async_api import Error as PwError, async_playwright
 
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 
+# Import new Browser Use style modules
+try:
+    import sys
+    import os
+    # Add the parent directory to the path so we can import agent modules
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    
+    from agent.element_catalog import ElementCatalogGenerator, ElementCatalog
+    from agent.response_types import (
+        DSLResponse, DSLError, DSLErrorCode, ObservationData,
+        create_success_response, create_error_response,
+        create_catalog_outdated_response, create_element_not_found_response
+    )
+    BROWSER_USE_IMPORTS_AVAILABLE = True
+except ImportError as e:
+    log.warning("Browser Use style imports not available: %s", e)
+    BROWSER_USE_IMPORTS_AVAILABLE = False
+
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -153,6 +173,9 @@ _ACTIONS = [
     "click_blank_area",
     "close_popup",
     "stop",
+    # New Browser Use style actions
+    "refresh_catalog",
+    "scroll_to_text",
 ]
 payload_schema = {
     "type": "object",
@@ -173,12 +196,18 @@ payload_schema = {
                     "attr": {"type": "string"},
                     "reason": {"type": "string"},
                     "message": {"type": "string"},
+                    # New Browser Use style properties
+                    "index": {"type": "integer", "minimum": 0},
+                    "text": {"type": "string"},
+                    "until": {"type": "string", "enum": ["network_idle", "selector", "timeout"]},
+                    "expected_catalog_version": {"type": "string"},
                 },
                 "required": ["action"],
                 "additionalProperties": True,  # ★ 不明キーは許可
             },
         },
         "complete": {"type": "boolean"},  # ★ 任意
+        "expected_catalog_version": {"type": "string"},  # For catalog validation
     },
     "required": ["actions"],
     "additionalProperties": True,  # ★ ここも許可
@@ -264,6 +293,11 @@ PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 EVAL_RESULTS: List[str] = []
 WARNINGS: List[str] = []
+
+# Element catalog management (Browser Use style)
+INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
+_ELEMENT_CATALOG = None  # Stores current ElementCatalog instance
+_LAST_DOM_HASH = None  # For detecting DOM changes
 
 # Execution lock to prevent concurrent DSL execution
 _EXECUTION_LOCK = asyncio.Lock()
@@ -823,6 +857,157 @@ def _get_key_code(key: str) -> int:
     return key_codes.get(key, 0)
 
 
+# -------------------------------------------------- Browser Use Style Catalog Management
+
+async def _refresh_element_catalog() -> bool:
+    """Refresh the element catalog for index-based targeting."""
+    global _ELEMENT_CATALOG, _LAST_DOM_HASH
+    
+    if not BROWSER_USE_IMPORTS_AVAILABLE or not PAGE:
+        return False
+    
+    try:
+        # Generate new catalog
+        generator = ElementCatalogGenerator(PAGE)
+        catalog = await generator.generate_catalog()
+        
+        # Update global catalog
+        _ELEMENT_CATALOG = catalog
+        _LAST_DOM_HASH = catalog.catalog_version
+        
+        log.info(f"Refreshed element catalog with {len(catalog.entries)} elements, version: {catalog.catalog_version}")
+        return True
+        
+    except Exception as e:
+        log.error(f"Failed to refresh element catalog: {e}")
+        return False
+
+
+async def _resolve_index_to_selector(index: int, act: Dict) -> Optional[str]:
+    """Resolve index to a robust selector using fallback priority."""
+    global _ELEMENT_CATALOG
+    
+    if not _ELEMENT_CATALOG:
+        # Try to generate catalog if it doesn't exist
+        if not await _refresh_element_catalog():
+            raise Exception("Could not generate element catalog")
+    
+    # Check catalog version if provided
+    expected_version = act.get("expected_catalog_version")
+    if expected_version and _ELEMENT_CATALOG.catalog_version != expected_version:
+        raise Exception(f"CATALOG_OUTDATED: Current version {_ELEMENT_CATALOG.catalog_version}, expected {expected_version}")
+    
+    # Get element by index
+    element = _ELEMENT_CATALOG.get_element_by_index(index)
+    if not element:
+        return None
+    
+    # Try selectors in priority order:
+    # 1. getByRole / text locators
+    # 2. ID and data-testid  
+    # 3. Relative CSS
+    # 4. XPath (last resort)
+    
+    selectors = element.robust_selectors
+    if not selectors:
+        return None
+    
+    # Return first selector as primary choice
+    # The SmartLocator will handle fallbacks if this fails
+    return selectors[0]
+
+
+async def _scroll_to_text(text: str) -> bool:
+    """Scroll to find text on the page."""
+    if not PAGE:
+        return False
+    
+    try:
+        # Use JavaScript to find and scroll to text
+        scroll_script = f"""
+        (text) => {{
+            function scrollToText(searchText) {{
+                const walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+                
+                let node;
+                while (node = walker.nextNode()) {{
+                    if (node.textContent.toLowerCase().includes(searchText.toLowerCase())) {{
+                        const element = node.parentElement;
+                        if (element) {{
+                            element.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                            return true;
+                        }}
+                    }}
+                }}
+                return false;
+            }}
+            
+            return scrollToText(text);
+        }}
+        """
+        
+        result = await PAGE.evaluate(scroll_script, text)
+        if result:
+            # Wait a bit for smooth scrolling to complete
+            await PAGE.wait_for_timeout(500)
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"Failed to scroll to text '{text}': {e}")
+        return False
+
+
+async def _detect_navigation_changes() -> Dict[str, bool]:
+    """Detect if navigation or significant DOM changes occurred."""
+    if not PAGE:
+        return {"nav_detected": False, "dom_changes_detected": False}
+    
+    try:
+        # Get current URL and compare with stored state
+        current_url = await PAGE.url()
+        
+        # Simple navigation detection - could be enhanced
+        nav_detected = False  # This would need more sophisticated tracking
+        
+        # Check if DOM hash changed significantly
+        dom_changes_detected = False
+        if _ELEMENT_CATALOG:
+            # Quick check if major elements changed
+            try:
+                # Count interactive elements to detect major changes
+                element_count = await PAGE.evaluate("""
+                () => {
+                    const selectors = ['a[href]', 'button', 'input', 'select', 'textarea'];
+                    let total = 0;
+                    for (const sel of selectors) {
+                        total += document.querySelectorAll(sel).length;
+                    }
+                    return total;
+                }
+                """)
+                
+                if abs(element_count - len(_ELEMENT_CATALOG.entries)) > 5:  # Threshold for significant change
+                    dom_changes_detected = True
+                    
+            except Exception:
+                pass
+        
+        return {
+            "nav_detected": nav_detected,
+            "dom_changes_detected": dom_changes_detected
+        }
+        
+    except Exception as e:
+        log.error(f"Failed to detect navigation changes: {e}")
+        return {"nav_detected": False, "dom_changes_detected": False}
+
+
 async def _list_elements(limit: int = 50) -> List[Dict]:
     """Return list of clickable/input elements with basic info."""
     els = []
@@ -1058,6 +1243,57 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             action_warnings.append(f"STOP:auto:Execution paused - {reason}: {message}")
             return action_warnings
 
+        # -- Browser Use style actions
+        if a == "refresh_catalog":
+            if INDEX_MODE and BROWSER_USE_IMPORTS_AVAILABLE:
+                try:
+                    await _refresh_element_catalog()
+                    action_warnings.append("INFO:auto:Element catalog refreshed successfully")
+                except Exception as e:
+                    action_warnings.append(f"WARNING:auto:Failed to refresh catalog - {str(e)}")
+            else:
+                action_warnings.append("INFO:auto:Index mode disabled or imports unavailable - catalog refresh skipped")
+            return action_warnings
+            
+        if a == "scroll_to_text":
+            text_to_find = act.get("text") or tgt or val
+            if not text_to_find:
+                action_warnings.append("WARNING:auto:scroll_to_text requires text parameter")
+                return action_warnings
+                
+            try:
+                success = await _scroll_to_text(text_to_find)
+                if success:
+                    action_warnings.append(f"INFO:auto:Scrolled to text: {text_to_find}")
+                else:
+                    action_warnings.append(f"WARNING:auto:Text not found for scrolling: {text_to_find}")
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:scroll_to_text failed - {str(e)}")
+            return action_warnings
+            
+        if a == "wait":
+            # Enhanced wait with different modes
+            until = act.get("until", "timeout")
+            timeout = ms if ms > 0 else 1000
+            
+            if until == "network_idle":
+                try:
+                    await PAGE.wait_for_load_state("networkidle", timeout=timeout)
+                    action_warnings.append("INFO:auto:Waited for network idle")
+                except Exception as e:
+                    action_warnings.append(f"WARNING:auto:Network idle wait failed - {str(e)}")
+            elif until == "selector" and tgt:
+                try:
+                    await PAGE.wait_for_selector(tgt, timeout=timeout)
+                    action_warnings.append(f"INFO:auto:Waited for selector: {tgt}")
+                except Exception as e:
+                    action_warnings.append(f"WARNING:auto:Selector wait failed - {str(e)}")
+            else:
+                # Default timeout wait
+                await PAGE.wait_for_timeout(timeout)
+                action_warnings.append(f"INFO:auto:Waited {timeout}ms")
+            return action_warnings
+
         # -- navigate / wait / scroll はロケータ不要
         if a == "navigate":
             if not _validate_url(tgt):
@@ -1103,11 +1339,6 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             await _stabilize_page()
             wait_warnings = await _wait_for_page_ready()
             action_warnings.extend(wait_warnings)
-            return action_warnings
-            
-        if a == "wait":
-            timeout = ms if ms > 0 else 1000
-            await PAGE.wait_for_timeout(timeout)
             return action_warnings
             
         if a == "wait_for_selector":
@@ -1325,8 +1556,38 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 action_warnings.append(f"WARNING:auto:close_popup failed - {str(e)}")
             return action_warnings
 
-        # -- ロケータ系
-        if not _validate_selector(tgt):
+        # -- ロケータ系 (Enhanced with Browser Use style index support)
+        
+        # First, check for index-based targeting (Browser Use style)
+        index = act.get("index")
+        if index is not None and INDEX_MODE and BROWSER_USE_IMPORTS_AVAILABLE:
+            # Index-based targeting
+            try:
+                resolved_selector = await _resolve_index_to_selector(index, act)
+                if resolved_selector:
+                    tgt = resolved_selector
+                    log.debug(f"Resolved index {index} to selector: {tgt}")
+                else:
+                    error_msg = f"Invalid index {index} - element not found in catalog"
+                    if is_final_retry:
+                        action_warnings.append(f"WARNING:auto:{error_msg}")
+                        return action_warnings
+                    else:
+                        raise Exception(error_msg)
+            except Exception as e:
+                error_msg = f"Index resolution failed for index {index}: {str(e)}"
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{error_msg}")
+                    return action_warnings
+                else:
+                    raise Exception(error_msg)
+        
+        # Fallback to traditional selector validation if no index or index resolution failed
+        if not tgt and index is None:
+            action_warnings.append(f"WARNING:auto:Skipping {a} - No target or index specified")
+            return action_warnings
+            
+        if tgt and not _validate_selector(tgt):
             action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
             return action_warnings
 
@@ -1606,6 +1867,71 @@ def execute_dsl():
             html = ""
             
         return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+
+
+@app.get("/element-catalog")
+def get_element_catalog():
+    """Get current element catalog for Browser Use style index-based targeting."""
+    try:
+        if not INDEX_MODE:
+            return jsonify({"error": "Index mode is disabled", "catalog": None})
+            
+        if not BROWSER_USE_IMPORTS_AVAILABLE:
+            return jsonify({"error": "Browser Use imports not available", "catalog": None})
+            
+        if not PAGE:
+            _run(_init_browser())
+            
+        # Refresh catalog if needed
+        if _ELEMENT_CATALOG is None:
+            success = _run(_refresh_element_catalog())
+            if not success:
+                return jsonify({"error": "Failed to generate catalog", "catalog": None})
+        
+        # Return short view for LLM consumption
+        catalog_data = {
+            "catalog_version": _ELEMENT_CATALOG.catalog_version,
+            "url": _ELEMENT_CATALOG.url,
+            "title": _ELEMENT_CATALOG.title,
+            "total_elements": len(_ELEMENT_CATALOG.entries),
+            "short_view": _ELEMENT_CATALOG.get_short_view()
+        }
+        
+        return jsonify({"catalog": catalog_data})
+        
+    except Exception as e:
+        log.error("get_element_catalog error: %s", e)
+        return jsonify({"error": str(e), "catalog": None})
+
+
+@app.post("/refresh-catalog")
+def refresh_catalog_endpoint():
+    """Endpoint to manually refresh the element catalog."""
+    try:
+        if not INDEX_MODE:
+            return jsonify({"success": False, "message": "Index mode is disabled"})
+            
+        if not BROWSER_USE_IMPORTS_AVAILABLE:
+            return jsonify({"success": False, "message": "Browser Use imports not available"})
+            
+        if not PAGE:
+            _run(_init_browser())
+            
+        success = _run(_refresh_element_catalog())
+        
+        if success:
+            return jsonify({
+                "success": True, 
+                "message": "Catalog refreshed successfully",
+                "catalog_version": _ELEMENT_CATALOG.catalog_version if _ELEMENT_CATALOG else None,
+                "element_count": len(_ELEMENT_CATALOG.entries) if _ELEMENT_CATALOG else 0
+            })
+        else:
+            return jsonify({"success": False, "message": "Failed to refresh catalog"})
+            
+    except Exception as e:
+        log.error("refresh_catalog_endpoint error: %s", e)
+        return jsonify({"success": False, "message": str(e)})
 
 
 @app.get("/source")

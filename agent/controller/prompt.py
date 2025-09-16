@@ -193,6 +193,66 @@ def build_prompt(
             f"[{n.highlightIndex}] <{n.tagName}> {n.text or ''} id={n.attributes.get('id')} class={n.attributes.get('class')}"
             for n in nodes
         )
+    
+    # Generate element catalog section for Browser Use style
+    element_catalog_section = ""
+    try:
+        # Try to import and get element catalog
+        from agent.element_catalog import format_catalog_for_llm
+        import os
+        
+        # Check if index mode is enabled
+        INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
+        
+        if INDEX_MODE and elements and isinstance(elements, DOMElementNode):
+            # Try to format elements as catalog-style
+            catalog_text = "## Browser Use スタイル要素カタログ\n"
+            catalog_text += "**推奨**: 以下のインデックス番号を使用して要素を指定してください（例: {\"action\": \"click\", \"index\": 0}）\n\n"
+            
+            # Format interactive elements in catalog style
+            if nodes:
+                for node in nodes[:30]:  # Limit to first 30 elements
+                    parts = [f"[{node.highlightIndex}]", f"<{node.tagName}>"]
+                    
+                    # Add role if available
+                    role = node.attributes.get('role')
+                    if role:
+                        parts.append(f"role={role}")
+                    
+                    # Add text content
+                    if node.text and node.text.strip():
+                        text = node.text.strip()[:50]  # Limit text length
+                        parts.append(f'"{text}"')
+                    
+                    # Add key attributes
+                    if node.attributes.get('id'):
+                        parts.append(f"id={node.attributes['id']}")
+                    
+                    # Add state hints
+                    states = []
+                    if node.attributes.get('disabled'):
+                        states.append('disabled')
+                    if node.attributes.get('checked'):
+                        states.append('checked')
+                    if states:
+                        parts.append(f"|{','.join(states)}|")
+                    
+                    catalog_text += " ".join(parts) + "\n"
+                
+                if len(nodes) > 30:
+                    catalog_text += f"... and {len(nodes) - 30} more elements (use refresh_catalog to see all)\n"
+            else:
+                catalog_text += "No interactive elements found. Use refresh_catalog to generate element catalog.\n"
+            
+            catalog_text += "\n**使用方法**: インデックス番号を指定して操作（例: click index=0, type index=1 value=\"テキスト\"）\n"
+            catalog_text += "**要素が見つからない場合**: scroll_to_text → refresh_catalog → 再試行\n"
+            element_catalog_section = catalog_text + "--------------------------------"
+        else:
+            element_catalog_section = "## 従来方式の要素指定\nCSS セレクタや XPath を使用してください\n--------------------------------"
+            
+    except ImportError:
+        # Fallback if catalog module not available
+        element_catalog_section = "## 要素選択\nCSS セレクタまたは XPath を使用してください\n--------------------------------"
 
     template = """
         あなたは、ウェブサイトの構造とユーザーインターフェースを深く理解し、常に最も効率的で安定した方法でタスクを達成しようとする、経験豊富なWebオートメーションスペシャリストです。
@@ -295,8 +355,28 @@ def build_prompt(
         - Shadow DOM は CSS ロケータで透過可能。XPath での貫通は不可のため使用しない。
 
     ブラウザを使用して Web を閲覧する際は、以下のルールに厳密に従ってください。
-        - [インデックス](例：[1] [2] [3]) は**参照補助のみ**に用い、実際の `target` には一切含めない。必要なら `eval_js` で当該ノードの固有属性(id/name/aria/testid/テキスト）を抽出してから選択子を確定する。
-        - 調査が必要な場合は、関連のありそうなページ遷移して情報を取得してください。遷移するページ数に制限はありません。情報が取得できた、もしくは取得できそうにない場合には、作業をしていたページに戻ってください。
+        
+        **【重要】Browser Use スタイルのインデックス指定方式**
+        - **優先原則**: 要素操作には `index=N` 形式を最優先で使用する（例：`{"action": "click", "index": 0}`）
+        - **要素カタログ**: ページ上の操作可能要素は番号付きカタログで管理される。[0] [1] [2] の形式で表示
+        - **インデックス解決**: `index=N` は自動的に堅牢なセレクタ群（getByRole/テキスト/ID/CSS/XPath）に解決される
+        - **カタログ更新**: 要素が見つからない場合、以下の順序で対応：
+          1. `scroll_to_text` でテキストを探してスクロール
+          2. `refresh_catalog` でカタログを更新
+          3. 新しいインデックスで再実行
+        - **エラー対応**: 構造化エラーレスポンスに基づく適切な次手選択：
+          * `CATALOG_OUTDATED` → `refresh_catalog` 実行
+          * `ELEMENT_NOT_FOUND` → `scroll_to_text` → `refresh_catalog` → 再試行
+          * `ELEMENT_NOT_INTERACTABLE` → 状態確認 → スクロール調整 → 再試行
+        - **後方互換**: `css=` や `xpath=` も引き続き使用可能だが、最終手段とする
+        - **完了判定**: タスク完了時は `is_done=true` を設定（`complete=true` との併用可）
+        
+        **新しいアクション**
+        - `refresh_catalog`: 要素カタログを更新（DOM変更後やナビゲーション後）
+        - `scroll_to_text`: 指定テキストを含む要素までスクロール
+        - `wait`: 拡張版待機（`until=network_idle|selector|timeout` 対応）
+        
+        調査が必要な場合は、関連のありそうなページ遷移して情報を取得してください。遷移するページ数に制限はありません。情報が取得できた、もしくは取得できそうにない場合には、作業をしていたページに戻ってください。
         - 情報検索を目的とする場合、最初の結果だけで満足せず、他の候補や関連情報がないか必ず探索してください。
         - 外部情報収集では主要 2〜3 ソースを訪問し、矛盾があれば追加 1 ソースで検証。要点（出典 URL を含む）は `memory` に要約保存し、最終報告時に `complete:true` とする。
         - WebページのDOMツリーに目的の情報や要素がなければ、すぐに別のページに移動する。
@@ -357,6 +437,14 @@ def build_prompt(
     { "action": "extract_text",    "target": "css=div.content" }
     { "action": "eval_js",        "script": "document.title" }
     { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
+    
+    # Browser Use スタイルの新しいアクション
+    { "action": "click",          "index": 0 }  # インデックス指定でクリック
+    { "action": "type",           "index": 1, "value": "テキスト入力" }  # インデックス指定で入力
+    { "action": "refresh_catalog" }  # 要素カタログを更新
+    { "action": "scroll_to_text", "text": "探すテキスト" }  # テキストまでスクロール
+    { "action": "wait",           "until": "network_idle", "ms": 3000 }  # ネットワーク待機
+    { "action": "wait",           "until": "selector", "target": "css=.loading", "ms": 5000 }  # セレクタ待機
 
     |ルール|
     1. ページ遷移を含むステップでは**必ず**遷移を最後にし、次ターンで `wait_for_selector` → 目的操作の順に分離する。
@@ -435,6 +523,25 @@ def build_prompt(
         def stop(reason: str, message: str = "") -> Dict:
             return {"action": "stop", "reason": reason, "message": message}
         #   LLMが確認やアドバイスが必要な時に使用。captcha、日付・価格確認、エラー続発時など
+        
+        # Browser Use スタイルの新しいアクション
+        # click_index: インデックス指定でクリック
+        def click_index(index: int) -> Dict:
+            return {"action": "click", "index": index}
+        # type_index: インデックス指定でテキスト入力
+        def type_index(index: int, value: str) -> Dict:
+            return {"action": "type", "index": index, "value": value}
+        # refresh_catalog: 要素カタログを更新
+        def refresh_catalog() -> Dict:
+            return {"action": "refresh_catalog"}
+        # scroll_to_text: 指定テキストまでスクロール
+        def scroll_to_text(text: str) -> Dict:
+            return {"action": "scroll_to_text", "text": text}
+        # wait_enhanced: 拡張版待機アクション
+        def wait_enhanced(until: str = "timeout", ms: int = 1000, target: str = None) -> Dict:
+            act = {"action": "wait", "until": until, "ms": ms}
+            if target: act["target"] = target
+            return act
 
     ============= ブラウザ操作 DSL 出力ルール（必読・厳守）======================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
@@ -451,25 +558,27 @@ def build_prompt(
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。
 
     ========================================================================
-    2. アクションは 15 種のみ
+    2. アクションは 19 種（Browser Use スタイル拡張込み）
 
     | action            | 必須キー                                   | 追加キー            | 説明                 |
     |-------------------|--------------------------------------------|--------------------|----------------------|
     | navigate          | target (URL)                              | —                  | URL へ遷移           |
-    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |
+    | click             | target (CSS/XPath) OR index (整数)        | —                  | 要素クリック         |
     | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |
-    | type              | target, value                             | —                  | テキスト入力         |
-    | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |
+    | type              | target OR index, value                    | —                  | テキスト入力         |
+    | wait              | ms (整数≥0)                               | until, target      | 指定条件まで待機     |
     | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |
     | go_back           | —                                         | —                  | ブラウザ戻る         |
     | go_forward        | —                                         | —                  | ブラウザ進む         |
-    | hover             | target                                    | —                  | ホバー               |
-    | select_option     | target, value                             | —                  | ドロップダウン選択   |
-    | press_key         | key                                       | target(**Enter時は必須**。それ以外は任意） | キー送信 |
+    | hover             | target OR index                           | —                  | ホバー               |
+    | select_option     | target OR index, value                    | —                  | ドロップダウン選択   |
+    | press_key         | key                                       | target/index       | キー送信             |
     | wait_for_selector | target, ms                                | —                  | 要素待機             |
-    | extract_text      | target                                    | attr (任意)        | テキスト取得         |
+    | extract_text      | target OR index                           | attr (任意)        | テキスト取得         |
     | eval_js           | script                                    | —                  | JavaScript 実行      |
     | stop              | reason                                    | message (任意)     | 実行停止・ユーザー入力待機 |
+    | refresh_catalog   | —                                         | —                  | 要素カタログ更新     |
+    | scroll_to_text    | text                                      | —                  | テキストまでスクロール |
 
     **上記以外の action 名・キーは絶対に出力しない。**
 
@@ -541,11 +650,23 @@ def build_prompt(
 "
         "{ "actions": [], "complete": true }
 "
+        # Browser Use スタイルの例
+        "{ "actions": [ { "action": "click", "index": 0 } ], "complete": false }
+"
+        "{ "actions": [ { "action": "type", "index": 2, "value": "検索テキスト" } ], "complete": false }
+"
+        "{ "actions": [ { "action": "refresh_catalog" } ], "complete": false }
+"
+        "{ "actions": [ { "action": "scroll_to_text", "text": "ログイン" } ], "complete": false }
+"
+        "{ "actions": [ { "action": "wait", "until": "network_idle", "ms": 3000 } ], "complete": false }
+"
     ========================================================================
 
     ---- 現在のページのDOMツリー ----
     {dom_text}
     --------------------------------
+    {element_catalog_section}
     ## これまでの会話履歴
     {past_conv}
     --------------------------------
@@ -561,6 +682,7 @@ def build_prompt(
     system_prompt = (
         template.replace("{MAX_STEPS}", str(MAX_STEPS))
         .replace("{dom_text}", dom_text)
+        .replace("{element_catalog_section}", element_catalog_section)
         .replace("{past_conv}", past_conv)
         .replace("{cmd}", cmd)
         .replace("{add_img}", add_img)
