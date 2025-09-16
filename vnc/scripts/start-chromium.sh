@@ -3,10 +3,24 @@ set -e
 export DISPLAY=:0
 export LANG=ja_JP.UTF-8
 
+ready_for_xset=false
 for i in {1..30}; do
-  xset q >/dev/null 2>&1 && break
+  if xset q >/dev/null 2>&1; then
+    ready_for_xset=true
+    break
+  fi
   echo "[chromium] waiting for X..." ; sleep 1
 done
+
+if [ "$ready_for_xset" = true ]; then
+  # Disable screen blanking and power management so the browser view
+  # stays visible even during long-running executions.
+  xset s off          || true
+  xset s noblank      || true
+  xset -dpms          || true
+else
+  echo "[chromium] warning: could not configure xset (X server not ready)"
+fi
 
 # 既定の起動 URL を about:blank にして予期せぬ外部ページへの遷移を防ぐ
 URL="${START_URL:-about:blank}"
