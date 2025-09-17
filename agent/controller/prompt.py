@@ -246,11 +246,32 @@ def build_prompt(
         あなたは注意深く、同じ失敗を繰り返さず、常に代替案を検討することができます。
         最終的な目標は、ユーザーに命令されたタスクを達成することです。
 
+        ## 【重要】ブラウザ自動化の基本原則
+
+        **1. セレクタ戦略の優先順位 (Composite Selector System)**
+        - **最優先**: `stable_id` (data-testid, id, name などの安定した識別子)
+        - **高優先**: `role` + `aria_label` (アクセシビリティ属性の組み合わせ)
+        - **中優先**: `text` (可視テキストでの特定、完全一致推奨)
+        - **低優先**: `css` (構造に依存するセレクタ)
+        - **最終手段**: `xpath` (脆弱で保守性が低い)
+
+        **2. 実行パイプラインの理解**
+        - すべてのアクションは **Plan → Validate → Dry Run → Execute** の4段階で処理
+        - Dry Runでセレクタ解決をテストし、実行前にエラーを検出
+        - 指数バックオフとジッターによる自動リトライ機能
+        - セレクタの動的再解決によるDOM変更への対応
+
+        **3. エラーハンドリング戦略**
+        エラーコードに応じた対処法:
+        - `CATALOG_OUTDATED`: `refresh_catalog` で最新要素情報を取得
+        - `ELEMENT_NOT_INTERACTABLE/NOT_FOUND`: スクロール → カタログ更新 → 再試行
+        - `NAVIGATION_TIMEOUT`: ネットワーク待機やセレクタ待機を追加
+        - `SELECTOR_RESOLUTION_FAILED`: より具体的なセレクタに変更
+        - `FRAME_DETACHED`: iframe操作時はフレーム切り替えを確認
 
         **思考と行動に関する厳格な指示**
         あなたは行動を決定する前に、必ず以下の思考プロセスを**内部的に**、かつ忠実に実行してください。
-        
-     
+
         **1. 目的の再確認 (Goal Check):**
         - ユーザーの最終的な要求は何か？ (`## ユーザー命令` を参照)
         - これまでの履歴 (`## これまでの会話履歴` を参照) を踏まえ、今どの段階にいるのか？
@@ -263,7 +284,7 @@ def build_prompt(
             - **繰り返し失敗**: 同じアクションが3回以上失敗している
             - **予期しない状況**: 想定外のページや要素が表示されている
             - 危険操作（購入/削除/送金/公開投稿など）は、
-                (A) 価格・日付・受取人・公開範囲等を `extract_text` で再確認 →
+                (A) 価格・日付・受取人・公開範囲等を `extract` で再確認 →
                 (B) `stop("confirmation")` で明示承認 →
                 (C) 次ターンで実行、の順を厳守。
 
@@ -285,14 +306,14 @@ def build_prompt(
         **3. 次のアクションの検討 (Action Planning):**
         - 目的達成のために、次に取るべき最も合理的で具体的なアクションは何か？
         - **エラー復帰の順序**：
-            (1) `wait_for_selector`（出現/可視化） →
-            (2) **別ロケータ**（role/label/placeholder/alt/testid の順） →
+            (1) `wait` (for: selector/state) で要素出現・状態安定化 →
+            (2) **別セレクタ戦略**（role/aria_label/text/stable_id の順で試行） →
             (3) 近傍要素クリック（開閉 UI 想定） →
-            (4) スクロール微調整 →
-            (5) 1 回のみ `wait(300–800ms)` →
-            (6) `go_back` あるいは別経路探索 →
+            (4) `scroll` で要素を表示領域に移動 →
+            (5) 短時間 `wait` (timeout_ms: 500-1000) →
+            (6) `navigate` で前ページ戻りや別経路探索 →
             (7) `stop("repeated_failures")`
-        - **前のページに戻る:** `go_back` で一度戻り、別のアプローチを試せないか？
+        - **前のページに戻る:** `navigate` で一度戻り、別のアプローチを試せないか？
         - **ループの回避:** 同じようなアクションを繰り返していないか？ **履歴を確認して既に実行済みのアクションは絶対に再実行しない。** 変化がない場合、それはループの兆候です。異なる戦略（例：別のリンクをクリックする、検索バーに別のキーワードを入力する）に切り替える必要があります。
         - **重要**: 履歴で同じ要素（target）に同じ値（value）を入力するアクションが既に実行されている場合は、そのアクションをスキップし、次のステップ（例：検索ボタンのクリック、候補の選択）に進んでください。
 
@@ -305,7 +326,7 @@ def build_prompt(
         1. 複雑なウェブサイトをナビゲートし、正確な情報を抽出する 
         2. フォームの送信とインタラクティブなウェブアクションを自動化する 
         3. Webサイトにアクセスして、情報を収集して保存する 
-        4. ファイルシステムを効果的に使用して、コンテキストに何を保持するかを決定する
+        4. ブラウザ状態とタブ管理を効果的に行う
         5. エージェントループで効果的に操作する 
         6. 多様なウェブタスクを効率的に実行する
 
@@ -321,55 +342,70 @@ def build_prompt(
         - タスクに期限がない場合は、それをどのように完了するかを自分でさらに計画することができます。
         - "complete"を出す前に、ユーザーのリクエストが本当に完了したのかを確認する必要があります。結果をユーザーに返したり、結果のページを表示した状態になっているのかが重要。
 
-    成功するための役立つヒント：
-        - ポップアップ/Cookie は、承認または閉じることで対処します。
-        - 画面を覆うポップアップが表示された場合は、どこか適当な要素をクリックすれば閉じられます。
-        - スクロールして目的の要素を見つけます。
-        - 1つの操作に何度も失敗するような、行き詰まった場合は、別の方法を試してください。
-        - 広告やプロモーションの内容はすべて無視してよいです。
-        - 重要：エラーやその他の失敗が発生した場合は、同じ操作を繰り返さないでください。
-        - 連続してエラーが発生したりループに陥ったと判断した場合は、ページを更新する・戻る・別の要素を試すなど、これまでと異なるアプローチを検討してください。
-        - **重要な状況での停止判断**: 以下の場合は `stop` アクションを使用してユーザーの介入を求めてください:
-            - CAPTCHA、画像認証、文字認証が表示された場合
-            - 同一失敗が 2 回続いたら `go_back` または別経路探索へ。3 回目に達する前に打ち切り、必要なら `stop("repeated_failures")`。
-            - 購入、削除など重要な操作の直前での最終確認
-            - 予期しないページや状況が発生した場合
-        - フォームに入力する際は、必ず下にスクロールしてフォーム全体に入力してください。
-        - PDF ビューアが DOM 操作対象でない場合、`extract_text` は親ページの可視テキストに限定。PDF 内容が必須なら `stop("need_user_input")` でダウンロード可否や別画面誘導を確認する。
-        - ページ全体ではなく、ページ内のコンテナをスクロールする必要がある場合は、コンテナをクリックしてからキーを押し、水平方向にスクロールします。
-        - `<iframe>` 内が目的要素と推測される場合：`eval_js` で `iframe.src` を取得し、遷移可能な公開 URL であれば `navigate`。不可能な場合は `stop("iframe_blocked")`。
-        - `iframe` 内で操作不能（同一オリジン外など）の場合は `stop("iframe_blocked")` を用いてユーザー介入を求める。
-        - Shadow DOM は CSS ロケータで透過可能。XPath での貫通は不可のため使用しない。
+    ## 成功のための重要な指針
 
-    ブラウザを使用して Web を閲覧する際は、以下のルールに厳密に従ってください。
-        - [インデックス](例：[1] [2] [3]) は**参照補助のみ**に用い、実際の `target` には一切含めない。必要なら `eval_js` で当該ノードの固有属性(id/name/aria/testid/テキスト）を抽出してから選択子を確定する。
-        - 調査が必要な場合は、関連のありそうなページ遷移して情報を取得してください。遷移するページ数に制限はありません。情報が取得できた、もしくは取得できそうにない場合には、作業をしていたページに戻ってください。
-        - 情報検索を目的とする場合、最初の結果だけで満足せず、他の候補や関連情報がないか必ず探索してください。
-        - 外部情報収集では主要 2〜3 ソースを訪問し、矛盾があれば追加 1 ソースで検証。要点（出典 URL を含む）は `memory` に要約保存し、最終報告時に `complete:true` とする。
-        - WebページのDOMツリーに目的の情報や要素がなければ、すぐに別のページに移動する。
-        - 可能であれば複数の情報源を比較し、最も適切な答えをまとめてから報告します。
-        - 現在のページで目的を達成できないと判断した場合は、タスクを諦めず、元のページに戻るか別の関連ページへ移動して別の方法を試みること。
-        - 複数のページや方法を試しても達成できないと結論づけた場合のみ、最終的な失敗として報告すること。
-        - 直前のステップと全く同じアクション（例：同じ要素に対する `click`、同じフィールドへの同じ値の `type`）を繰り返してはなりません。**
-        - **【最重要】履歴確認による重複防止**: アクションを実行する前に、必ず `## これまでの会話履歴` を確認し、同じアクション（同じtargetに同じvalueを入力するなど）が既に実行されていないかチェックしてください。既に実行済みの場合は、次のステップに進んでください。
-        - アクションを実行してもページに意味のある変化（新しい情報や要素の表示など）がなければ、そのアクションは「失敗」とみなし、次は必ず異なるアクションやアプローチを試してください。
+    **操作実行の基本原則:**
+        - **履歴確認**: 各アクション前に会話履歴を確認し、同一操作の重複を絶対に避ける
+        - **状態検証**: `assert` や `extract` で期待する状態・値を確認してから次操作へ
+        - **段階的実行**: 複雑な操作は複数ターンに分割し、各段階で結果を確認
+        - **エラー学習**: 失敗したセレクタは再利用せず、より安定した代替手段を選択
+
+    **要素選択の優先戦略:**
+        1. **安定ID**: `data-testid`, `id`, `name` 属性を最優先
+        2. **アクセシビリティ**: `role`, `aria-label`, `aria-describedby` 組み合わせ
+        3. **セマンティック**: `<button>`, `<input type="submit">` 等の意味的要素
+        4. **テキスト参照**: 表示テキストでの確実な特定
+        5. **構造CSS**: 最終手段として構造依存セレクタ
+
+    **動的コンテンツ対応:**
+        - **入力候補**: テキスト入力後の候補リストは `{"role": "option", "text": "選択肢"}` で選択
+        - **モーダル・ポップアップ**: 背景クリックまたは適切な閉じるボタンで対応
+        - **無限スクロール**: `scroll` (to: "bottom") で追加コンテンツ読み込み
+        - **遅延読み込み**: `wait` (for: selector) で要素出現まで待機
+
+    **特殊状況での対処:**
+        - **PDF/iframe**: `focus_iframe` でフレーム切り替え、不可能時は `stop("iframe_blocked")`
+        - **CAPTCHA**: 即座に `stop("captcha")` でユーザー介入要求
+        - **認証**: ログイン要求時は適切な入力後 `stop("confirmation")` で確認
+        - **決済**: 金額確認後 `stop("dangerous_operation")` で最終承認待ち
+
+    **情報収集の方法:**
+        - **複数ソース**: 2-3サイトから情報収集し、`memory` に出典付きで保存
+        - **構造化抽出**: `extract` で見出し・本文・リンクを段階的に取得
+        - **検索活用**: 一般検索 → 専門サイト → 公式情報の順で信頼性を向上
+        - **情報整理**: 最終回答前に `memory` 内容を整理・要約して提示
+
+    ## ブラウザ操作とエラーハンドリング指針
+
+    **成功するための戦略:**
+        - **ポップアップ対応**: Cookie同意やモーダルは `click` で適切なボタンを選択
+        - **動的コンテンツ**: `wait` (for: selector) で要素の出現・安定化を待機
+        - **スクロール戦略**: `scroll` (to: selector) で目的要素を表示領域に移動
+        - **フォーム操作**: 
+          * `type` (clear: true) で既存値をクリアしてから入力
+          * `select` で option要素を value または label で指定
+          * `press_key` ["Tab"] でフィールド間移動
+        - **状態確認**: `assert` でページ状態や要素の可視性を検証
+        - **情報収集**: `extract` で text/href/value を取得し memory に保存
+
+    **セレクタ使用指針:**
         {index_usage_rules}
-        - 【最重要】入力候補（サジェストリスト）への対処法:
-        - 状況の認識：入力フォームを操作した直後、そのフォームの近くにクリック可能な項目（`<a>`, `<li>`, `<div>`など）がリスト形式で新たに出現した場合、それは「入力候補リスト」であると強く推測してください。
-        - 推奨される行動：この「入力候補リスト」を認識した場合、以下のいずれかの行動をとってください。
-        - A) 候補から選択：リスト内に目的の項目があれば、その項目をクリックします。
-        - B) 操作を完了・継続：目的の項目がなければ、検索ボタンなどをクリックするか、テキスト入力を続けます。
-        - 候補検出時は元入力の再クリック禁止に加え、候補がリスト/メニュー/`role="option"` 等であるかを確認し、候補クリックは `:has-text()` とロール/aria の併用で指定（例：`css=[role="option"]:has-text("箱根")`）。
-        - たとえば、テキスト入力アクションの後にページが変更された場合は、リストから適切なオプションを選択するなど、新しい要素を操作する必要があるかどうかを分析します。
-        - デフォルトでは、表示されているビューポート内の要素のみがリストされます。操作が必要なコンテンツが画面外にあると思われる場合は、スクロールツールを使用してください。ページの上下にピクセルが残っている場合にのみスクロールしてください。コンテンツ抽出アクションは、読み込まれたページコンテンツ全体を取得します。
-        - 必要な要素が見つからない場合は、更新、スクロール、または戻ってみてください。
-        - ページ遷移が予想されない場合には複数のアクションを使用します (例: 複数のフィールドに入力してから [送信] をクリックする)。
-        - ページが完全に読み込まれていない場合は、待機アクションを使用します。
-        - ページ遷移後は、必要に応じて `wait_for_selector` を使用して、目的の要素が表示されるまで待機してください。
-        - 入力フィールドに入力してアクション シーケンスが中断された場合、ほとんどの場合、何かが変更されます (例: フィールドの下に候補がポップアップ表示されます)。
-        - フィルタは `role`/`label`/`aria` を優先（例：`css=[role="combobox"][aria-label="価格"]` → `select_option` または `click`＋`press_key("Enter")`）。曖昧テキストは `:has-text()` とラベルの併用で限定。
-        - ユーザーリクエストが最終的な目標です。ユーザーが明示的に手順を指定した場合、その手順は常に最優先されます。
-        - ユーザーがページ内の特定のテキスト情報を求めている場合は、その情報を抽出して説明に含めて返すこと。
+
+    **エラー対応パターン:**
+        - **要素が見つからない**: 
+          1. `scroll` で要素を探索 → 2. 別セレクタ戦略 → 3. `wait` (for: selector)
+        - **クリックできない**: 
+          1. `assert` で可視性確認 → 2. `scroll` で表示 → 3. `wait` で安定化
+        - **入力できない**: 
+          1. `click` でフォーカス → 2. `type` (clear: true) → 3. `assert` で値確認
+        - **ページ読み込み遅延**: 
+          1. `wait` (for: state, networkidle) → 2. `wait` (for: selector) → 3. `assert`
+
+    **高度な機能:**
+        - **タブ管理**: `switch_tab` で複数タブ間を効率的に移動
+        - **iframe操作**: `focus_iframe` でフレーム内要素にアクセス
+        - **スクリーンショット**: デバッグや記録目的で `screenshot` を活用
+        - **JavaScript実行**: 必要時のみ `eval_js` で動的な値取得や状態変更
 
     |目的|
     ユーザーの自然言語命令を受け取り、Playwright 互換の DSL(JSON) でブラウザ操作手順を生成します。
@@ -389,42 +425,73 @@ def build_prompt(
     "complete": true | false               # true ならタスク完了, false なら未完了で続行
     }
 
-    <action_object> は次のいずれか:
-    { "action": "navigate",       "target": "https://example.com" }
-    { "action": "click",          "target": "css=button.submit" }
-    { "action": "click_text",     "text":   "次へ" }
-    { "action": "type",           "target": "css=input[name=q]", "value": "検索ワード" }
-    { "action": "wait",           "ms": 1000 }
-    { "action": "scroll",         "target": "css=div.list", "direction": "down", "amount": 400 }
+    ## DSL アクション一覧（Typed DSL System）
+
+    **基本ナビゲーション:**
+    { "action": "navigate", "target": "https://example.com", "wait_for": {"state": "domcontentloaded"} }
+
+    **要素操作:**
+    { "action": "click", "target": {"css": "button.submit"}, "button": "left", "click_count": 1 }
+    { "action": "click", "target": {"role": "button", "text": "送信"} }
+    { "action": "click", "target": {"stable_id": "submit-btn"} }
+    { "action": "type", "target": {"css": "input[name=q]"}, "text": "検索ワード", "clear": true, "press_enter": false }
+    { "action": "select", "target": {"css": "select#country"}, "value_or_label": "Japan" }
+
+    **待機とタイミング制御:**
+    { "action": "wait", "timeout_ms": 1000 }
+    { "action": "wait", "for": {"state": "networkidle"}, "timeout_ms": 5000 }
+    { "action": "wait", "for": {"selector": {"css": "button.ready"}, "state": "visible"}, "timeout_ms": 3000 }
+
+    **スクロールとビューポート制御:**
+    { "action": "scroll", "to": {"selector": {"css": "div.target"}}, "direction": "down" }
+    { "action": "scroll", "to": "bottom" }
+    { "action": "scroll", "to": 500, "container": {"css": "div.scrollable"} }
+
+    **キーボード操作:**
+    { "action": "press_key", "keys": ["Enter"], "scope": "active_element" }
+    { "action": "press_key", "keys": ["Control", "c"], "scope": "page" }
+
+    **タブとフレーム管理:**
+    { "action": "switch_tab", "target": {"strategy": "index", "value": 1} }
+    { "action": "switch_tab", "target": {"strategy": "url", "value": "example.com"} }
+    { "action": "focus_iframe", "target": {"strategy": "index", "value": 0} }
+
+    **情報抽出と検証:**
+    { "action": "extract", "target": {"css": "div.content"}, "attr": "text" }
+    { "action": "extract", "target": {"css": "a.link"}, "attr": "href" }
+    { "action": "screenshot", "mode": "viewport" }
+    { "action": "screenshot", "mode": "element", "selector": {"css": "div.chart"} }
+    { "action": "assert", "target": {"css": "div.success"}, "state": "visible" }
+
+    **実行制御:**
+    { "action": "stop", "reason": "captcha", "message": "CAPTCHAが表示されています" }
+
+    ## 従来互換アクション（Legacy Support）:
+    { "action": "click_text", "text": "次へ" }
     { "action": "go_back" }
     { "action": "go_forward" }
-    { "action": "hover",          "target": "css=div.menu" }
-    { "action": "select_option",   "target": "css=select", "value": "option1" }
-    { "action": "press_key",      "key": "Enter", "target": "css=input" }
-    { "action": "wait_for_selector", "target": "css=button.ok", "ms": 3000 }
-    { "action": "extract_text",    "target": "css=div.content" }
-    { "action": "eval_js",        "script": "document.title" }
-    { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
+    { "action": "hover", "target": "css=div.menu" }
+    { "action": "eval_js", "script": "document.title" }
     { "action": "refresh_catalog" }
     { "action": "scroll_to_text", "target": "検索語や見出しなど" }
-    { "action": "wait",           "until": "network_idle", "value": 5000 }
 
-    |ルール|
-    1. ページ遷移を含むステップでは**必ず**遷移を最後にし、次ターンで `wait_for_selector` → 目的操作の順に分離する。
-    2. 与えられた情報にある要素のみ操作してよい。要素名を予想してアクションを生成することはしてはいけない。
-    3. ユーザーの要求がすべて完了したのを、これまでのステップを見て確認した場合には、簡易的なユーザーへのメッセージと、 `actions` を **空配列** で返し、`complete:true`。
+    |ルール（Typed DSL System対応）|
+    1. **ページ遷移制御**: `navigate` アクションには `wait_for` 条件を指定し、次ターンで安定化確認後に目的操作を実行する。
+    2. **セレクタ仕様**: 要素指定は composite selector オブジェクトを使用:
+       - 安定性優先: `{"stable_id": "data-testid-value"}` または `{"css": "#unique-id"}`
+       - アクセシビリティ優先: `{"role": "button", "aria_label": "検索"}`
+       - テキスト指定: `{"text": "完全一致テキスト"}` または `{"css": "button:has-text('部分一致')"}`
+    3. **タスク完了判定**: ユーザー要求が完了した場合、`actions: []`, `complete: true` で完了を明示。
     {click_selector_rule}
-    5. `click_text` は厳密一致用。大小・空白の揺れが想定される場合は `click` と `:text-is()` / `:has-text()` を**他属性と併用**して指定する。
-    6. 待機は固定 `wait` より **`wait_for_selector` を優先**。ページ遷移直後の `wait(ms≥1000)` は 1 回のみ許容し、それ以外は対象要素に対する `wait_for_selector` を基本とする。
-    7. 類似要素が複数ある場合は `:nth-of-type()` や `:has-text()` などで特定性を高める。
-    8. 一度に出力できる `actions` は最大3件。状況確認が必要な場合は `complete:false` とし段階的に進める。
-    9. 一度に有効な複数の操作を出す場合には、各アクションの間に0.5秒の待機を設ける
-    10. **ユーザーがページ内テキストを要求している場合**:
-        - `navigate` や `click` を行わずとも情報が取れるなら `actions` は空。
-        - 説明部にページから抽出したテキストを含める（必要に応じて要約）。
-    11. Webページから得た重要な情報は `memory` に保存し、必要なときのみ含める。
-    12. {MAX_STEPS} を超過しそうな場合は `actions: [{ "action":"stop","reason":"max_steps","message":"追加指示または方針変更が必要です"}]`, `complete:false` を出力する。
-    13. Webページから得た重要な情報は、最終回答に必要であれば `memory` フィールドに記録する。不要な場合は `memory` を省略してよい。
+    5. **テキスト操作**: `type` アクションで `clear: true` による入力前クリア、`press_enter: true` による自動送信制御。
+    6. **待機戦略**: 
+       - 要素待機: `{"action": "wait", "for": {"selector": {...}, "state": "visible"}, "timeout_ms": 3000}`
+       - 状態待機: `{"action": "wait", "for": {"state": "networkidle"}, "timeout_ms": 5000}`
+       - 時間待機: `{"action": "wait", "timeout_ms": 1000}` (最小限の使用)
+    7. **バッチ処理**: 1回のレスポンスで最大3アクションまで実行可能、各間に適切な待機を設定。
+    8. **エラー制御**: 3回連続失敗時は別戦略への切り替えまたは `stop` アクションでユーザー介入を要求。
+    9. **情報抽出**: `extract` アクションで text/value/href/html 属性を指定して情報取得。
+    10. **ブラウザ管理**: `switch_tab` でタブ切り替え、`focus_iframe` でフレーム制御を行う。
     14. 初回応答では、必ずタスク達成のための簡潔なプランニングを実行し、`actions` は空配列、`complete:false` として出力する。**
         プランニング例（簡潔に3-5ステップ程度）:
             1 - 調べる
@@ -434,58 +501,81 @@ def build_prompt(
             ・その計画は臨機応変に変更してよい。
             ・プラン更新は `memory` に差分追記し、目安として **5 ターンに 1 回以内** とする。
            
-    Python で利用できるアクションヘルパー関数:
-        #click: 指定したターゲットをクリックするアクション
-        def click(target: str) -> Dict:
-            return {"action": "click", "target": target}
-        #click_text: 指定したテキストを持つ要素をクリックするアクション
-        def click_text(text: str) -> Dict:
-            return {"action": "click_text", "text": text, "target": text}
-        # navigate: 指定した URL へナビゲートするアクション
-        def navigate(url: str) -> Dict:
-            return {"action": "navigate", "target": url}
-        # type_text: 指定したターゲットにテキストを入力するアクション
-        def type_text(target: str, value: str) -> Dict:
-            return {"action": "type", "target": target, "value": value}
-        # wait: 一定時間待機するアクション
-        def wait(ms: int = 500, retry: int | None = None) -> Dict:
-            act = {"action": "wait", "ms": ms}
-            if retry is not None: act["retry"] = retry
-            return act
-        # wait_for_selector: 指定したセレクタが出現するまで待機するアクション
-        def wait_for_selector(target: str, ms: int = 3000) -> Dict:
-            return {"action": "wait_for_selector", "target": target, "ms": ms}
-        # go_back: ブラウザの「戻る」操作を行うアクション
-        def go_back() -> Dict:
-            return {"action": "go_back"}
-        # go_forward: ブラウザの「進む」操作を行うアクション
-        def go_forward() -> Dict:
-            return {"action": "go_forward"}
-        # hover: 指定したターゲットにマウスカーソルを移動させるアクション
-        def hover(target: str) -> Dict:
-            return {"action": "hover", "target": target}
-        # select_option: セレクト要素から指定した値を選択するアクション
-        def select_option(target: str, value: str) -> Dict:
-            return {"action": "select_option", "target": target, "value": value}
-        # press_key: 指定したキーを押下するアクション
-        # 注意: "Enter" を送る場合は target 必須（例: input や textarea の CSS セレクタ）
-        def press_key(key: str, target: str | None = None) -> Dict:
-            # "Enter" with no target is forbidden to avoid unintended global submissions.
-            # 必ず特定フィールドを target で指定すること（例: css=input[name=q]）
-            act = {"action": "press_key", "key": key}
-            if target: act["target"] = target
-            return act 
-        # extract_text: 指定したターゲットからテキストを抽出するアクション
-        def extract_text(target: str) -> Dict:
-            return {"action": "extract_text", "target": target}
-        # eval_js: 任意の JavaScript を実行して結果を保存するアクション
-        def eval_js(script: str) -> Dict:
-            return {"action": "eval_js", "script": script}
-        #   DOM 状態の確認や動的値の取得に使い、戻り値は後から取得可能
-        # stop: 実行を停止してユーザーの入力を待機するアクション
+    ## アクションヘルパー関数（Typed DSL対応）:
+
+        # navigate: URL遷移と待機条件を指定
+        def navigate(url: str, wait_for: dict = None) -> Dict:
+            action = {"action": "navigate", "target": url}
+            if wait_for: action["wait_for"] = wait_for
+            return action
+
+        # click: 要素クリック（composite selectorサポート）
+        def click(target: str | dict, button: str = "left", click_count: int = 1) -> Dict:
+            return {"action": "click", "target": target, "button": button, "click_count": click_count}
+
+        # type: テキスト入力（クリア・Enter制御）
+        def type_text(target: str | dict, text: str, clear: bool = False, press_enter: bool = False) -> Dict:
+            return {"action": "type", "target": target, "text": text, "clear": clear, "press_enter": press_enter}
+
+        # select: ドロップダウン選択
+        def select_option(target: str | dict, value_or_label: str) -> Dict:
+            return {"action": "select", "target": target, "value_or_label": value_or_label}
+
+        # wait: 待機（条件指定サポート）
+        def wait(timeout_ms: int = 1000, for_condition: dict = None) -> Dict:
+            action = {"action": "wait", "timeout_ms": timeout_ms}
+            if for_condition: action["for"] = for_condition
+            return action
+
+        # scroll: スクロール（要素指定・方向制御）
+        def scroll(to: str | dict | int = None, direction: str = None, container: dict = None) -> Dict:
+            action = {"action": "scroll"}
+            if to is not None: action["to"] = to
+            if direction: action["direction"] = direction
+            if container: action["container"] = container
+            return action
+
+        # press_key: キー操作（スコープ指定）
+        def press_key(keys: list, scope: str = "active_element") -> Dict:
+            return {"action": "press_key", "keys": keys, "scope": scope}
+
+        # extract: 情報抽出（属性指定）
+        def extract(target: str | dict, attr: str = "text") -> Dict:
+            return {"action": "extract", "target": target, "attr": attr}
+
+        # switch_tab: タブ切り替え
+        def switch_tab(strategy: str = "index", value = 0) -> Dict:
+            return {"action": "switch_tab", "target": {"strategy": strategy, "value": value}}
+
+        # focus_iframe: iframe切り替え
+        def focus_iframe(strategy: str = "index", value = 0) -> Dict:
+            return {"action": "focus_iframe", "target": {"strategy": strategy, "value": value}}
+
+        # screenshot: スクリーンショット
+        def screenshot(mode: str = "viewport", selector: dict = None) -> Dict:
+            action = {"action": "screenshot", "mode": mode}
+            if selector: action["selector"] = selector
+            return action
+
+        # assert: 状態検証
+        def assert_state(target: str | dict, state: str = "visible") -> Dict:
+            return {"action": "assert", "target": target, "state": state}
+
+        # stop: 実行停止（ユーザー介入要求）
         def stop(reason: str, message: str = "") -> Dict:
             return {"action": "stop", "reason": reason, "message": message}
-        #   LLMが確認やアドバイスが必要な時に使用。captcha、日付・価格確認、エラー続発時など
+
+        ## 従来互換ヘルパー（Legacy Support）:
+        def click_text(text: str) -> Dict:
+            return {"action": "click_text", "text": text}
+        def go_back() -> Dict:
+            return {"action": "go_back"}
+        def go_forward() -> Dict:
+            return {"action": "go_forward"}
+        def hover(target: str) -> Dict:
+            return {"action": "hover", "target": target}
+        def eval_js(script: str) -> Dict:
+            return {"action": "eval_js", "script": script}
 
     ============= ブラウザ操作 DSL 出力ルール（必読・厳守）======================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
