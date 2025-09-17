@@ -270,6 +270,18 @@ def get_elements() -> list:
         raise
 
 
+def get_element_catalog(refresh: bool = False) -> dict:
+    """Retrieve the element catalog from the automation server."""
+    params = {"refresh": "true"} if refresh else None
+    try:
+        res = requests.get(f"{VNC_API}/catalog", params=params, timeout=(5, 30))
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        log.error("get_element_catalog error: %s", e)
+        raise
+
+
 def get_extracted() -> list:
     """Retrieve texts captured via extract_text action."""
     try:

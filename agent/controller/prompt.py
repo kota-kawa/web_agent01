@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Any, Dict, Optional
 from ..utils.html import strip_html
 from ..browser.dom import DOMElementNode
 
@@ -50,6 +51,9 @@ def build_prompt(
     screenshot: bool = False,
     elements: DOMElementNode | list | None = None,
     error: str | None = None,
+    *,
+    element_catalog_text: str = "",
+    catalog_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Return full system prompt for the LLM."""
 
@@ -194,6 +198,49 @@ def build_prompt(
             for n in nodes
         )
 
+    catalog_metadata = catalog_metadata or {}
+    index_mode_active = catalog_metadata.get("index_mode_enabled", True)
+    catalog_version = catalog_metadata.get("catalog_version")
+    catalog_details = catalog_metadata.get("metadata", {}) or {}
+
+    catalog_text = element_catalog_text.strip()
+    if catalog_text:
+        header_lines = []
+        if catalog_version:
+            header_lines.append(f"catalog_version: {catalog_version}")
+        url_hint = catalog_details.get("url")
+        if url_hint:
+            header_lines.append(f"url: {url_hint}")
+        header = "\n".join(header_lines)
+        catalog_block = f"{header}\n{catalog_text}" if header else catalog_text
+    else:
+        if index_mode_active:
+            catalog_block = "(要素カタログは取得できませんでした)"
+        else:
+            catalog_block = "(INDEX_MODE disabled: カタログは提供されません)"
+
+    if index_mode_active:
+        index_usage_rules = (
+            "        - **インタラクティブ要素の操作は原則として `index=N` を target に指定する。** 下部のカタログを参照し、同じ失敗を繰り返さないでください。\n"
+            "        - 要素が見つからない/操作できない場合は `scroll_to_text` で該当テキスト付近に移動し、`refresh_catalog` でカタログを更新してから index 指定で再試行してください。\n"
+            "        - Playwright から返る `error.code` に応じて行動を変える:\n"
+            "            - `CATALOG_OUTDATED`: `refresh_catalog` を実行して最新カタログを取得。\n"
+            "            - `ELEMENT_NOT_INTERACTABLE` / `ELEMENT_NOT_FOUND`: `scroll_to_text` → `refresh_catalog` → index 指定で再試行。\n"
+            "            - `NAVIGATION_TIMEOUT`: `wait` アクションで `until` (`network_idle` や `selector`) を活用し、安定化させてから再挑戦。\n"
+            "        - `wait` アクションは `until=network_idle|selector|timeout` と `value` を適切に設定して使用する。\n"
+            "        - CSS/XPath を直接指定するのは最後の手段とし、どうしても index で指定できない場合のみ利用する。\n"
+        )
+        click_selector_rule = (
+            "    4. `click` や `type` の `target` は基本的に `index=N` を指定する。index で操作できない場合のみ、ユニークな属性を用いた `css=` または `xpath=` を慎重に選択する。"
+        )
+    else:
+        index_usage_rules = (
+            "        - INDEX_MODE が無効のため、従来通り `css=` / `xpath=` などの堅牢なセレクタを直接指定してください。\n"
+        )
+        click_selector_rule = (
+            "    4. `click` はCSSセレクタで指定します。**非表示要素(`aria-hidden='true'`など)を避け、ユニークな属性(id, name, data-testidなど)を優先してください。**"
+        )
+
     template = """
         あなたは、ウェブサイトの構造とユーザーインターフェースを深く理解し、常に最も効率的で安定した方法でタスクを達成しようとする、経験豊富なWebオートメーションスペシャリストです。
         あなたは注意深く、同じ失敗を繰り返さず、常に代替案を検討することができます。
@@ -306,6 +353,7 @@ def build_prompt(
         - 直前のステップと全く同じアクション（例：同じ要素に対する `click`、同じフィールドへの同じ値の `type`）を繰り返してはなりません。**
         - **【最重要】履歴確認による重複防止**: アクションを実行する前に、必ず `## これまでの会話履歴` を確認し、同じアクション（同じtargetに同じvalueを入力するなど）が既に実行されていないかチェックしてください。既に実行済みの場合は、次のステップに進んでください。
         - アクションを実行してもページに意味のある変化（新しい情報や要素の表示など）がなければ、そのアクションは「失敗」とみなし、次は必ず異なるアクションやアプローチを試してください。
+        {index_usage_rules}
         - 【最重要】入力候補（サジェストリスト）への対処法:
         - 状況の認識：入力フォームを操作した直後、そのフォームの近くにクリック可能な項目（`<a>`, `<li>`, `<div>`など）がリスト形式で新たに出現した場合、それは「入力候補リスト」であると強く推測してください。
         - 推奨される行動：この「入力候補リスト」を認識した場合、以下のいずれかの行動をとってください。
@@ -357,12 +405,15 @@ def build_prompt(
     { "action": "extract_text",    "target": "css=div.content" }
     { "action": "eval_js",        "script": "document.title" }
     { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
+    { "action": "refresh_catalog" }
+    { "action": "scroll_to_text", "target": "検索語や見出しなど" }
+    { "action": "wait",           "until": "network_idle", "value": 5000 }
 
     |ルール|
     1. ページ遷移を含むステップでは**必ず**遷移を最後にし、次ターンで `wait_for_selector` → 目的操作の順に分離する。
     2. 与えられた情報にある要素のみ操作してよい。要素名を予想してアクションを生成することはしてはいけない。
     3. ユーザーの要求がすべて完了したのを、これまでのステップを見て確認した場合には、簡易的なユーザーへのメッセージと、 `actions` を **空配列** で返し、`complete:true`。
-    4. `click` はCSSセレクタで指定します。**非表示要素(`aria-hidden='true'`など)を避け、ユニークな属性(id, name, data-testidなど)を優先してください。**
+    {click_selector_rule}
     5. `click_text` は厳密一致用。大小・空白の揺れが想定される場合は `click` と `:text-is()` / `:has-text()` を**他属性と併用**して指定する。
     6. 待機は固定 `wait` より **`wait_for_selector` を優先**。ページ遷移直後の `wait(ms≥1000)` は 1 回のみ許容し、それ以外は対象要素に対する `wait_for_selector` を基本とする。
     7. 類似要素が複数ある場合は `:nth-of-type()` や `:has-text()` などで特定性を高める。
@@ -543,6 +594,9 @@ def build_prompt(
 "
     ========================================================================
 
+    ## インタラクティブ要素カタログ (index指定)
+    {catalog_block}
+
     ---- 現在のページのDOMツリー ----
     {dom_text}
     --------------------------------
@@ -565,6 +619,9 @@ def build_prompt(
         .replace("{cmd}", cmd)
         .replace("{add_img}", add_img)
         .replace("{error_line}", error_line)
+        .replace("{catalog_block}", catalog_block)
+        .replace("{index_usage_rules}", index_usage_rules)
+        .replace("{click_selector_rule}", click_selector_rule)
     )
 
     # "---- 操作候補要素一覧 (操作対象は番号で指定 & この一覧にない要素の操作も可能 あくまで参考) ----\n"

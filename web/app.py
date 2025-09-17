@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from typing import Any, Dict
 import requests
 from flask import (
     Flask,
@@ -25,6 +26,11 @@ from agent.controller.prompt import build_prompt
 from agent.controller.async_executor import get_async_executor
 from agent.utils.history import load_hist, save_hist, append_history_entry
 from agent.utils.html import strip_html
+from agent.element_catalog import (
+    get_catalog_for_prompt,
+    get_expected_version as get_catalog_expected_version,
+    is_enabled as is_catalog_enabled,
+)
 
 # --------------- Flask & Logger ----------------------------------
 app = Flask(__name__)
@@ -257,7 +263,29 @@ def execute():
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg)
+
+    catalog_prompt_text = ""
+    catalog_data: Dict[str, Any] = {"abbreviated": [], "metadata": {}, "catalog_version": None}
+    expected_catalog_version = None
+    if is_catalog_enabled():
+        try:
+            catalog_info = get_catalog_for_prompt(refresh=False)
+            catalog_prompt_text = catalog_info.get("prompt_text", "")
+            catalog_data = catalog_info.get("catalog", {}) or {}
+            expected_catalog_version = catalog_data.get("catalog_version") or get_catalog_expected_version()
+        except Exception as catalog_error:
+            log.error("Failed to fetch element catalog: %s", catalog_error)
+
+    prompt = build_prompt(
+        cmd,
+        page,
+        hist,
+        bool(shot),
+        elements,
+        err_msg,
+        element_catalog_text=catalog_prompt_text,
+        catalog_metadata=catalog_data,
+    )
     
     # Call LLM first
     res = call_llm(prompt, model, shot)
@@ -275,9 +303,17 @@ def execute():
             # Use pre-initialized executor for immediate execution
             executor = get_preinitialized_async_executor()
             task_id = executor.create_task()
-            
+
             # Start Playwright execution in parallel (immediate submission)
-            success = executor.submit_playwright_execution(task_id, execute_dsl, actions)
+            payload_extra = {}
+            if is_catalog_enabled() and expected_catalog_version:
+                payload_extra["expected_catalog_version"] = expected_catalog_version
+            success = executor.submit_playwright_execution(
+                task_id,
+                execute_dsl,
+                actions,
+                payload=payload_extra or None,
+            )
             
             if success:
                 # Start parallel data fetching immediately (no delay)

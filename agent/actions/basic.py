@@ -94,11 +94,21 @@ def click_blank_area() -> Dict:
 
 def close_popup() -> Dict:
     """Close popups by clicking on blank areas.
-    
+
     Uses popup detection and blank area clicking to close modals/overlays
     without needing to target specific close buttons or elements.
-    
+
     Returns:
         Dictionary representing a popup close action
     """
     return {"action": "close_popup"}
+
+
+def refresh_catalog() -> Dict:
+    """Refresh the element catalog prior to issuing index-based commands."""
+    return {"action": "refresh_catalog"}
+
+
+def scroll_to_text(text: str) -> Dict:
+    """Scroll to the area containing the specified text snippet."""
+    return {"action": "scroll_to_text", "target": text}
