@@ -2,9 +2,11 @@ import os
 import logging
 from ..utils.html import strip_html
 from ..browser.dom import DOMElementNode
+from ..browser.vnc import get_catalog, format_catalog_for_display
 
 log = logging.getLogger("controller")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
+INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
 
 
 def _extract_recent_warnings(hist, max_warnings=5):
@@ -68,7 +70,18 @@ def build_prompt(
         else ""
     )
     elem_lines = ""
+    catalog_info = ""
     error_line = ""
+    
+    # Try to get element catalog if INDEX_MODE is enabled
+    if INDEX_MODE:
+        try:
+            catalog_data = get_catalog()
+            if catalog_data:
+                catalog_info = format_catalog_for_display(catalog_data)
+        except Exception as e:
+            log.warning("Failed to get catalog: %s", e)
+    
     if (
         error or hist
     ):  # Include error processing if there's either an explicit error or conversation history
@@ -210,6 +223,13 @@ def build_prompt(
 
         **2. 状況分析 (Observation & Analysis):**
         - **画面情報:** `現在のページのDOMツリー` と `スクリーンショット` から、ページの構造、表示されている要素、インタラクティブな部品（ボタン、リンク、フォームなど）を完全に把握します。
+        - **要素カタログ:** INDEX_MODEが有効な場合、要素カタログを利用して効率的で正確な要素指定を行います。カタログにある要素は `index=N` で指定できます（例: index=0, index=5）。
+        - **要素指定の優先順位:**
+            1. **インデックス指定（推奨）**: カタログにある要素は `index=N` で指定（例: index=0）
+            2. **ロール + テキスト**: `css=[role="button"]:has-text("検索")` 
+            3. **ID/data-testid**: `css=#submit-btn` や `css=[data-testid="login"]`
+            4. **aria-label**: `css=[aria-label="検索ボタン"]`
+            5. **最後の手段**: 複雑なCSSセレクタやXPath
         - **特別な状況の検出**: 以下の状況では `stop` アクションの使用を検討してください:
             - **CAPTCHA検出**: ページにreCAPTCHA、画像認証、文字認証などが表示されている
             - **重要な確認**: 価格、日付、重要な個人情報の入力前の最終確認
@@ -238,13 +258,16 @@ def build_prompt(
         **3. 次のアクションの検討 (Action Planning):**
         - 目的達成のために、次に取るべき最も合理的で具体的なアクションは何か？
         - **エラー復帰の順序**：
-            (1) `wait_for_selector`（出現/可視化） →
-            (2) **別ロケータ**（role/label/placeholder/alt/testid の順） →
-            (3) 近傍要素クリック（開閉 UI 想定） →
-            (4) スクロール微調整 →
-            (5) 1 回のみ `wait(300–800ms)` →
-            (6) `go_back` あるいは別経路探索 →
-            (7) `stop("repeated_failures")`
+            (1) **CATALOG_OUTDATED**: `refresh_catalog` を実行してから再試行 →
+            (2) **ELEMENT_NOT_FOUND**: 別のindex番号を試行、または `scroll_to_text` + `refresh_catalog` →
+            (3) **ELEMENT_NOT_INTERACTABLE**: `scroll_to_text` → `refresh_catalog` → 再試行 →
+            (4) `wait_for_selector`（出現/可視化） →
+            (5) **別ロケータ**（role/label/placeholder/alt/testid の順） →
+            (6) 近傍要素クリック（開閉 UI 想定） →
+            (7) スクロール微調整 →
+            (8) 1 回のみ `wait(300–800ms)` →
+            (9) `go_back` あるいは別経路探索 →
+            (10) `stop("repeated_failures")`
         - **前のページに戻る:** `go_back` で一度戻り、別のアプローチを試せないか？
         - **ループの回避:** 同じようなアクションを繰り返していないか？ **履歴を確認して既に実行済みのアクションは絶対に再実行しない。** 変化がない場合、それはループの兆候です。異なる戦略（例：別のリンクをクリックする、検索バーに別のキーワードを入力する）に切り替える必要があります。
         - **重要**: 履歴で同じ要素（target）に同じ値（value）を入力するアクションが既に実行されている場合は、そのアクションをスキップし、次のステップ（例：検索ボタンのクリック、候補の選択）に進んでください。
@@ -357,6 +380,10 @@ def build_prompt(
     { "action": "extract_text",    "target": "css=div.content" }
     { "action": "eval_js",        "script": "document.title" }
     { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
+    { "action": "refresh_catalog" }
+    { "action": "scroll_to_text", "target": "探している文字列" }
+    { "action": "wait",           "until": "network_idle", "ms": 3000 }
+    { "action": "wait",           "until": "selector", "target": "css=button.ok", "ms": 5000 }
 
     |ルール|
     1. ページ遷移を含むステップでは**必ず**遷移を最後にし、次ターンで `wait_for_selector` → 目的操作の順に分離する。
@@ -546,6 +573,7 @@ def build_prompt(
     ---- 現在のページのDOMツリー ----
     {dom_text}
     --------------------------------
+    {catalog_section}
     ## これまでの会話履歴
     {past_conv}
     --------------------------------
@@ -558,9 +586,17 @@ def build_prompt(
     {error_line}
 
 """
+    # Prepare catalog section
+    catalog_section = ""
+    if catalog_info:
+        catalog_section = f"""## 要素カタログ (Element Catalog)
+{catalog_info}
+--------------------------------"""
+    
     system_prompt = (
         template.replace("{MAX_STEPS}", str(MAX_STEPS))
         .replace("{dom_text}", dom_text)
+        .replace("{catalog_section}", catalog_section)
         .replace("{past_conv}", past_conv)
         .replace("{cmd}", cmd)
         .replace("{add_img}", add_img)

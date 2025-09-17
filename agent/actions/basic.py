@@ -102,3 +102,57 @@ def close_popup() -> Dict:
         Dictionary representing a popup close action
     """
     return {"action": "close_popup"}
+
+
+def refresh_catalog() -> Dict:
+    """Refresh the element catalog.
+    
+    Regenerates the element catalog to reflect current page state.
+    Useful when DOM has changed significantly or elements are not found.
+    
+    Returns:
+        Dictionary representing a refresh catalog action
+    """
+    return {"action": "refresh_catalog"}
+
+
+def scroll_to_text(text: str) -> Dict:
+    """Scroll to element containing specific text.
+    
+    Finds and scrolls to an element containing the specified text.
+    This is useful for anchored text scrolling when elements are not visible.
+    
+    Args:
+        text: Text content to search for and scroll to
+        
+    Returns:
+        Dictionary representing a scroll to text action
+    """
+    return {"action": "scroll_to_text", "target": text}
+
+
+def wait_enhanced(until: str = "timeout", value: str = "1000", ms: int = None) -> Dict:
+    """Enhanced wait action with multiple wait types.
+    
+    Args:
+        until: Type of wait ("network_idle", "selector", "timeout")
+        value: Value for the wait (selector string, timeout ms, etc.)
+        ms: Alternative way to specify timeout in milliseconds
+        
+    Returns:
+        Dictionary representing an enhanced wait action
+    """
+    action = {"action": "wait", "until": until}
+    
+    if until == "timeout":
+        action["ms"] = ms if ms is not None else int(value)
+    elif until == "selector":
+        action["target"] = value
+        action["ms"] = ms if ms is not None else 5000
+    elif until == "network_idle":
+        action["ms"] = ms if ms is not None else 3000
+    else:
+        # Fallback to simple timeout
+        action["ms"] = ms if ms is not None else int(value)
+    
+    return action

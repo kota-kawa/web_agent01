@@ -20,6 +20,19 @@ from playwright.async_api import Error as PwError, async_playwright
 
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 
+# Import element catalog functionality (with fallback)
+try:
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+    from agent.element_catalog import ElementCatalogGenerator, resolve_index_to_selectors
+    CATALOG_AVAILABLE = True
+except ImportError as e:
+    log.warning("Element catalog not available: %s", e)
+    CATALOG_AVAILABLE = False
+    ElementCatalogGenerator = None
+    resolve_index_to_selectors = None
+
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -153,6 +166,8 @@ _ACTIONS = [
     "click_blank_area",
     "close_popup",
     "stop",
+    "refresh_catalog",
+    "scroll_to_text",
 ]
 payload_schema = {
     "type": "object",
@@ -264,6 +279,10 @@ PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 EVAL_RESULTS: List[str] = []
 WARNINGS: List[str] = []
+
+# Element catalog management
+CURRENT_CATALOG = None
+INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
 
 # Execution lock to prevent concurrent DSL execution
 _EXECUTION_LOCK = asyncio.Lock()
@@ -1106,8 +1125,30 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             return action_warnings
             
         if a == "wait":
+            # Enhanced wait action with multiple wait types
+            until = act.get("until", "timeout")
             timeout = ms if ms > 0 else 1000
-            await PAGE.wait_for_timeout(timeout)
+            
+            if until == "network_idle":
+                try:
+                    await PAGE.wait_for_load_state("networkidle", timeout=timeout)
+                    action_warnings.append(f"INFO:auto:Network idle wait completed ({timeout}ms)")
+                except Exception as e:
+                    action_warnings.append(f"WARNING:auto:Network idle wait failed - {str(e)}")
+            elif until == "selector":
+                selector = act.get("target") or tgt
+                if selector:
+                    try:
+                        await PAGE.wait_for_selector(selector, state="visible", timeout=timeout)
+                        action_warnings.append(f"INFO:auto:Selector wait completed for '{selector}'")
+                    except Exception as e:
+                        action_warnings.append(f"WARNING:auto:Selector wait failed for '{selector}' - {str(e)}")
+                else:
+                    action_warnings.append("WARNING:auto:Selector wait requires target selector")
+            else:
+                # Default timeout wait
+                await PAGE.wait_for_timeout(timeout)
+                action_warnings.append(f"INFO:auto:Timeout wait completed ({timeout}ms)")
             return action_warnings
             
         if a == "wait_for_selector":
@@ -1324,6 +1365,90 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             except Exception as e:
                 action_warnings.append(f"WARNING:auto:close_popup failed - {str(e)}")
             return action_warnings
+            
+        # -- refresh_catalog action
+        if a == "refresh_catalog":
+            if not INDEX_MODE:
+                action_warnings.append("INFO:auto:Index mode disabled, refresh_catalog skipped")
+                return action_warnings
+                
+            if not CATALOG_AVAILABLE:
+                action_warnings.append("WARNING:auto:Element catalog not available")
+                return action_warnings
+                
+            try:
+                global CURRENT_CATALOG
+                generator = ElementCatalogGenerator(PAGE)
+                CURRENT_CATALOG = await generator.generate_catalog()
+                action_warnings.append(f"INFO:auto:Catalog refreshed with {len(CURRENT_CATALOG.abbreviated_view)} elements, version: {CURRENT_CATALOG.catalog_version}")
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:refresh_catalog failed - {str(e)}")
+            return action_warnings
+            
+        # -- scroll_to_text action
+        if a == "scroll_to_text":
+            text_to_find = tgt or val
+            if not text_to_find:
+                action_warnings.append("WARNING:auto:scroll_to_text requires text target")
+                return action_warnings
+                
+            try:
+                # JavaScript to find and scroll to text
+                scroll_result = await PAGE.evaluate("""
+                    (searchText) => {
+                        function findTextElements(text) {
+                            const walker = document.createTreeWalker(
+                                document.body,
+                                NodeFilter.SHOW_TEXT,
+                                null,
+                                false
+                            );
+                            
+                            const matches = [];
+                            let node;
+                            while (node = walker.nextNode()) {
+                                if (node.textContent.toLowerCase().includes(text.toLowerCase())) {
+                                    matches.push(node.parentElement);
+                                }
+                            }
+                            return matches;
+                        }
+                        
+                        const elements = findTextElements(searchText);
+                        if (elements.length === 0) {
+                            return {found: false, message: 'Text not found'};
+                        }
+                        
+                        // Scroll to first visible element
+                        for (let element of elements) {
+                            const rect = element.getBoundingClientRect();
+                            const style = window.getComputedStyle(element);
+                            
+                            if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                element.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                return {
+                                    found: true, 
+                                    scrolled: true, 
+                                    element: element.tagName,
+                                    text: element.textContent.slice(0, 100)
+                                };
+                            }
+                        }
+                        
+                        return {found: true, scrolled: false, message: 'Text found but not visible'};
+                    }
+                """, text_to_find)
+                
+                if scroll_result.get('found') and scroll_result.get('scrolled'):
+                    action_warnings.append(f"INFO:auto:Scrolled to text '{text_to_find}' in {scroll_result.get('element')}")
+                elif scroll_result.get('found'):
+                    action_warnings.append(f"WARNING:auto:Text '{text_to_find}' found but not scrollable")
+                else:
+                    action_warnings.append(f"WARNING:auto:Text '{text_to_find}' not found on page")
+                    
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:scroll_to_text failed - {str(e)}")
+            return action_warnings
 
         # -- ロケータ系
         if not _validate_selector(tgt):
@@ -1339,25 +1464,82 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             else:
                 raise Exception(error_msg)
 
+        # Handle index-based targeting
+        resolved_target = tgt
+        if INDEX_MODE and CATALOG_AVAILABLE and tgt.startswith("index="):
+            try:
+                index_str = tgt.split("=", 1)[1]
+                index = int(index_str)
+                
+                if CURRENT_CATALOG is None:
+                    # Generate catalog if not available
+                    generator = ElementCatalogGenerator(PAGE)
+                    CURRENT_CATALOG = await generator.generate_catalog()
+                    action_warnings.append(f"INFO:auto:Generated catalog with {len(CURRENT_CATALOG.abbreviated_view)} elements")
+                
+                # Resolve index to robust selectors
+                robust_selectors = resolve_index_to_selectors(CURRENT_CATALOG, index)
+                if robust_selectors:
+                    resolved_target = robust_selectors[0]  # Use first selector as primary
+                    action_warnings.append(f"INFO:auto:Resolved index={index} to selector: {resolved_target}")
+                else:
+                    error_msg = f"No selectors available for index {index}"
+                    if is_final_retry:
+                        action_warnings.append(f"WARNING:auto:{error_msg}")
+                        return action_warnings
+                    else:
+                        raise Exception(error_msg)
+                        
+            except ValueError:
+                action_warnings.append(f"WARNING:auto:Invalid index format: {tgt}")
+                return action_warnings
+            except Exception as e:
+                error_msg = f"Failed to resolve index {tgt}: {str(e)}"
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{error_msg}")
+                    return action_warnings
+                else:
+                    raise Exception(error_msg)
+
         loc: Optional = None
         for attempt in range(LOCATOR_RETRIES):
             try:
                 if a == "click_text":
-                    if "||" in tgt or tgt.strip().startswith(("css=", "text=", "role=", "xpath=")):
-                        loc = await SmartLocator(PAGE, tgt).locate()
+                    if "||" in resolved_target or resolved_target.strip().startswith(("css=", "text=", "role=", "xpath=")):
+                        loc = await SmartLocator(PAGE, resolved_target).locate()
                     else:
-                        loc = await SmartLocator(PAGE, f"text={tgt}").locate()
+                        loc = await SmartLocator(PAGE, f"text={resolved_target}").locate()
                 else:
-                    loc = await SmartLocator(PAGE, tgt).locate()
+                    loc = await SmartLocator(PAGE, resolved_target).locate()
                 if loc is not None:
                     break
                 await _stabilize_page()
             except Exception as e:
                 if attempt == LOCATOR_RETRIES - 1:
-                    action_warnings.append(f"WARNING:auto:Locator search failed for '{tgt}' - {str(e)}")
+                    action_warnings.append(f"WARNING:auto:Locator search failed for '{resolved_target}' - {str(e)}")
+                    
+                    # If index-based targeting failed, try fallback selectors
+                    if INDEX_MODE and CATALOG_AVAILABLE and tgt.startswith("index=") and CURRENT_CATALOG:
+                        try:
+                            index = int(tgt.split("=", 1)[1])
+                            element_info = CURRENT_CATALOG.full_view.get(index)
+                            if element_info and len(element_info.robust_selectors) > 1:
+                                # Try next selector
+                                for fallback_selector in element_info.robust_selectors[1:]:
+                                    try:
+                                        loc = await SmartLocator(PAGE, fallback_selector).locate()
+                                        if loc is not None:
+                                            action_warnings.append(f"INFO:auto:Fallback selector succeeded: {fallback_selector}")
+                                            break
+                                    except Exception:
+                                        continue
+                                if loc is not None:
+                                    break
+                        except Exception:
+                            pass
 
         if loc is None:
-            error_msg = f"Element not found: {tgt}. Consider using alternative selectors or text matching."
+            error_msg = f"Element not found: {resolved_target}. Consider using alternative selectors or text matching."
             if is_final_retry:
                 # On final retry, add warning and continue
                 action_warnings.append(f"WARNING:auto:{error_msg}")
@@ -1404,12 +1586,12 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             error_msg = str(e)
             if "failed -" in error_msg and ("Original:" in error_msg or "Fallback" in error_msg):
                 # This is a fallback failure with context - provide detailed info and guidance to LLM
-                action_guidance = _get_action_guidance(a, tgt, error_msg)
-                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' after trying multiple methods. {error_msg}. {action_guidance}")
+                action_guidance = _get_action_guidance(a, resolved_target, error_msg)
+                action_warnings.append(f"WARNING:auto:{a} operation failed for '{resolved_target}' after trying multiple methods. {error_msg}. {action_guidance}")
             else:
                 # Standard error reporting with basic guidance
                 basic_guidance = _get_basic_guidance(a, error_msg)
-                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' - {error_msg}. {basic_guidance}")
+                action_warnings.append(f"WARNING:auto:{a} operation failed for '{resolved_target}' - {error_msg}. {basic_guidance}")
 
     except Exception as e:
         action_warnings.append(f"WARNING:auto:Action '{a}' failed - {str(e)}")
@@ -1452,14 +1634,44 @@ def _get_basic_guidance(action: str, error_msg: str) -> str:
         return "Consider using alternative approaches or waiting for page to stabilize."
 
 
-async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
+async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "", expected_catalog_version: str = None) -> Dict:
     """Run actions with execution lock to prevent concurrent execution issues."""
     async with _EXECUTION_LOCK:
-        return await _run_actions(actions, correlation_id)
+        return await _run_actions(actions, correlation_id, expected_catalog_version)
 
 
-async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
+async def _run_actions(actions: List[Dict], correlation_id: str = "", expected_catalog_version: str = None) -> Dict:
+    """Execute actions and return structured response."""
+    global CURRENT_CATALOG
     all_warnings = []
+    nav_detected = False
+    
+    # Check for catalog version mismatch
+    if INDEX_MODE and CATALOG_AVAILABLE and expected_catalog_version and CURRENT_CATALOG:
+        if CURRENT_CATALOG.catalog_version != expected_catalog_version:
+            return {
+                "success": False,
+                "error": {
+                    "code": "CATALOG_OUTDATED",
+                    "message": "Please execute refresh_catalog",
+                    "details": {
+                        "expected": expected_catalog_version,
+                        "current": CURRENT_CATALOG.catalog_version
+                    }
+                },
+                "observation": {
+                    "url": await PAGE.url() if PAGE else "",
+                    "title": await PAGE.title() if PAGE else "",
+                    "short_summary": "",
+                    "catalog_version": CURRENT_CATALOG.catalog_version,
+                    "nav_detected": True
+                },
+                "is_done": False,
+                "complete": False
+            }
+    
+    # Get initial URL for navigation detection
+    initial_url = await PAGE.url() if PAGE else ""
     
     for i, act in enumerate(actions):
         # Enhanced DOM stabilization before each action
@@ -1512,12 +1724,40 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
         if act.get("action") == "stop":
             break
 
+    # Check for navigation
+    final_url = await PAGE.url() if PAGE else ""
+    nav_detected = (initial_url != final_url)
+    
     # Use safe content retrieval to avoid navigation errors
     html = await _safe_get_page_content()
     if not html:
         all_warnings.append(f"WARNING:auto:Could not retrieve final page content - page may be navigating")
     
-    return html, all_warnings
+    # Generate observation data
+    observation = {
+        "url": final_url,
+        "title": await PAGE.title() if PAGE else "",
+        "short_summary": "",
+        "nav_detected": nav_detected
+    }
+    
+    # Add catalog version if available
+    if CURRENT_CATALOG:
+        observation["catalog_version"] = CURRENT_CATALOG.catalog_version
+    
+    # Check for errors in warnings
+    has_errors = any("ERROR:" in warning for warning in all_warnings)
+    
+    return {
+        "success": not has_errors,
+        "error": None,
+        "observation": observation,
+        "is_done": False,  # Will be set by higher level logic
+        "complete": False,  # Will be set by higher level logic
+        "html": html,
+        "warnings": all_warnings,
+        "correlation_id": correlation_id
+    }
 
 
 # -------------------------------------------------- HTTP エンドポイント
@@ -1536,6 +1776,9 @@ def execute_dsl():
             data = {"actions": data}
         _validate_schema(data)
         
+        # Extract expected catalog version if provided
+        expected_catalog_version = data.get("expected_catalog_version")
+        
         # Validate individual actions
         for i, action in enumerate(data.get("actions", [])):
             action_warnings = _validate_action_params(action)
@@ -1547,17 +1790,44 @@ def execute_dsl():
     except ValidationError as ve:
         warning_msg = f"[{correlation_id}] ERROR:auto:InvalidDSL - {str(ve)}"
         warnings.append(warning_msg)
-        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
+        return jsonify({
+            "success": False,
+            "error": {"code": "INVALID_DSL", "message": str(ve)},
+            "observation": {"url": "", "title": "", "short_summary": "", "nav_detected": False},
+            "is_done": False,
+            "complete": False,
+            "html": "", 
+            "warnings": warnings, 
+            "correlation_id": correlation_id
+        })
     except Exception as e:
         warning_msg = f"[{correlation_id}] ERROR:auto:ParseError - {str(e)}"
         warnings.append(warning_msg)
-        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
+        return jsonify({
+            "success": False,
+            "error": {"code": "PARSE_ERROR", "message": str(e)},
+            "observation": {"url": "", "title": "", "short_summary": "", "nav_detected": False},
+            "is_done": False,
+            "complete": False,
+            "html": "", 
+            "warnings": warnings, 
+            "correlation_id": correlation_id
+        })
 
     # If there are validation warnings for critical actions, skip execution
     critical_errors = [w for w in warnings if "Invalid navigate URL" in w or "Invalid selector" in w]
     if critical_errors:
         log.warning("Skipping execution due to critical validation errors: %s", critical_errors)
-        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
+        return jsonify({
+            "success": False,
+            "error": {"code": "VALIDATION_ERROR", "message": "Critical validation errors", "details": critical_errors},
+            "observation": {"url": "", "title": "", "short_summary": "", "nav_detected": False},
+            "is_done": False,
+            "complete": False,
+            "html": "", 
+            "warnings": warnings, 
+            "correlation_id": correlation_id
+        })
     
     # Check DSL size limit
     action_count = len(data.get("actions", []))
@@ -1579,15 +1849,17 @@ def execute_dsl():
         if USE_INCOGNITO_CONTEXT:
             _run(_create_clean_context())
             
-        html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
-        warnings.extend(action_warns)
+        result = _run(_run_actions_with_lock(data["actions"], correlation_id, expected_catalog_version))
+        
+        # Merge existing warnings with result warnings
+        result["warnings"] = warnings + result.get("warnings", [])
         
         # Check if periodic browser refresh is needed
         refresh_done = _run(_check_and_refresh_browser(correlation_id))
         if refresh_done:
-            warnings.append(f"INFO:auto:[{correlation_id}] Browser context refreshed for stability")
+            result["warnings"].append(f"INFO:auto:[{correlation_id}] Browser context refreshed for stability")
         
-        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+        return jsonify(result)
         
     except Exception as e:
         error_msg = f"[{correlation_id}] ExecutionError - {str(e)}"
@@ -1605,7 +1877,16 @@ def execute_dsl():
         except Exception:
             html = ""
             
-        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+        return jsonify({
+            "success": False,
+            "error": {"code": "EXECUTION_ERROR", "message": str(e)},
+            "observation": {"url": "", "title": "", "short_summary": "", "nav_detected": False},
+            "is_done": False,
+            "complete": False,
+            "html": html, 
+            "warnings": warnings, 
+            "correlation_id": correlation_id
+        })
 
 
 @app.get("/source")
@@ -1667,6 +1948,77 @@ def extracted():
 @app.get("/eval_results")
 def eval_results():
     return jsonify(EVAL_RESULTS)
+
+
+@app.get("/catalog")
+def get_catalog():
+    """Get current element catalog."""
+    global CURRENT_CATALOG
+    
+    if not INDEX_MODE:
+        return jsonify({"error": "Index mode disabled"})
+    
+    if not CATALOG_AVAILABLE:
+        return jsonify({"error": "Element catalog not available"})
+    
+    if CURRENT_CATALOG is None:
+        return jsonify({"error": "No catalog generated yet"})
+    
+    # Convert catalog to JSON-serializable format
+    catalog_data = {
+        "catalog_version": CURRENT_CATALOG.catalog_version,
+        "url": CURRENT_CATALOG.url,
+        "title": CURRENT_CATALOG.title,
+        "short_summary": CURRENT_CATALOG.short_summary,
+        "nav_detected": CURRENT_CATALOG.nav_detected,
+        "abbreviated_view": [
+            {
+                "index": entry.index,
+                "role": entry.role,
+                "tag": entry.tag,
+                "primary_label": entry.primary_label,
+                "secondary_label": entry.secondary_label,
+                "section_hint": entry.section_hint,
+                "state_hint": entry.state_hint,
+                "href_short": entry.href_short
+            }
+            for entry in CURRENT_CATALOG.abbreviated_view
+        ]
+    }
+    
+    return jsonify(catalog_data)
+
+
+@app.post("/catalog/refresh")
+def refresh_catalog_endpoint():
+    """Refresh the element catalog."""
+    global CURRENT_CATALOG
+    
+    if not INDEX_MODE:
+        return jsonify({"error": "Index mode disabled"})
+    
+    if not CATALOG_AVAILABLE:
+        return jsonify({"error": "Element catalog not available"})
+    
+    try:
+        _run(_init_browser())
+        
+        if not PAGE:
+            return jsonify({"error": "Browser not available"})
+        
+        from agent.element_catalog import ElementCatalogGenerator
+        generator = ElementCatalogGenerator(PAGE)
+        CURRENT_CATALOG = _run(generator.generate_catalog())
+        
+        return jsonify({
+            "success": True,
+            "catalog_version": CURRENT_CATALOG.catalog_version,
+            "element_count": len(CURRENT_CATALOG.abbreviated_view)
+        })
+        
+    except Exception as e:
+        log.error("Failed to refresh catalog: %s", e)
+        return jsonify({"error": str(e)})
 
 
 @app.get("/stop-request")

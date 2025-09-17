@@ -96,11 +96,15 @@ HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
 def normalize_actions(llm_response):
     """Extract and normalize actions from LLM response (optimized for speed)."""
     if not llm_response:
-        return []
+        return [], None, None
     
     actions = llm_response.get("actions", [])
     if not isinstance(actions, list):
-        return []
+        return [], None, None
+    
+    # Extract complete and is_done flags
+    complete = llm_response.get("complete", False)
+    is_done = llm_response.get("is_done", complete)  # is_done defaults to complete value
     
     # Optimized normalization using list comprehension for speed
     normalized = []
@@ -114,6 +118,20 @@ def normalize_actions(llm_response):
         # Normalize action name to lowercase
         if "action" in normalized_action:
             normalized_action["action"] = str(normalized_action["action"]).lower()
+        
+        # Handle legacy selector -> target conversion
+        if "selector" in normalized_action and "target" not in normalized_action:
+            normalized_action["target"] = normalized_action["selector"]
+        
+        # Handle click_text target normalization
+        if (normalized_action.get("action") == "click_text" and 
+            "text" in normalized_action and 
+            "target" not in normalized_action):
+            normalized_action["target"] = normalized_action["text"]
+        
+        normalized.append(normalized_action)
+    
+    return normalized, complete, is_done
         
         # Handle selector -> target mapping (optimized)
         if "selector" in action and "target" not in action:
@@ -266,7 +284,10 @@ def execute():
     append_history_entry(cmd, res, current_url)
     
     # Extract and normalize actions from LLM response
-    actions = normalize_actions(res)
+    actions, complete, is_done = normalize_actions(res)
+    
+    # Get expected catalog version from LLM response
+    expected_catalog_version = res.get("expected_catalog_version") if isinstance(res, dict) else None
     
     # If there are actions, start async Playwright execution immediately (optimized)
     task_id = None
@@ -277,7 +298,12 @@ def execute():
             task_id = executor.create_task()
             
             # Start Playwright execution in parallel (immediate submission)
-            success = executor.submit_playwright_execution(task_id, execute_dsl, actions)
+            # Create payload with catalog version
+            dsl_payload = {"actions": actions}
+            if expected_catalog_version:
+                dsl_payload["expected_catalog_version"] = expected_catalog_version
+            
+            success = executor.submit_playwright_execution(task_id, execute_dsl, dsl_payload, expected_catalog_version)
             
             if success:
                 # Start parallel data fetching immediately (no delay)
@@ -297,6 +323,10 @@ def execute():
         res["async_execution"] = True
     else:
         res["async_execution"] = False
+    
+    # Add complete and is_done flags to response
+    res["complete"] = complete
+    res["is_done"] = is_done
     
     return jsonify(res)
 
@@ -403,7 +433,9 @@ def forward_dsl():
     if not payload.get("actions"):
         return jsonify({"html": "", "warnings": []})
     try:
-        res_obj = execute_dsl(payload, timeout=120)
+        # Extract expected catalog version if provided
+        expected_catalog_version = payload.get("expected_catalog_version")
+        res_obj = execute_dsl(payload, timeout=120, expected_catalog_version=expected_catalog_version)
 
         # Update conversation history with the current URL after execution
         update_last_history_url()

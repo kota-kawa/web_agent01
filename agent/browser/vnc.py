@@ -6,6 +6,9 @@ from .dom import DOMElementNode, DOM_SNAPSHOT_SCRIPT
 VNC_API = "http://vnc:7000"
 log = logging.getLogger(__name__)
 
+# Global catalog state
+_current_catalog = None
+
 
 def _check_health(timeout=5):
     """Check if the VNC automation server is healthy."""
@@ -40,16 +43,100 @@ def get_url() -> str:
         return ""
 
 
+def get_catalog():
+    """Get current element catalog from automation server."""
+    global _current_catalog
+    try:
+        res = requests.get(f"{VNC_API}/catalog", timeout=10)
+        res.raise_for_status()
+        catalog_data = res.json()
+        if "error" not in catalog_data:
+            _current_catalog = catalog_data
+            return catalog_data
+        else:
+            log.warning("Catalog error: %s", catalog_data["error"])
+            return None
+    except Exception as e:
+        log.error("get_catalog error: %s", e)
+        return None
+
+
+def refresh_catalog():
+    """Refresh the element catalog."""
+    global _current_catalog
+    try:
+        res = requests.post(f"{VNC_API}/catalog/refresh", timeout=15)
+        res.raise_for_status()
+        result = res.json()
+        if result.get("success"):
+            log.info("Catalog refreshed with %d elements, version: %s", 
+                    result.get("element_count", 0), result.get("catalog_version"))
+            # Fetch the updated catalog
+            return get_catalog()
+        else:
+            log.error("Failed to refresh catalog: %s", result.get("error"))
+            return None
+    except Exception as e:
+        log.error("refresh_catalog error: %s", e)
+        return None
+
+
+def format_catalog_for_display(catalog_data):
+    """Format catalog data for display to LLM."""
+    if not catalog_data or "error" in catalog_data:
+        return "No element catalog available."
+    
+    lines = []
+    lines.append(f"=== Element Catalog (v{catalog_data['catalog_version']}) ===")
+    lines.append(f"Page: {catalog_data['title']}")
+    if catalog_data.get('short_summary'):
+        lines.append(f"Summary: {catalog_data['short_summary']}")
+    lines.append("")
+    
+    current_section = None
+    for entry in catalog_data.get('abbreviated_view', []):
+        # Group by section
+        section = entry.get('section_hint', '')
+        if section and section != current_section:
+            lines.append(f"--- {section.upper()} ---")
+            current_section = section
+        
+        # Format entry
+        label_parts = []
+        if entry.get('primary_label'):
+            label_parts.append(entry['primary_label'])
+        if entry.get('secondary_label'):
+            label_parts.append(f"({entry['secondary_label']})")
+        if entry.get('href_short'):
+            label_parts.append(f"→{entry['href_short']}")
+        if entry.get('state_hint'):
+            label_parts.append(f"[{entry['state_hint']}]")
+            
+        label = " ".join(label_parts) if label_parts else f"<{entry.get('tag', 'unknown')}>"
+        lines.append(f"[{entry['index']}] {entry.get('role', 'unknown')}: {label}")
+    
+    lines.append("")
+    lines.append("Use index=N to target elements (e.g., index=0, index=5)")
+    
+    return "\n".join(lines)
+
+
 def _truncate_warning(warning_msg, max_length=None):
     """Return warning message without truncation (character limits removed)."""
     # Character limits removed for conversation history as requested
     return warning_msg
 
 
-def execute_dsl(payload, timeout=120):
+def execute_dsl(payload, timeout=120, expected_catalog_version=None):
     """Forward DSL JSON to the automation server with retry logic."""
     if not payload.get("actions"):
-        return {"html": "", "warnings": []}
+        return {"html": "", "warnings": [], "success": True, "error": None, 
+                "observation": {"url": "", "title": "", "short_summary": "", "nav_detected": False},
+                "is_done": False, "complete": False}
+    
+    # Add expected catalog version if provided
+    if expected_catalog_version:
+        payload["expected_catalog_version"] = expected_catalog_version
     
     max_retries = 2  # Allow 1 retry attempt
     all_errors = []  # Collect ALL errors from all attempts
@@ -86,78 +173,27 @@ def execute_dsl(payload, timeout=120):
                     # Also add success message
                     result["warnings"].append(f"INFO:auto:Execution succeeded on retry attempt {attempt} after {len(all_errors)} failed attempts")
             
-            # Handle both old error format and new warnings format
-            if "error" in result:
-                # Convert old error format to new warnings format
-                error_msg = result.get("message", result.get("error", "Unknown error"))
-                final_warning = _truncate_warning(f"ERROR:auto:{error_msg}")
-                return {"html": "", "warnings": [final_warning]}
-            
-            # Capture additional Playwright-specific errors and information
-            # Even if the request succeeded, there might be important warnings/errors from Playwright
-            enhanced_warnings = []
-            
-            # Include existing warnings
-            if "warnings" in result and result["warnings"]:
-                enhanced_warnings.extend(result["warnings"])
-            
-            # Check for Playwright-specific error indicators in the response
-            if isinstance(result, dict):
-                # Look for common Playwright error patterns in various fields
-                error_indicators = []
-                
-                # Check all text fields for Playwright error patterns
-                for key, value in result.items():
-                    if isinstance(value, str) and value:
-                        # Skip large HTML or other verbose content unrelated to errors
-                        if (
-                            key.lower() == "html"
-                            or value.lstrip().startswith("<!DOCTYPE html")
-                            or len(value) > 1000
-                        ):
-                            continue
-
-                        # Look for Playwright error patterns (case-insensitive)
-                        error_patterns = [
-                            "timeout", "timed out", "waiting for", "locator", "element not found",
-                            "element not visible", "not attached", "detached", "intercepted",
-                            "waiting for selector", "waiting for element", "selector resolved to",
-                            "element is not", "element state", "page closed", "context closed",
-                            "navigation", "frame detached", "execution context", "protocol error",
-                            "target closed", "page crashed", "browser disconnected", "websocket",
-                            "click", "type", "hover", "scroll", "screenshot", "evaluate",
-                            "blocking", "covered by", "outside viewport", "disabled element",
-                            "readonly element", "not editable", "not clickable", "not hoverable"
-                        ]
-
-                        value_lower = value.lower()
-                        for pattern in error_patterns:
-                            if pattern in value_lower:
-                                error_indicators.append(f"INFO:playwright:{key}={value}")
-                                break  # Only add one indicator per field
-                
-                # Add Playwright error indicators as warnings
-                for indicator in error_indicators:
-                    enhanced_warnings.append(_truncate_warning(indicator))
-                
-                # Check for execution results that might contain errors
-                if "execution_info" in result and result["execution_info"]:
-                    exec_info = result["execution_info"]
-                    if isinstance(exec_info, (list, str)):
-                        exec_warning = f"INFO:playwright:execution_info={str(exec_info)}"
-                        enhanced_warnings.append(_truncate_warning(exec_warning))
-                
-                # Check for any field that might contain error information
-                error_fields = ["error_message", "error_details", "failures", "exceptions", "stack_trace", "console_errors"]
-                for field in error_fields:
-                    if field in result and result[field]:
-                        field_warning = f"ERROR:playwright:{field}={str(result[field])}"
-                        enhanced_warnings.append(_truncate_warning(field_warning))
-            
-            # Include all warnings without character limits
-            result["warnings"] = [_truncate_warning(warning) for warning in enhanced_warnings]
-            
-            return result
+            # Handle both new structured format and legacy format
+            if "success" in result:
+                # New structured format
+                return result
+            else:
+                # Legacy format - convert to new format
+                return {
+                    "success": True,
+                    "error": None,
+                    "observation": {
+                        "url": "",
+                        "title": "",
+                        "short_summary": "",
+                        "nav_detected": False
+                    },
+                    "is_done": False,
+                    "complete": False,
+                    "html": result.get("html", ""),
+                    "warnings": result.get("warnings", []),
+                    "correlation_id": result.get("correlation_id")
+                }
             
         except requests.Timeout:
             current_error = "Request timeout - The operation took too long to complete"
@@ -256,7 +292,24 @@ def execute_dsl(payload, timeout=120):
     summary_warning = f"ERROR:auto:All {max_retries} execution attempts failed. Total errors: {len(all_errors)}"
     warning_messages.append(_truncate_warning(summary_warning))
     
-    return {"html": "", "warnings": warning_messages}
+    return {
+        "success": False,
+        "error": {
+            "code": "EXECUTION_FAILED",
+            "message": f"All {max_retries} execution attempts failed",
+            "details": all_errors
+        },
+        "observation": {
+            "url": "",
+            "title": "",
+            "short_summary": "",
+            "nav_detected": False
+        },
+        "is_done": False,
+        "complete": False,
+        "html": "",
+        "warnings": warning_messages
+    }
 
 
 def get_elements() -> list:
