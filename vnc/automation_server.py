@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -508,7 +509,7 @@ async def _compute_dom_signature() -> Dict[str, Any]:
     if PAGE is None:
         return {}
     try:
-        url = await PAGE.url()
+        url = await _get_page_url_value()
         title = await PAGE.title()
         content = await PAGE.content()
         viewport = PAGE.viewport_size or {}
@@ -955,6 +956,54 @@ def _run(coro):
     return LOOP.run_until_complete(coro)
 
 
+async def _get_page_url_value() -> str:
+    """Safely retrieve the current page URL for both async and property-based APIs."""
+    if PAGE is None:
+        return ""
+
+    try:
+        attr = getattr(PAGE, "url", "")
+    except Exception as exc:
+        log.debug("Unable to access page.url: %s", exc)
+        return ""
+
+    try:
+        if callable(attr):
+            value = attr()
+            if inspect.isawaitable(value):
+                value = await value
+        else:
+            value = attr
+    except TypeError:
+        # Some Playwright versions expose url as a simple property; if callable checks
+        # misfire fall back to the raw attribute value.
+        value = attr
+    except Exception as exc:
+        log.debug("Failed to resolve page URL: %s", exc)
+        return ""
+
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _get_page_url_sync() -> str:
+    """Helper used by Flask routes to fetch the current page URL safely."""
+    if PAGE is None:
+        return ""
+
+    try:
+        return _run(_get_page_url_value())
+    except RuntimeError as exc:
+        # Fallback to direct attribute access if the event loop is already running.
+        log.debug("Event loop busy while fetching page URL: %s", exc)
+    except Exception as exc:
+        log.debug("Failed to fetch page URL via event loop: %s", exc)
+
+    attr = getattr(PAGE, "url", "")
+    return attr if isinstance(attr, str) else ""
+
+
 async def _wait_cdp(t: int = 15) -> bool:
     deadline = time.time() + t
     async with httpx.AsyncClient(timeout=2) as c:
@@ -989,7 +1038,7 @@ async def _recreate_browser():
     current_url = None
     if PAGE:
         try:
-            current_url = await PAGE.url()
+            current_url = await _get_page_url_value()
             # Avoid restoring internal about: pages and default/initial URLs
             if (current_url and 
                 not current_url.startswith("about:") and 
@@ -1047,7 +1096,7 @@ async def _recreate_browser():
                 
                 # Verify we successfully navigated to the intended URL
                 try:
-                    final_url = await PAGE.url()
+                    final_url = await _get_page_url_value()
                     if final_url == current_url or final_url.startswith(current_url):
                         log.info("Successfully restored URL after browser recreation: %s", final_url)
                         url_restored = True
@@ -2005,7 +2054,48 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             index_value = _parse_index_target(tgt)
 
             if index_value is not None:
+                auto_refresh_message: Optional[str] = None
+                if INDEX_MODE and (not _CURRENT_CATALOG or "index_map" not in _CURRENT_CATALOG):
+                    try:
+                        catalog = await _generate_element_catalog(force=True)
+                        if catalog and catalog.get("index_map"):
+                            version = (catalog or {}).get("catalog_version") or (
+                                _CURRENT_CATALOG_SIGNATURE or {}
+                            ).get("catalog_version")
+                            if version:
+                                auto_refresh_message = (
+                                    f"INFO:auto:Element catalog refreshed automatically (version={version})"
+                                )
+                            else:
+                                auto_refresh_message = (
+                                    "INFO:auto:Element catalog refreshed automatically"
+                                )
+                        else:
+                            raise ExecutionError(
+                                "CATALOG_OUTDATED",
+                                "Element catalog is not available. Please execute refresh_catalog.",
+                                {"index": index_value},
+                            )
+                    except ExecutionError as exc:
+                        if is_final_retry:
+                            action_warnings.append(f"WARNING:auto:{exc}")
+                            return action_warnings
+                        raise
+                    except Exception as exc:
+                        log.error("Automatic catalog refresh failed: %s", exc)
+                        if is_final_retry:
+                            action_warnings.append(
+                                f"WARNING:auto:Failed to refresh element catalog automatically - {str(exc)}"
+                            )
+                            return action_warnings
+                        raise ExecutionError(
+                            "CATALOG_OUTDATED",
+                            "Element catalog is not available. Please execute refresh_catalog.",
+                            {"index": index_value},
+                        ) from exc
                 selectors_to_try, resolved_entry = _resolve_index_entry(index_value)
+                if auto_refresh_message:
+                    action_warnings.append(auto_refresh_message)
             else:
                 if not _validate_selector(tgt):
                     action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
@@ -2477,7 +2567,7 @@ def current_url():
         # Only initialize browser if it's not already healthy
         if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
-        url = _run(PAGE.url()) if PAGE else ""
+        url = _get_page_url_sync() if PAGE else ""
         return jsonify({"url": url})
     except Exception as e:
         log.error("url error: %s", e)
