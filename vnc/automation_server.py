@@ -63,6 +63,7 @@ NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "30000"))  # ms  ナビ
 WAIT_FOR_SELECTOR_TIMEOUT = int(os.getenv("WAIT_FOR_SELECTOR_TIMEOUT", "5000"))  # ms  セレクタ待機
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
+SCREENSHOT_TIMEOUT = int(os.getenv("SCREENSHOT_TIMEOUT", "5000"))  # ms スクリーンショット猶予
 CDP_URL = "http://localhost:9222"
 # Use about:blank as the default start page to avoid unexpected navigation
 DEFAULT_URL = os.getenv("START_URL", "about:blank")
@@ -947,7 +948,11 @@ async def _save_debug_artifacts(correlation_id: str, error_context: str = "") ->
         # Save screenshot
         screenshot_path = os.path.join(DEBUG_DIR, f"{correlation_id}_screenshot.png")
         try:
-            screenshot = await PAGE.screenshot(type="png")
+            screenshot = await PAGE.screenshot(
+                type="png",
+                timeout=SCREENSHOT_TIMEOUT,
+                animations="disabled",
+            )
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
         except Exception as e:
@@ -2952,7 +2957,13 @@ def screenshot():
         # Only initialize browser if it's not already healthy
         if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
-        img = _run(PAGE.screenshot(type="png"))
+        img = _run(
+            PAGE.screenshot(
+                type="png",
+                timeout=SCREENSHOT_TIMEOUT,
+                animations="disabled",
+            )
+        )
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
         log.error("screenshot error: %s", e)
