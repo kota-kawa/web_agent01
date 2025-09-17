@@ -1,33 +1,49 @@
 """Action helpers used by the controller."""
 
+from __future__ import annotations
+
 from typing import Dict
+
+from automation.dsl import models
+
+
+def _legacy_payload(action: models.ActionBase) -> Dict:
+    """Convert a typed action model into the legacy controller payload."""
+
+    return action.legacy_payload()
 
 
 def click(target: str) -> Dict:
-    return {"action": "click", "target": target}
+    return _legacy_payload(models.ClickAction(selector=target))
 
 
 def click_text(text: str) -> Dict:
+    # Legacy helper retained for compatibility with existing prompts.
     return {"action": "click_text", "text": text, "target": text}
 
 
 def navigate(url: str) -> Dict:
-    return {"action": "navigate", "target": url}
+    return _legacy_payload(models.NavigateAction(url=url))
 
 
 def type_text(target: str, value: str) -> Dict:
-    return {"action": "type", "target": target, "value": value}
+    return _legacy_payload(models.TypeAction(selector=target, text=value))
 
 
 def wait(ms: int = 500, retry: int | None = None) -> Dict:
-    act = {"action": "wait", "ms": ms}
+    action = models.WaitAction(timeout_ms=ms)
+    payload = action.legacy_payload()
     if retry is not None:
-        act["retry"] = retry
-    return act
+        payload["retry"] = retry
+    return payload
 
 
 def wait_for_selector(target: str, ms: int = 3000) -> Dict:
-    return {"action": "wait_for_selector", "target": target, "ms": ms}
+    cond = models.WaitForSelector(selector=target)
+    action = models.WaitAction(for_=cond, timeout_ms=ms)
+    payload = action.legacy_payload()
+    payload.setdefault("target", target)
+    return payload
 
 
 def go_back() -> Dict:
@@ -43,18 +59,19 @@ def hover(target: str) -> Dict:
 
 
 def select_option(target: str, value: str) -> Dict:
-    return {"action": "select_option", "target": target, "value": value}
+    return _legacy_payload(models.SelectAction(selector=target, value_or_label=value))
 
 
 def press_key(key: str, target: str | None = None) -> Dict:
-    act = {"action": "press_key", "key": key}
+    action = models.PressKeyAction(keys=[key])
+    payload = action.legacy_payload()
     if target:
-        act["target"] = target
-    return act
+        payload["target"] = target
+    return payload
 
 
 def extract_text(target: str) -> Dict:
-    return {"action": "extract_text", "target": target}
+    return _legacy_payload(models.ExtractAction(selector=target))
 
 
 def eval_js(script: str) -> Dict:

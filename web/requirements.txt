@@ -4,3 +4,4 @@ requests
 groq
 google-generativeai
 beautifulsoup4
+pydantic>=2.5
