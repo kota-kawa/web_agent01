@@ -259,6 +259,15 @@ class ActionBase(BaseModel):
                     data["amount"] = to_value
                 else:
                     data["target"] = to_value
+            direction = getattr(self, "direction", None)
+            if direction:
+                data["direction"] = direction
+            container = getattr(self, "container", None)
+            if isinstance(container, Selector):
+                data["container"] = container.as_legacy()
+        elif action_name == "scroll_to_text":
+            text_value = data.pop("text", "")
+            data["target"] = text_value
         return data
 
     @property
@@ -290,6 +299,17 @@ class ClickAction(ActionBase):
     button: Literal["left", "right", "middle"] = "left"
     click_count: int = Field(default=1, ge=1, alias="click_count")
     delay_ms: Optional[int] = Field(default=None, ge=0, alias="delay_ms")
+
+
+class HoverAction(ActionBase):
+    __action_name__ = "hover"
+
+    type: Literal["hover"] = Field(
+        default="hover",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+    selector: Selector = Field(alias="selector", validation_alias=AliasChoices("selector", "target"))
 
 
 class TypeAction(ActionBase):
@@ -379,6 +399,17 @@ class ScrollAction(ActionBase):
     container: Optional[Selector] = Field(default=None, alias="container")
 
 
+class ScrollToTextAction(ActionBase):
+    __action_name__ = "scroll_to_text"
+
+    type: Literal["scroll_to_text"] = Field(
+        default="scroll_to_text",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+    text: str = Field(alias="text", validation_alias=AliasChoices("text", "target"))
+
+
 class SwitchTabAction(ActionBase):
     __action_name__ = "switch_tab"
 
@@ -399,6 +430,59 @@ class FocusIframeAction(ActionBase):
         validation_alias=AliasChoices("type", "action"),
     )
     target: FrameTarget = Field(alias="target", validation_alias=AliasChoices("target", "frame"))
+
+
+class RefreshCatalogAction(ActionBase):
+    __action_name__ = "refresh_catalog"
+
+    type: Literal["refresh_catalog"] = Field(
+        default="refresh_catalog",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+
+
+class EvalJsAction(ActionBase):
+    __action_name__ = "eval_js"
+
+    type: Literal["eval_js"] = Field(
+        default="eval_js",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+    script: str = Field(alias="script")
+
+
+class ClickBlankAreaAction(ActionBase):
+    __action_name__ = "click_blank_area"
+
+    type: Literal["click_blank_area"] = Field(
+        default="click_blank_area",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+
+
+class ClosePopupAction(ActionBase):
+    __action_name__ = "close_popup"
+
+    type: Literal["close_popup"] = Field(
+        default="close_popup",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+
+
+class StopAction(ActionBase):
+    __action_name__ = "stop"
+
+    type: Literal["stop"] = Field(
+        default="stop",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+    reason: str = Field(alias="reason")
+    message: str = Field(default="", alias="message")
 
 
 class ScreenshotAction(ActionBase):
@@ -441,13 +525,20 @@ class AssertAction(ActionBase):
 ActionTypes = Union[
     NavigateAction,
     ClickAction,
+    HoverAction,
     TypeAction,
     SelectAction,
     PressKeyAction,
     WaitAction,
     ScrollAction,
+    ScrollToTextAction,
     SwitchTabAction,
     FocusIframeAction,
+    RefreshCatalogAction,
+    EvalJsAction,
+    ClickBlankAreaAction,
+    ClosePopupAction,
+    StopAction,
     ScreenshotAction,
     ExtractAction,
     AssertAction,

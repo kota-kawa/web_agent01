@@ -10,14 +10,21 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from .models import (
     ActionBase,
     ClickAction,
+    HoverAction,
     ExtractAction,
+    EvalJsAction,
     FocusIframeAction,
     NavigateAction,
+    RefreshCatalogAction,
     PressKeyAction,
     ScrollAction,
+    ScrollToTextAction,
     ScreenshotAction,
     SelectAction,
     SwitchTabAction,
+    ClickBlankAreaAction,
+    ClosePopupAction,
+    StopAction,
     TypeAction,
     WaitAction,
     AssertAction,
@@ -117,13 +124,20 @@ registry = ActionRegistry()
 # Register builtin actions with default version metadata.
 registry.register(NavigateAction, version=1)
 registry.register(ClickAction, version=1)
+registry.register(HoverAction, version=1)
 registry.register(TypeAction, version=1)
 registry.register(SelectAction, version=1)
 registry.register(PressKeyAction, version=1)
 registry.register(WaitAction, version=1)
 registry.register(ScrollAction, version=1)
+registry.register(ScrollToTextAction, version=1)
 registry.register(SwitchTabAction, version=1)
 registry.register(FocusIframeAction, version=1)
+registry.register(RefreshCatalogAction, version=1)
+registry.register(EvalJsAction, version=1)
+registry.register(ClickBlankAreaAction, version=1)
+registry.register(ClosePopupAction, version=1)
+registry.register(StopAction, version=1)
 registry.register(ScreenshotAction, version=1)
 registry.register(ExtractAction, version=1)
 registry.register(AssertAction, version=1)

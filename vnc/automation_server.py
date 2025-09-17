@@ -24,6 +24,27 @@ from playwright.async_api import Error as PwError, Locator, async_playwright
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 from vnc.executor import RunExecutor
 from vnc.config import load_config
+from vnc.safe_interactions import (
+    prepare_locator,
+    safe_click,
+    safe_fill,
+    safe_hover,
+    safe_press,
+    safe_select,
+)
+from vnc.page_stability import (
+    safe_get_page_content,
+    stabilize_page,
+    wait_dom_idle,
+    wait_for_loading_indicators,
+    wait_for_page_ready,
+)
+from vnc.page_actions import (
+    click_blank_area as perform_click_blank_area,
+    close_popup as perform_close_popup,
+    eval_js as run_eval_js,
+    scroll_to_text as perform_scroll_to_text,
+)
 
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
@@ -1200,565 +1221,63 @@ async def _init_browser():
 
 
 # -------------------------------------------------- アクション実装
-async def _prepare_element(loc, timeout=None):
-    """Ensure the element is visible, enabled and ready for interaction."""
-    if timeout is None:
-        timeout = ACTION_TIMEOUT
-    
-    # Wait for element to be attached
-    await loc.first.wait_for(state="attached", timeout=timeout)
-    
-    # Scroll into view if needed
-    await loc.first.scroll_into_view_if_needed(timeout=timeout)
-    
-    # Wait for visibility
-    await loc.first.wait_for(state="visible", timeout=timeout)
-    
-    # Additional check for interactability
-    if not await loc.first.is_enabled():
-        raise Exception("Element is not enabled for interaction")
 
-
-async def _safe_click(l, force=False, timeout=None):
-    """Enhanced safe clicking with multiple fallback strategies."""
-    if timeout is None:
-        timeout = ACTION_TIMEOUT
-
-    try:
-        await _prepare_element(l, timeout)
-        
-        # Try hover first to ensure element is ready
-        await l.first.hover(timeout=timeout)
-        await asyncio.sleep(0.1)  # Short pause after hover
-        
-        await l.first.click(timeout=timeout, force=force)
-        
-    except Exception as e:
-        if not force:
-            log.warning("Click retry with force due to: %s", e)
-            try:
-                await l.first.click(timeout=timeout, force=True)
-            except Exception as force_error:
-                # Try JavaScript click as last resort
-                try:
-                    await l.first.evaluate("el => el.click()")
-                except Exception as js_error:
-                    # Include original error context in the final exception
-                    raise Exception(f"Click failed - Original: {str(e)}, Force: {str(force_error)}, JS: {str(js_error)}")
-        else:
-            raise
-
-
-_TEXT_INPUT_SELECTOR = (
-    "input:not([type='hidden']):not([disabled]):not([readonly]), "
-    "textarea:not([disabled]):not([readonly]), "
-    "[contenteditable='true']"
-)
-_TEXT_INPUT_SELECTOR = "".join(_TEXT_INPUT_SELECTOR)
-
-
-async def _describe_element_for_typing(loc: Locator) -> Dict[str, Any]:
-    """Return metadata about the locator's first element for typing decisions."""
-    try:
-        target = loc.nth(0)
-        info = await target.evaluate(
-            """
-            (el) => {
-                const tag = el.tagName ? el.tagName.toLowerCase() : '';
-                const type = (el.type || '').toLowerCase ? (el.type || '').toLowerCase() : '';
-                const role = (el.getAttribute('role') || '').toLowerCase();
-                return {
-                    tag,
-                    type,
-                    role,
-                    name: el.getAttribute('name') || '',
-                    id: el.id || '',
-                    placeholder: el.getAttribute('placeholder') || '',
-                    disabled: !!el.disabled,
-                    readOnly: !!el.readOnly,
-                    contentEditable:
-                        el.isContentEditable ||
-                        (el.getAttribute('contenteditable') || '').toLowerCase() === 'true'
-                };
-            }
-            """
-        )
-        if not isinstance(info, dict):
-            return {}
-        # Normalise common fields
-        info["tag"] = (info.get("tag") or "").lower()
-        info["type"] = (info.get("type") or "").lower()
-        info["role"] = (info.get("role") or "").lower()
-        return info
-    except Exception as exc:
-        log.debug("Failed to describe element for typing: %s", exc)
-        return {}
-
-
-def _element_is_text_editable(info: Dict[str, Any]) -> bool:
-    """Return True if metadata indicates the element can accept text input."""
-    if not info:
-        return False
-
-    if info.get("contentEditable"):
-        return True
-
-    role = info.get("role") or ""
-    if role in {"textbox", "searchbox", "combobox"}:
-        return True
-
-    if info.get("disabled") or info.get("readOnly"):
-        return False
-
-    tag = info.get("tag") or ""
-    if tag == "textarea":
-        return True
-
-    if tag == "input":
-        input_type = info.get("type") or ""
-        allowed_types = {
-            "",
-            "text",
-            "search",
-            "email",
-            "tel",
-            "url",
-            "password",
-            "number",
-        }
-        return input_type in allowed_types
-
-    return False
-
-
-def _summarize_element(info: Dict[str, Any]) -> str:
-    """Summarise element metadata for warning messages."""
-    if not info:
-        return "unknown element"
-
-    parts: List[str] = []
-    tag = info.get("tag")
-    if tag:
-        parts.append(f"tag={tag}")
-    input_type = info.get("type")
-    if input_type:
-        parts.append(f"type={input_type}")
-    role = info.get("role")
-    if role:
-        parts.append(f"role={role}")
-    if info.get("contentEditable"):
-        parts.append("contentEditable=true")
-    if info.get("disabled"):
-        parts.append("disabled=true")
-    if info.get("readOnly"):
-        parts.append("readOnly=true")
-    identifier = info.get("name") or info.get("id") or info.get("placeholder")
-    if identifier:
-        trimmed = identifier.strip()
-        if len(trimmed) > 40:
-            trimmed = trimmed[:37] + "..."
-        parts.append(f"identifier={trimmed}")
-    return ", ".join(parts) if parts else "unknown element"
-
-
-async def _find_text_input_fallback(loc: Locator) -> tuple[Optional[Locator], Optional[str]]:
-    """Try to find a more appropriate text input related to the locator."""
+async def _prepare_element(loc: Locator, timeout: Optional[int] = None) -> Locator:
     if PAGE is None:
-        return None, None
-
-    try:
-        target = loc.nth(0)
-    except Exception:
-        return None, None
-
-    try:
-        descendants = target.locator(_TEXT_INPUT_SELECTOR)
-        if await descendants.count():
-            candidate = descendants.first
-            info = await _describe_element_for_typing(candidate)
-            if _element_is_text_editable(info):
-                return candidate, "descendant"
-    except Exception as exc:
-        log.debug("Text input descendant search failed: %s", exc)
-
-    try:
-        label_for = await target.get_attribute("for")
-    except Exception:
-        label_for = None
-
-    if label_for:
-        candidate = PAGE.locator(f"#{label_for}")
-        try:
-            if await candidate.count():
-                info = await _describe_element_for_typing(candidate)
-                if _element_is_text_editable(info):
-                    return candidate, "label_for"
-        except Exception as exc:
-            log.debug("label_for fallback failed for %s: %s", label_for, exc)
-
-    for attr in ("aria-controls", "aria-labelledby", "aria-describedby"):
-        try:
-            attr_value = await target.get_attribute(attr)
-        except Exception:
-            attr_value = None
-        if not attr_value:
-            continue
-        for candidate_id in attr_value.split():
-            candidate_id = candidate_id.strip()
-            if not candidate_id:
-                continue
-            candidate = PAGE.locator(f"#{candidate_id}")
-            try:
-                if await candidate.count():
-                    info = await _describe_element_for_typing(candidate)
-                    if _element_is_text_editable(info):
-                        return candidate, attr
-            except Exception as exc:
-                log.debug("%s fallback failed for %s: %s", attr, candidate_id, exc)
-
-    # Look for following text inputs in the DOM order
-    sibling_queries = [
-        "xpath=following::input[not(@type='hidden') and not(@disabled) and not(@readonly)][1]",
-        "xpath=following::textarea[not(@disabled) and not(@readonly)][1]",
-    ]
-    for query in sibling_queries:
-        try:
-            sibling = target.locator(query)
-            if await sibling.count():
-                info = await _describe_element_for_typing(sibling)
-                if _element_is_text_editable(info):
-                    return sibling, "sibling"
-        except Exception as exc:
-            log.debug("Sibling search failed for query %s: %s", query, exc)
-
-    # Traverse up to find a nearby input inside ancestor containers
-    current = target
-    for depth in range(3):
-        try:
-            current = current.locator("xpath=..").nth(0)
-        except Exception:
-            break
-        try:
-            candidate = current.locator(_TEXT_INPUT_SELECTOR)
-            if await candidate.count():
-                info = await _describe_element_for_typing(candidate)
-                if _element_is_text_editable(info):
-                    return candidate, f"ancestor_depth_{depth + 1}"
-        except Exception as exc:
-            log.debug("Ancestor search failed at depth %d: %s", depth + 1, exc)
-
-    return None, None
+        raise RuntimeError("Browser page is not initialized")
+    timeout = timeout or ACTION_TIMEOUT
+    return await prepare_locator(PAGE, loc, timeout=timeout)
 
 
-async def _safe_fill(l, val: str, timeout=None, *, original_target: str = ""):
-    """Enhanced safe filling with multiple strategies."""
-    if timeout is None:
-        timeout = ACTION_TIMEOUT
-
-    retry_error = None
-    try:
-        metadata = await _describe_element_for_typing(l)
-        if not _element_is_text_editable(metadata):
-            fallback_loc, fallback_reason = await _find_text_input_fallback(l)
-            if fallback_loc is not None:
-                log.info(
-                    "Resolved non-editable target '%s' to nearby input using %s fallback (%s)",
-                    original_target or "<unknown>",
-                    fallback_reason or "unknown",
-                    _summarize_element(await _describe_element_for_typing(fallback_loc)),
-                )
-                l = fallback_loc
-                metadata = await _describe_element_for_typing(l)
-                if not _element_is_text_editable(metadata):
-                    summary = _summarize_element(metadata)
-                    raise Exception(
-                        "Resolved element is still not text-editable ("
-                        + summary
-                        + "). Try a more specific input selector."
-                    )
-            else:
-                summary = _summarize_element(metadata)
-                raise Exception(
-                    "Target is not text-editable (" + summary + "). "
-                    "Use a selector that points to an input/textarea element or click the link instead."
-                )
-
-        # Ensure the element exists before interacting with it
-        await l.first.wait_for(state="attached", timeout=timeout)
-
-        # Quickly check visibility so we can fall back earlier for hidden elements
-        element_visible = True
-        try:
-            element_visible = await l.first.is_visible()
-        except Exception:
-            element_visible = True
-
-        if not element_visible:
-            try:
-                await l.first.wait_for(
-                    state="visible",
-                    timeout=min(1000, timeout),
-                )
-                element_visible = True
-            except Exception:
-                element_visible = False
-
-        if not element_visible:
-            raise Exception("Element not visible for direct fill interaction")
-
-        await _prepare_element(l, timeout)
-
-        # Clear existing content first
-        await l.first.click(timeout=timeout)
-        await l.first.fill("", timeout=timeout)
-
-        # Fill new content
-        await l.first.fill(val, timeout=timeout)
-
-        # Verify the content was set
-        current_val = await l.first.input_value()
-        if current_val != val:
-            # Try alternative method using keyboard
-            await l.first.click(timeout=timeout)
-            await l.first.press("Control+a")
-            await l.first.type(val, delay=50)
-
-    except Exception as e:
-        log.warning("Fill retry with alternative method due to: %s", e)
-        try:
-            element_visible = await l.first.is_visible()
-        except Exception:
-            element_visible = False
-
-        if element_visible:
-            try:
-                # Alternative: click first, then fill
-                await l.first.click(timeout=timeout)
-                await l.first.fill("", timeout=timeout)
-                await l.first.fill(val, timeout=timeout)
-
-                current_val = await l.first.input_value()
-                if current_val != val:
-                    await l.first.click(timeout=timeout)
-                    await l.first.press("Control+a")
-                    await l.first.type(val, delay=50)
-
-                return
-            except Exception as alternative_error:
-                retry_error = alternative_error
-
-        try:
-            # Last resort: JavaScript set value
-            await l.first.evaluate(
-                """
-                (el, value) => {
-                    if (!el) {
-                        return;
-                    }
-                    const proto = Object.getPrototypeOf(el);
-                    const descriptor = proto && Object.getOwnPropertyDescriptor(proto, 'value');
-                    if (descriptor && descriptor.set) {
-                        descriptor.set.call(el, value);
-                    } else {
-                        el.value = value;
-                    }
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                """,
-                val,
-            )
-        except Exception as js_error:
-            # Include original error context in the final exception
-            extra = f", Retry: {str(retry_error)}" if retry_error else ""
-            raise Exception(
-                f"Fill failed - Original: {str(e)}{extra}, JS: {str(js_error)}"
-            )
-
-        return
+async def _safe_click(
+    l: Locator,
+    force: bool = False,
+    timeout: Optional[int] = None,
+    *,
+    button: str = "left",
+    click_count: int = 1,
+    delay_ms: Optional[int] = None,
+):
+    if PAGE is None:
+        raise RuntimeError("Browser page is not initialized")
+    timeout = timeout or ACTION_TIMEOUT
+    await safe_click(
+        PAGE,
+        l,
+        force=force,
+        timeout=timeout,
+        button=button,
+        click_count=click_count,
+        delay_ms=delay_ms,
+    )
 
 
-async def _safe_hover(l, timeout=None):
-    """Enhanced safe hovering with multiple fallback strategies."""
-    if timeout is None:
-        timeout = ACTION_TIMEOUT
-        
-    try:
-        await _prepare_element(l, timeout)
-        await l.first.hover(timeout=timeout)
-        
-    except Exception as e:
-        log.warning("Hover retry with alternative methods due to: %s", e)
-        fallback_used = False
-        try:
-            # Fallback 1: Try hover with force option if element supports it
-            await l.first.hover(timeout=timeout, force=True)
-            fallback_used = True
-            log.info("Hover fallback successful: force hover worked for element")
-        except Exception as force_error:
-            try:
-                # Fallback 2: JavaScript-based mouseover event
-                await l.first.evaluate("""
-                    el => {
-                        el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true, cancelable: true}));
-                        el.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true, cancelable: true}));
-                    }
-                """)
-                fallback_used = True
-                log.info("Hover fallback successful: JavaScript mouseover events worked")
-            except Exception as js_error:
-                try:
-                    # Fallback 3: Position-based hover using bounding box
-                    box = await l.first.bounding_box()
-                    if box:
-                        await PAGE.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
-                        fallback_used = True
-                        log.info("Hover fallback successful: position-based hover worked")
-                    else:
-                        raise js_error
-                except Exception:
-                    # Include original error context in the final exception
-                    log.error("All hover fallback methods failed - Original: %s, Force: %s, JS: %s", str(e), str(force_error), str(js_error))
-                    raise Exception(f"Hover failed - Original: {str(e)}, Force: {str(force_error)}, JS: {str(js_error)}")
-        
-        if fallback_used:
-            log.info("Hover operation completed successfully using fallback method")
+async def _safe_fill(l: Locator, val: str, timeout: Optional[int] = None, *, original_target: str = ""):
+    if PAGE is None:
+        raise RuntimeError("Browser page is not initialized")
+    timeout = timeout or ACTION_TIMEOUT
+    await safe_fill(PAGE, l, val, timeout=timeout, original_target=original_target)
 
 
-async def _safe_select(l, val: str, timeout=None):
-    """Enhanced safe option selection with multiple fallback strategies."""
-    if timeout is None:
-        timeout = ACTION_TIMEOUT
-        
-    try:
-        await _prepare_element(l, timeout)
-        await l.first.select_option(val, timeout=timeout)
-        
-    except Exception as e:
-        log.warning("Select retry with alternative methods due to: %s", e)
-        fallback_used = False
-        try:
-            # Fallback 1: Try selecting by label instead of value
-            await l.first.select_option(label=val, timeout=timeout)
-            fallback_used = True
-            log.info("Select fallback successful: label-based selection worked for value '%s'", val)
-        except Exception as label_error:
-            try:
-                # Fallback 2: JavaScript-based option selection
-                await l.first.evaluate(f"""
-                    el => {{
-                        // Try selecting by value first
-                        for (let option of el.options) {{
-                            if (option.value === '{val}' || option.text === '{val}') {{
-                                option.selected = true;
-                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                                return;
-                            }}
-                        }}
-                        // Try partial match if exact match fails
-                        for (let option of el.options) {{
-                            if (option.value.includes('{val}') || option.text.includes('{val}')) {{
-                                option.selected = true;
-                                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                                return;
-                            }}
-                        }}
-                        throw new Error('No matching option found for: {val}');
-                    }}
-                """)
-                fallback_used = True
-                log.info("Select fallback successful: JavaScript-based selection worked for value '%s'", val)
-            except Exception as js_error:
-                try:
-                    # Fallback 3: Click dropdown and then click specific option
-                    await l.first.click(timeout=timeout)
-                    await asyncio.sleep(0.2)  # Wait for dropdown to open
-                    option_loc = PAGE.locator(f"option[value='{val}'], option:has-text('{val}')")
-                    await option_loc.first.click(timeout=timeout)
-                    fallback_used = True
-                    log.info("Select fallback successful: click-based selection worked for value '%s'", val)
-                except Exception as click_error:
-                    # Include original error context in the final exception
-                    log.error("All select fallback methods failed - Original: %s, Label: %s, JS: %s, Click: %s", str(e), str(label_error), str(js_error), str(click_error))
-                    raise Exception(f"Select failed - Original: {str(e)}, Label: {str(label_error)}, JS: {str(js_error)}, Click: {str(click_error)}")
-        
-        if fallback_used:
-            log.info("Select operation completed successfully using fallback method")
+async def _safe_hover(l: Locator, timeout: Optional[int] = None):
+    if PAGE is None:
+        raise RuntimeError("Browser page is not initialized")
+    timeout = timeout or ACTION_TIMEOUT
+    await safe_hover(PAGE, l, timeout=timeout)
 
 
-async def _safe_press(l, key: str, timeout=None):
-    """Enhanced safe key pressing with multiple fallback strategies."""
-    if timeout is None:
-        timeout = ACTION_TIMEOUT
-        
-    try:
-        await _prepare_element(l, timeout)
-        await l.first.press(key, timeout=timeout)
-        
-    except Exception as e:
-        log.warning("Key press retry with alternative methods due to: %s", e)
-        fallback_used = False
-        try:
-            # Fallback 1: Focus element first then press key
-            await l.first.focus(timeout=timeout)
-            await asyncio.sleep(0.1)  # Brief pause after focus
-            await l.first.press(key, timeout=timeout)
-            fallback_used = True
-            log.info("Key press fallback successful: focus+press worked for key '%s'", key)
-        except Exception as focus_error:
-            try:
-                # Fallback 2: Page-level key press (if element-specific fails)
-                await PAGE.keyboard.press(key)
-                fallback_used = True
-                log.info("Key press fallback successful: page-level press worked for key '%s'", key)
-            except Exception as page_error:
-                try:
-                    # Fallback 3: JavaScript-based key event dispatch
-                    key_code = _get_key_code(key)
-                    await l.first.evaluate(f"""
-                        el => {{
-                            el.focus();
-                            const event = new KeyboardEvent('keydown', {{
-                                key: '{key}',
-                                keyCode: {key_code},
-                                bubbles: true,
-                                cancelable: true
-                            }});
-                            el.dispatchEvent(event);
-                            
-                            const eventUp = new KeyboardEvent('keyup', {{
-                                key: '{key}',
-                                keyCode: {key_code},
-                                bubbles: true,
-                                cancelable: true
-                            }});
-                            el.dispatchEvent(eventUp);
-                        }}
-                    """)
-                    fallback_used = True
-                    log.info("Key press fallback successful: JavaScript key events worked for key '%s'", key)
-                except Exception as js_error:
-                    # Include original error context in the final exception
-                    log.error("All key press fallback methods failed - Original: %s, Focus: %s, Page: %s, JS: %s", str(e), str(focus_error), str(page_error), str(js_error))
-                    raise Exception(f"Key press failed - Original: {str(e)}, Focus: {str(focus_error)}, Page: {str(page_error)}, JS: {str(js_error)}")
-        
-        if fallback_used:
-            log.info("Key press operation completed successfully using fallback method")
+async def _safe_select(l: Locator, val: str, timeout: Optional[int] = None):
+    if PAGE is None:
+        raise RuntimeError("Browser page is not initialized")
+    timeout = timeout or ACTION_TIMEOUT
+    await safe_select(PAGE, l, val, timeout=timeout)
 
 
-def _get_key_code(key: str) -> int:
-    """Get keyCode for common keys."""
-    key_codes = {
-        'Enter': 13, 'Return': 13, 'Tab': 9, 'Escape': 27,
-        'Space': 32, 'Backspace': 8, 'Delete': 46,
-        'ArrowUp': 38, 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39,
-        'F1': 112, 'F2': 113, 'F3': 114, 'F4': 115, 'F5': 116,
-        'F6': 117, 'F7': 118, 'F8': 119, 'F9': 120, 'F10': 121, 'F11': 122, 'F12': 123
-    }
-    # For single characters, use ASCII code
-    if len(key) == 1:
-        return ord(key.upper())
-    return key_codes.get(key, 0)
+async def _safe_press(l: Locator, key: str, timeout: Optional[int] = None):
+    if PAGE is None:
+        raise RuntimeError("Browser page is not initialized")
+    timeout = timeout or ACTION_TIMEOUT
+    await safe_press(PAGE, l, key, timeout=timeout)
 
 
 async def _list_elements(limit: int = 50) -> List[Dict]:
@@ -1803,149 +1322,40 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
     return els
 
 
+
 async def _wait_for_page_ready(timeout: int = 3000) -> List[str]:
-    """Automatically wait for page elements to be ready after navigation."""
-    warnings = []
-    
-    # Common selectors to wait for after navigation
-    common_selectors = [
-        "body",  # Basic body element
-        "main, [role=main], #main, .main",  # Main content area
-        "nav, [role=navigation], #nav, .nav",  # Navigation
-        "header, [role=banner], #header, .header",  # Header
-        "footer, [role=contentinfo], #footer, .footer",  # Footer
-    ]
-    
-    for selector in common_selectors:
-        try:
-            await PAGE.wait_for_selector(selector, state="visible", timeout=timeout)
-            log.debug(f"Found ready element: {selector}")
-            break  # Found one, good enough
-        except Exception:
-            continue  # Try next selector
-    
-    # Additional wait for dynamic content to stabilize
-    await _stabilize_page()
-    return warnings
+    if PAGE is None:
+        return []
+    return await wait_for_page_ready(PAGE, timeout=timeout)
 
 
 async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
-    """Wait until DOM mutations stop for a short period."""
-    script = """
-        (timeoutMs) => new Promise(resolve => {
-            const threshold = 300;
-            let last = Date.now();
-            const ob = new MutationObserver(() => (last = Date.now()));
-            ob.observe(document, {subtree: true, childList: true, attributes: true});
-            const start = Date.now();
-            (function check() {
-                if (Date.now() - last > threshold) {
-                    ob.disconnect();
-                    resolve(true);
-                    return;
-                }
-                if (Date.now() - start > timeoutMs) {
-                    ob.disconnect();
-                    resolve(false);
-                    return;
-                }
-                setTimeout(check, 50);
-            })();
-        })
-    """
-    try:
-        await PAGE.evaluate(script, timeout_ms)
-    except Exception:
-        await PAGE.wait_for_timeout(100)
-
-
-async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> str:
-    """Safely retrieve page content with navigation error handling."""
-    if not PAGE:
-        return ""
-    
-    for attempt in range(max_retries):
-        try:
-            # Wait for page to be in a stable state first
-            await _stabilize_page()
-            
-            # Try to get the content
-            return await PAGE.content()
-            
-        except Exception as e:
-            error_str = str(e).lower()
-            
-            # Check if this is the navigation error we're trying to fix
-            if "navigating and changing" in error_str or "page is navigating" in error_str:
-                log.warning("Page content retrieval attempt %d failed due to navigation: %s", attempt + 1, str(e))
-                
-                if attempt < max_retries - 1:
-                    # Wait a bit longer for navigation to complete
-                    await asyncio.sleep(delay_ms / 1000)
-                    
-                    # Try additional stabilization
-                    try:
-                        await PAGE.wait_for_load_state("domcontentloaded", timeout=5000)
-                        await PAGE.wait_for_load_state("networkidle", timeout=3000)
-                    except Exception:
-                        pass  # Continue with normal retry
-                    
-                    continue
-                else:
-                    # Final attempt failed
-                    log.warning("Final attempt to get page content failed due to navigation: %s", str(e))
-                    return ""
-            else:
-                # Different error, log and return empty content
-                log.warning("Page content retrieval failed: %s", str(e))
-                return ""
-    
-    return ""
-
-
-# SPA 安定化関数 ----------------------------------------
-async def _stabilize_page():
-    """SPA で DOM が書き換わるまで待機する共通ヘルパ."""
-    if not PAGE:
+    if PAGE is None:
         return
-        
-    try:
-        # Enhanced stability checks for better dynamic content handling
-        
-        # 1. Wait for network to be idle
-        await PAGE.wait_for_load_state("networkidle", timeout=SPA_STABILIZE_TIMEOUT)
-        
-        # 2. Wait for DOM mutations to stabilize
-        await _wait_dom_idle(SPA_STABILIZE_TIMEOUT)
-        
-        # 3. Additional wait for common dynamic loading indicators to disappear
-        await _wait_for_loading_indicators_to_disappear()
-        
-    except Exception:
-        # Fallback to basic timeout if advanced waiting fails
-        await PAGE.wait_for_timeout(min(500, SPA_STABILIZE_TIMEOUT // 2))
+    await wait_dom_idle(PAGE, timeout_ms=timeout_ms)
 
 
 async def _wait_for_loading_indicators_to_disappear(timeout: int = 3000):
-    """Wait for common loading indicators to disappear."""
-    if not PAGE:
+    if PAGE is None:
         return
-        
-    # Common loading indicator selectors
-    loading_selectors = [
-        ".loading, .spinner, .loader",
-        "[data-testid*='loading'], [data-testid*='spinner']",
-        ".fa-spinner, .fa-circle-notch, .fa-refresh",
-        "[role='status'][aria-live]",
-        ".MuiCircularProgress-root, .ant-spin"
-    ]
-    
-    for selector in loading_selectors:
-        try:
-            # Wait for loading indicators to be hidden (if they exist)
-            await PAGE.wait_for_selector(selector, state="hidden", timeout=timeout)
-        except Exception:
-            continue  # Loading indicator may not exist, which is fine
+    await wait_for_loading_indicators(PAGE, timeout=timeout)
+
+
+async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> str:
+    if PAGE is None:
+        return ""
+    return await safe_get_page_content(
+        PAGE,
+        max_retries=max_retries,
+        delay_ms=delay_ms,
+        stabilization_timeout=SPA_STABILIZE_TIMEOUT,
+    )
+
+
+async def _stabilize_page():
+    if PAGE is None:
+        return
+    await stabilize_page(PAGE, timeout=SPA_STABILIZE_TIMEOUT)
 
 
 async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
@@ -2146,33 +1556,11 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             if not text or not str(text).strip():
                 action_warnings.append("WARNING:auto:scroll_to_text missing target text")
                 return action_warnings
-            script = """
-                (needle) => {
-                    if (!needle) return false;
-                    const target = String(needle).trim().toLowerCase();
-                    if (!target) return false;
-                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-                    while (walker.nextNode()) {
-                        const el = walker.currentNode;
-                        if (!(el instanceof Element)) continue;
-                        const style = window.getComputedStyle(el);
-                        if (style.visibility === 'hidden' || style.display === 'none') continue;
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width === 0 || rect.height === 0) continue;
-                        const content = (el.innerText || el.textContent || '').toLowerCase();
-                        if (content.includes(target)) {
-                            el.scrollIntoView({behavior: 'instant', block: 'center'});
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """
             try:
-                found = await PAGE.evaluate(script, str(text))
+                result = await perform_scroll_to_text(PAGE, str(text))
             except Exception as exc:
                 raise ExecutionError("ELEMENT_NOT_FOUND", f"scroll_to_text failed - {str(exc)}", {"text": text})
-            if not found:
+            if not result.get("success"):
                 raise ExecutionError("ELEMENT_NOT_FOUND", f"Text '{text}' not found on page", {"text": text})
             return action_warnings
 
@@ -2180,186 +1568,36 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             script = act.get("script") or val
             if script:
                 try:
-                    result = await PAGE.evaluate(script)
+                    result = await run_eval_js(PAGE, script)
                     EVAL_RESULTS.append(result)
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:eval_js failed - {str(e)}")
             return action_warnings
-            
+
         if a == "click_blank_area":
             try:
-                # JavaScript to find and click blank area
-                click_blank_script = """
-                (function() {
-                    const viewportWidth = window.innerWidth;
-                    const viewportHeight = window.innerHeight;
-                    
-                    function isBlankPoint(x, y) {
-                        const element = document.elementFromPoint(x, y);
-                        if (!element) return true;
-                        
-                        if (element.tagName === 'BODY' || element.tagName === 'HTML') {
-                            return true;
-                        }
-                        
-                        const style = window.getComputedStyle(element);
-                        const isInteractive = element.tagName.match(/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/) ||
-                                             element.hasAttribute('onclick') ||
-                                             element.hasAttribute('role') ||
-                                             style.cursor === 'pointer';
-                        
-                        if (!isInteractive && (!element.textContent || element.textContent.trim() === '')) {
-                            return true;
-                        }
-                        
-                        return false;
-                    }
-                    
-                    const candidates = [
-                        [50, 50],
-                        [viewportWidth - 50, 50],
-                        [50, viewportHeight - 50],
-                        [viewportWidth - 50, viewportHeight - 50],
-                        [viewportWidth / 2, 50],
-                        [viewportWidth / 2, viewportHeight - 50],
-                        [50, viewportHeight / 2],
-                        [viewportWidth - 50, viewportHeight / 2],
-                        [viewportWidth / 2, viewportHeight / 2]
-                    ];
-                    
-                    for (let [x, y] of candidates) {
-                        if (isBlankPoint(x, y)) {
-                            // Click at the blank coordinates
-                            const event = new MouseEvent('click', {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true,
-                                clientX: x,
-                                clientY: y
-                            });
-                            document.elementFromPoint(x, y).dispatchEvent(event);
-                            return {success: true, x: x, y: y};
-                        }
-                    }
-                    
-                    // Fallback click
-                    const event = new MouseEvent('click', {
-                        view: window,
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: 50,
-                        clientY: 50
-                    });
-                    document.elementFromPoint(50, 50).dispatchEvent(event);
-                    return {success: true, x: 50, y: 50, fallback: true};
-                })();
-                """
-                
-                result = await PAGE.evaluate(click_blank_script)
+                result = await perform_click_blank_area(PAGE)
                 EVAL_RESULTS.append(result)
-                
-                if result.get('fallback'):
+                if result.get("fallback"):
                     action_warnings.append("INFO:auto:Used fallback coordinates for blank area click")
-                    
+                if not result.get("success"):
+                    action_warnings.append("WARNING:auto:click_blank_area did not report success")
             except Exception as e:
                 action_warnings.append(f"WARNING:auto:click_blank_area failed - {str(e)}")
             return action_warnings
-            
+
         if a == "close_popup":
             try:
-                # Enhanced popup detection and closing
-                close_popup_script = """
-                (function() {
-                    // First, detect popups
-                    const popupSelectors = [
-                        '[role="dialog"]',
-                        '[role="alertdialog"]', 
-                        '.modal',
-                        '.popup',
-                        '.overlay',
-                        '.dialog',
-                        '.modal-backdrop',
-                        '.modal-overlay',
-                        '[data-testid*="modal"]',
-                        '[data-testid*="popup"]',
-                        '[data-testid*="dialog"]',
-                        '[class*="modal"]',
-                        '[class*="popup"]',
-                        '[class*="overlay"]',
-                        '[class*="dialog"]'
-                    ];
-                    
-                    let foundPopups = [];
-                    for (let selector of popupSelectors) {
-                        const elements = document.querySelectorAll(selector);
-                        for (let el of elements) {
-                            const style = window.getComputedStyle(el);
-                            if (style.display !== 'none' && 
-                                style.visibility !== 'hidden' && 
-                                style.opacity !== '0' &&
-                                el.offsetWidth > 0 && 
-                                el.offsetHeight > 0) {
-                                foundPopups.push(el);
-                            }
-                        }
-                    }
-                    
-                    if (foundPopups.length === 0) {
-                        return {found: false, message: 'No popups detected'};
-                    }
-                    
-                    // Try to click outside of all popup areas
-                    const viewportWidth = window.innerWidth;
-                    const viewportHeight = window.innerHeight;
-                    
-                    function isOutsidePopups(x, y) {
-                        for (let popup of foundPopups) {
-                            const rect = popup.getBoundingClientRect();
-                            if (x >= rect.left && x <= rect.right && 
-                                y >= rect.top && y <= rect.bottom) {
-                                return false;
-                            }
-                        }
-                        return true;
-                    }
-                    
-                    const candidates = [
-                        [50, 50],
-                        [viewportWidth - 50, 50],
-                        [50, viewportHeight - 50],
-                        [viewportWidth - 50, viewportHeight - 50],
-                        [viewportWidth / 2, 50],
-                        [viewportWidth / 2, viewportHeight - 50]
-                    ];
-                    
-                    for (let [x, y] of candidates) {
-                        if (isOutsidePopups(x, y)) {
-                            const event = new MouseEvent('click', {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true,
-                                clientX: x,
-                                clientY: y
-                            });
-                            document.elementFromPoint(x, y).dispatchEvent(event);
-                            return {found: true, clicked: true, x: x, y: y, popupCount: foundPopups.length};
-                        }
-                    }
-                    
-                    return {found: true, clicked: false, message: 'Could not find area outside popups'};
-                })();
-                """
-                
-                result = await PAGE.evaluate(close_popup_script)
+                result = await perform_close_popup(PAGE)
                 EVAL_RESULTS.append(result)
-                
-                if result.get('found') and result.get('clicked'):
-                    action_warnings.append(f"INFO:auto:Closed {result.get('popupCount', 0)} popup(s) by clicking outside at ({result.get('x')}, {result.get('y')})")
-                elif result.get('found') and not result.get('clicked'):
+                if result.get("found") and result.get("clicked"):
+                    action_warnings.append(
+                        f"INFO:auto:Closed {result.get('popupCount', 0)} popup(s) by clicking outside at ({result.get('x')}, {result.get('y')})"
+                    )
+                elif result.get("found") and not result.get("clicked"):
                     action_warnings.append("WARNING:auto:Popup detected but could not find safe click area")
                 else:
                     action_warnings.append("INFO:auto:No popups detected to close")
-                    
             except Exception as e:
                 action_warnings.append(f"WARNING:auto:close_popup failed - {str(e)}")
             return action_warnings

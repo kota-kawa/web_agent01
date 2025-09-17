@@ -55,7 +55,7 @@ def go_forward() -> Dict:
 
 
 def hover(target: str) -> Dict:
-    return {"action": "hover", "target": target}
+    return _legacy_payload(models.HoverAction(selector=target))
 
 
 def select_option(target: str, value: str) -> Dict:
@@ -81,7 +81,7 @@ def eval_js(script: str) -> Dict:
     page state must be inspected via DOM APIs.  The returned value is recorded
     by the automation server and can be fetched with :func:`get_eval_results`.
     """
-    return {"action": "eval_js", "script": script}
+    return _legacy_payload(models.EvalJsAction(script=script))
 
 
 def stop(reason: str, message: str = "") -> Dict:
@@ -94,7 +94,7 @@ def stop(reason: str, message: str = "") -> Dict:
         reason: Type of stop (e.g., "captcha", "confirmation", "repeated_failures")
         message: Optional message to display to the user
     """
-    return {"action": "stop", "reason": reason, "message": message}
+    return _legacy_payload(models.StopAction(reason=reason, message=message))
 
 
 def click_blank_area() -> Dict:
@@ -106,7 +106,7 @@ def click_blank_area() -> Dict:
     Returns:
         Dictionary representing a blank area click action
     """
-    return {"action": "click_blank_area"}
+    return _legacy_payload(models.ClickBlankAreaAction())
 
 
 def close_popup() -> Dict:
@@ -118,14 +118,14 @@ def close_popup() -> Dict:
     Returns:
         Dictionary representing a popup close action
     """
-    return {"action": "close_popup"}
+    return _legacy_payload(models.ClosePopupAction())
 
 
 def refresh_catalog() -> Dict:
     """Refresh the element catalog prior to issuing index-based commands."""
-    return {"action": "refresh_catalog"}
+    return _legacy_payload(models.RefreshCatalogAction())
 
 
 def scroll_to_text(text: str) -> Dict:
     """Scroll to the area containing the specified text snippet."""
-    return {"action": "scroll_to_text", "target": text}
+    return _legacy_payload(models.ScrollToTextAction(text=text))

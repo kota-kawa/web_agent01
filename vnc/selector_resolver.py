@@ -187,7 +187,8 @@ class SelectorResolver:
         element = handle_js.as_element() if handle_js else None
         if element is None:
             return None
-        attempt = await self._build_attempt(element, selector, strategy="stable")
+        locator = element.locator(":scope")
+        attempt = await self._build_attempt(locator, element, selector, strategy="stable")
         self.store.update(selector.stable_id, attempt.dom_path, attempt.text_digest)
         return attempt.to_resolved(selector.stable_id)
 
@@ -258,11 +259,13 @@ class SelectorResolver:
         attempts: List[ResolutionAttempt] = []
         count = await locator.count()
         for index in range(min(count, MAX_CANDIDATES_PER_STRATEGY)):
-            handle = await locator.nth(index).element_handle()
+            candidate_locator = locator.nth(index)
+            handle = await candidate_locator.element_handle()
             if handle is None:
                 continue
             attempts.append(
                 await self._build_attempt(
+                    candidate_locator,
                     handle,
                     selector,
                     strategy=strategy,
@@ -274,6 +277,7 @@ class SelectorResolver:
 
     async def _build_attempt(
         self,
+        locator: Locator,
         element: ElementHandle,
         selector: Selector,
         *,
@@ -293,7 +297,8 @@ class SelectorResolver:
         }
         return ResolutionAttempt(
             selector=selector,
-            locator=element,
+            locator=locator,
+            element=element,
             dom_path=dom_path,
             text_digest=text_summary,
             strategy=strategy,
