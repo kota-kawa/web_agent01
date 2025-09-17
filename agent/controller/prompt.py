@@ -442,7 +442,7 @@ def build_prompt(
     制約 : 返答は **JSONの前の説明文 + JSON(DSL) オブジェクトのみ**。前後に Markdown・説明・改行・コードフェンス禁止。
     
     ========================================================================
-    1. トップレベル構造（INDEX_MODE 対応）
+    1. トップレベル構造
     {
       "actions": [ <Action1>, <Action2>, ... ],   # 0‥3 件まで
       "complete": true|false                      # 省略可（タスク完了なら true）
@@ -451,62 +451,34 @@ def build_prompt(
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。
 
     ========================================================================
-    2. アクションは 18 種（INDEX_MODE 対応の新規追加含む）
-
-**INDEX_MODE エラー処理**: 実行時にエラーが発生した場合、以下のエラーコードに応じて対処:
-- `CATALOG_OUTDATED`: `{ "actions": [{"action": "refresh_catalog"}], "complete": false }`
-- `ELEMENT_NOT_FOUND`: `{ "actions": [{"action": "scroll_to_text", "text": "目的のテキスト"}], "complete": false }`
-- `ELEMENT_NOT_INTERACTABLE`: スクロールで要素を可視化してから再試行
+    2. アクションは 15 種のみ
 
     | action            | 必須キー                                   | 追加キー            | 説明                 |
     |-------------------|--------------------------------------------|--------------------|----------------------|
     | navigate          | target (URL)                              | —                  | URL へ遷移           |
-    | click             | target (index=N または CSS/XPath)         | —                  | 要素クリック         |
+    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |
     | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |
-    | type              | target (index=N または CSS/XPath), value  | —                  | テキスト入力         |
+    | type              | target, value                             | —                  | テキスト入力         |
     | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |
     | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |
     | go_back           | —                                         | —                  | ブラウザ戻る         |
     | go_forward        | —                                         | —                  | ブラウザ進む         |
-    | hover             | target (index=N または CSS/XPath)         | —                  | ホバー               |
-    | select_option     | target (index=N または CSS/XPath), value  | —                  | ドロップダウン選択   |
+    | hover             | target                                    | —                  | ホバー               |
+    | select_option     | target, value                             | —                  | ドロップダウン選択   |
     | press_key         | key                                       | target(**Enter時は必須**。それ以外は任意） | キー送信 |
     | wait_for_selector | target, ms                                | —                  | 要素待機             |
-    | extract_text      | target (index=N または CSS/XPath)         | attr (任意)        | テキスト取得         |
+    | extract_text      | target                                    | attr (任意)        | テキスト取得         |
     | eval_js           | script                                    | —                  | JavaScript 実行      |
     | stop              | reason                                    | message (任意)     | 実行停止・ユーザー入力待機 |
-    | refresh_catalog   | —                                         | —                  | 要素カタログ再生成   |
-    | scroll_to_text    | text                                      | —                  | 指定テキストまでスクロール |
-    | wait_network      | —                                         | timeout (ms, 任意) | ネットワーク待機     |
 
-    **INDEX_MODE対応**: click, type, hover, select_option, extract_text は target で `index=N` 指定可能。
-    
     **上記以外の action 名・キーは絶対に出力しない。**
 
     ========================================================================
-    3. セレクタ設計ガイドライン（INDEX_MODE 対応）
-        
-        **【基本方針】INDEX_MODE 有効時は index= を最優先で使用**
-        
-        - 1. **INDEX指定を最優先**：ページ上の要素カタログから `index=N`（例：`"target": "index=0"`）で指定。
-              この方式により、自動的に最適なセレクタ（getByRole, text, id, data-testid, CSS, XPath）が適用される。
-        
-        - 2. **要素が見つからない場合の対処**：
-              - 要素カタログが古い可能性 → `refresh_catalog` アクションを実行
-              - 画面外の要素の可能性 → `scroll_to_text` で目的テキストまでスクロール後 `refresh_catalog`
-        
-        - 3. **エラーコード別対処**：
-              - `CATALOG_OUTDATED` → `refresh_catalog` を実行
-              - `ELEMENT_NOT_FOUND` → `scroll_to_text` → `refresh_catalog` → 再試行
-              - `ELEMENT_NOT_INTERACTABLE` → スクロールして要素を可視化してから再試行
-        
-        - 4. **フォールバック（CSS/XPath は最終手段）**：
-              - index= で解決できない場合のみ従来の css= や xpath= を使用
-              - 1. role/アクセシブルネーム、label、placeholder、alt、title を CSS で表現
-              - 2. テキストの使い分け：厳密一致は `click_text`、揺れありは `:has-text()` 併用
-              - 3. getByRole 相当：`[role="button"]:has-text("Sign in")` など
-              - 4. XPath は最終手段
-        
+    3. セレクタ設計ガイドライン
+        - 1. **ユーザー向け属性を最優先**：`role`/アクセシブルネーム、`label`、`placeholder`、`alt`、`title` を CSS で表現（例：`css=button[aria-label="検索"]`、`css=label:has-text("パスワード")+input`、`css=input[placeholder="検索"]`、`css=img[alt="ロゴ"]`）。
+        - 2. **テキストの使い分け**：厳密一致は `click_text`。揺れが想定される場合は `click` で `:text-is()`（厳密）または `:has-text()`（空白正規化・大小非区別）を**他属性と併用**。
+        - 3. **getByRole 相当の明示**：`role`/`name` に相当する属性があるときは CSS で表現（例：`css=[role="button"]:has-text("Sign in")`）。
+        - 4. **XPath は最終手段**：深い XPath や `nth-of-type` の乱用を避け、必要最小限に留める。
         - 5. **可視化と待機**：クリック前に必要ならスクロール・`wait_for_selector` で可視化を担保。固定 `wait` は最小限。
         - 6. **バックアップ選択子**：主要選択子が失敗した場合に備え、role/label/placeholder/alt/testid の順で**1 件のみ**代替を後続アクションに用意。
 

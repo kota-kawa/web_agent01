@@ -402,18 +402,8 @@ def forward_dsl():
     payload = request.get_json(force=True)
     if not payload.get("actions"):
         return jsonify({"html": "", "warnings": []})
-    
     try:
-        # Check if enhanced DSL executor should be used
-        expected_catalog_version = request.headers.get("X-Catalog-Version")
-        
-        # Try enhanced DSL executor first
-        try:
-            from agent.dsl_executor import execute_enhanced_dsl
-            res_obj = execute_enhanced_dsl(payload, expected_catalog_version, timeout=120)
-        except ImportError:
-            # Fall back to original executor if enhanced version not available
-            res_obj = execute_dsl(payload, timeout=120)
+        res_obj = execute_dsl(payload, timeout=120)
 
         # Update conversation history with the current URL after execution
         update_last_history_url()
@@ -431,34 +421,6 @@ def forward_dsl():
         log.error("forward_dsl error: %s", e)
         error_warning = _truncate_warning(f"ERROR:auto:Communication error - {str(e)}")
         return jsonify({"html": "", "warnings": [error_warning]})
-
-
-@app.route("/automation/element-catalog", methods=["GET"])
-def get_element_catalog():
-    """Get current element catalog for LLM consumption."""
-    try:
-        from agent.dsl_executor import get_abbreviated_catalog
-        catalog = get_abbreviated_catalog()
-        return jsonify({"catalog": catalog})
-    except ImportError:
-        return jsonify({"catalog": [], "error": "Enhanced DSL executor not available"})
-    except Exception as e:
-        log.error("get_element_catalog error: %s", e)
-        return jsonify({"catalog": [], "error": str(e)})
-
-
-@app.post("/automation/refresh-catalog")
-def refresh_element_catalog():
-    """Force refresh of element catalog."""
-    try:
-        from agent.dsl_executor import refresh_catalog
-        result = refresh_catalog()
-        return jsonify(result)
-    except ImportError:
-        return jsonify({"success": False, "error": "Enhanced DSL executor not available"})
-    except Exception as e:
-        log.error("refresh_element_catalog error: %s", e)
-        return jsonify({"success": False, "error": str(e)})
 
 
 @app.route("/automation/stop-request", methods=["GET"])
