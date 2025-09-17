@@ -1250,17 +1250,41 @@ async def _safe_fill(l, val: str, timeout=None):
     """Enhanced safe filling with multiple strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
-        
+
+    retry_error = None
     try:
+        # Ensure the element exists before interacting with it
+        await l.first.wait_for(state="attached", timeout=timeout)
+
+        # Quickly check visibility so we can fall back earlier for hidden elements
+        element_visible = True
+        try:
+            element_visible = await l.first.is_visible()
+        except Exception:
+            element_visible = True
+
+        if not element_visible:
+            try:
+                await l.first.wait_for(
+                    state="visible",
+                    timeout=min(1000, timeout),
+                )
+                element_visible = True
+            except Exception:
+                element_visible = False
+
+        if not element_visible:
+            raise Exception("Element not visible for direct fill interaction")
+
         await _prepare_element(l, timeout)
-        
+
         # Clear existing content first
         await l.first.click(timeout=timeout)
         await l.first.fill("", timeout=timeout)
-        
+
         # Fill new content
         await l.first.fill(val, timeout=timeout)
-        
+
         # Verify the content was set
         current_val = await l.first.input_value()
         if current_val != val:
@@ -1268,21 +1292,60 @@ async def _safe_fill(l, val: str, timeout=None):
             await l.first.click(timeout=timeout)
             await l.first.press("Control+a")
             await l.first.type(val, delay=50)
-            
+
     except Exception as e:
         log.warning("Fill retry with alternative method due to: %s", e)
         try:
-            # Alternative: click first, then fill
-            await l.first.click(timeout=timeout)
-            await l.first.fill(val, timeout=timeout)
-        except Exception as retry_error:
-            # Last resort: JavaScript set value
+            element_visible = await l.first.is_visible()
+        except Exception:
+            element_visible = False
+
+        if element_visible:
             try:
-                await l.first.evaluate(f"el => el.value = '{val}'")
-                await l.first.dispatch_event("input")
-            except Exception as js_error:
-                # Include original error context in the final exception
-                raise Exception(f"Fill failed - Original: {str(e)}, Retry: {str(retry_error)}, JS: {str(js_error)}")
+                # Alternative: click first, then fill
+                await l.first.click(timeout=timeout)
+                await l.first.fill("", timeout=timeout)
+                await l.first.fill(val, timeout=timeout)
+
+                current_val = await l.first.input_value()
+                if current_val != val:
+                    await l.first.click(timeout=timeout)
+                    await l.first.press("Control+a")
+                    await l.first.type(val, delay=50)
+
+                return
+            except Exception as alternative_error:
+                retry_error = alternative_error
+
+        try:
+            # Last resort: JavaScript set value
+            await l.first.evaluate(
+                """
+                (el, value) => {
+                    if (!el) {
+                        return;
+                    }
+                    const proto = Object.getPrototypeOf(el);
+                    const descriptor = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (descriptor && descriptor.set) {
+                        descriptor.set.call(el, value);
+                    } else {
+                        el.value = value;
+                    }
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                """,
+                val,
+            )
+        except Exception as js_error:
+            # Include original error context in the final exception
+            extra = f", Retry: {str(retry_error)}" if retry_error else ""
+            raise Exception(
+                f"Fill failed - Original: {str(e)}{extra}, JS: {str(js_error)}"
+            )
+
+        return
 
 
 async def _safe_hover(l, timeout=None):
