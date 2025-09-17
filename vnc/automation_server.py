@@ -11,7 +11,7 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 
@@ -612,6 +612,31 @@ def _parse_index_target(target: str) -> Optional[int]:
         return int(text.split("=", 1)[1])
     except ValueError:
         return None
+
+
+def _actions_use_catalog_indices(actions: Iterable[Dict[str, Any]]) -> bool:
+    for act in actions or []:
+        if not isinstance(act, dict):
+            continue
+
+        candidates: List[str] = []
+        target = act.get("target")
+        if isinstance(target, list):
+            candidates.extend(str(t) for t in target if isinstance(t, str))
+        elif isinstance(target, str):
+            candidates.append(target)
+
+        value = act.get("value")
+        if isinstance(value, list):
+            candidates.extend(str(v) for v in value if isinstance(v, str))
+        elif isinstance(value, str):
+            candidates.append(value)
+
+        for candidate in candidates:
+            if _parse_index_target(candidate) is not None:
+                return True
+
+    return False
 
 
 def _log_index_adoption(version: str, index: int, selector: str, action: str) -> None:
@@ -2375,6 +2400,7 @@ def execute_dsl():
         return jsonify(response)
 
     actions = data.get("actions", [])
+    uses_catalog_indices = _actions_use_catalog_indices(actions)
     for i, action in enumerate(actions):
         for warning in _validate_action_params(action):
             warnings.append(f"[{correlation_id}] Action {i+1}: {warning}")
@@ -2450,28 +2476,50 @@ def execute_dsl():
         before_signature = dict(observation_signature) if observation_signature else {}
         current_version = (observation_signature or {}).get("catalog_version")
         refresh_only = all(a.get("action") == "refresh_catalog" for a in actions)
-        if expected_catalog_version and current_version and current_version != expected_catalog_version and not refresh_only:
-            success = False
-            error_info = {
-                "code": "CATALOG_OUTDATED",
-                "message": "Element catalog is outdated. Please execute refresh_catalog.",
-                "details": {
-                    "expected": expected_catalog_version,
-                    "current": current_version,
-                },
-            }
-            html = _run(_safe_get_page_content()) if PAGE else ""
-            response = {
-                "success": success,
-                "error": error_info,
-                "warnings": warnings,
-                "html": html,
-                "correlation_id": correlation_id,
-                "observation": _build_observation(nav_detected=False, signature=observation_signature),
-                "is_done": complete_flag,
-                "complete": complete_flag,
-            }
-            return jsonify(response)
+        if (
+            expected_catalog_version
+            and current_version
+            and current_version != expected_catalog_version
+            and not refresh_only
+        ):
+            warnings.append(
+                f"[{correlation_id}] WARNING:auto:Catalog version mismatch detected (expected {expected_catalog_version}, current {current_version}). Attempting automatic refresh."
+            )
+            auto_refresh_succeeded = False
+            new_version = current_version
+            try:
+                refreshed_catalog = _run(_generate_element_catalog(force=True))
+                auto_refresh_succeeded = bool(refreshed_catalog)
+                new_version = (refreshed_catalog or {}).get("catalog_version") or current_version
+                updated_signature = _CURRENT_CATALOG_SIGNATURE or observation_signature
+                if updated_signature:
+                    observation_signature = dict(updated_signature)
+                    before_signature = dict(observation_signature)
+                version_text = new_version or current_version or "unknown"
+                warnings.append(
+                    f"[{correlation_id}] INFO:auto:Element catalog auto-refreshed (version={version_text})."
+                )
+            except ExecutionError as exc:
+                warnings.append(
+                    f"[{correlation_id}] ERROR:auto:Automatic catalog refresh failed - {exc}"
+                )
+            except Exception as exc:
+                warnings.append(
+                    f"[{correlation_id}] ERROR:auto:Automatic catalog refresh failed - {str(exc)}"
+                )
+            current_version = new_version
+            if (
+                uses_catalog_indices
+                and expected_catalog_version
+                and current_version != expected_catalog_version
+            ):
+                warnings.append(
+                    f"[{correlation_id}] WARNING:auto:Catalog version still differs from planner expectation (expected {expected_catalog_version}, now {current_version}). Index-based targets may require a new plan."
+                )
+                if not auto_refresh_succeeded:
+                    warnings.append(
+                        f"[{correlation_id}] WARNING:auto:Proceeding without a refreshed catalog may cause element mismatches."
+                    )
     else:
         observation_signature = _collect_basic_signature()
 
