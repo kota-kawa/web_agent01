@@ -102,3 +102,49 @@ def close_popup() -> Dict:
         Dictionary representing a popup close action
     """
     return {"action": "close_popup"}
+
+
+def refresh_catalog() -> Dict:
+    """Refresh the element catalog to get updated indices.
+    
+    Use this when elements have changed (after navigation, DOM updates, etc.)
+    or when you get a CATALOG_OUTDATED error.
+    
+    Returns:
+        Dictionary representing a refresh catalog action
+    """
+    return {"action": "refresh_catalog"}
+
+
+def scroll_to_text(text: str) -> Dict:
+    """Scroll to element containing the specified text.
+    
+    This action finds an element containing the given text and scrolls it
+    into view. Useful when an element is not visible and you need to 
+    scroll to interact with it.
+    
+    Args:
+        text: Text content to search for and scroll to
+        
+    Returns:
+        Dictionary representing a scroll to text action
+    """
+    return {"action": "scroll_to_text", "text": text}
+
+
+def wait_until(until: str, value: str = "", timeout: int = 5000) -> Dict:
+    """Wait for a specific condition to be met.
+    
+    Args:
+        until: Type of wait condition ('network_idle', 'selector', 'timeout')
+        value: Value for the condition (selector string for 'selector', 
+               milliseconds for 'timeout', ignored for 'network_idle')
+        timeout: Maximum time to wait in milliseconds
+        
+    Returns:
+        Dictionary representing a wait until action
+    """
+    action = {"action": "wait", "until": until, "timeout": timeout}
+    if value:
+        action["value"] = value
+    return action

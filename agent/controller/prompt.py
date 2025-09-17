@@ -2,9 +2,15 @@ import os
 import logging
 from ..utils.html import strip_html
 from ..browser.dom import DOMElementNode
+from ..element_catalog import generate_element_catalog, get_catalog_generator
 
 log = logging.getLogger("controller")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
+
+
+def _get_index_mode_setting() -> bool:
+    """Get INDEX_MODE setting from environment or default to True."""
+    return os.getenv("INDEX_MODE", "true").lower() in ("true", "1", "yes", "on")
 
 
 def _extract_recent_warnings(hist, max_warnings=5):
@@ -178,21 +184,71 @@ def build_prompt(
                 # Include all collected error lines without truncation
                 error_line = "\n".join(lines) + "\n--------------------------------\n"
     dom_text = strip_html(page)
+    elem_lines = ""
+    catalog_info = ""
+    
     if elements:
-        nodes: list[DOMElementNode] = []
-        if isinstance(elements, DOMElementNode):
-            _collect_interactive(elements, nodes)
-            dom_text = elements.to_text(max_lines=None)
-            #print(dom_text)
-        elif isinstance(elements, list):
-            for n in elements:
-                if isinstance(n, DOMElementNode):
-                    _collect_interactive(n, nodes)
-        nodes.sort(key=lambda x: x.highlightIndex or 0)
-        elem_lines = "\n".join(
-            f"[{n.highlightIndex}] <{n.tagName}> {n.text or ''} id={n.attributes.get('id')} class={n.attributes.get('class')}"
-            for n in nodes
-        )
+        index_mode = _get_index_mode_setting()
+        
+        if index_mode and isinstance(elements, DOMElementNode):
+            # Generate element catalog for index-based targeting
+            try:
+                catalog = generate_element_catalog(elements, "", "")
+                
+                # Create abbreviated view for LLM
+                catalog_lines = []
+                for element in catalog.abbreviated_view:
+                    line_parts = [
+                        f"[{element.index}]",
+                        f"<{element.tag}>",
+                        f"{element.role}"
+                    ]
+                    
+                    # Add primary label if available
+                    if element.primary_label:
+                        line_parts.append(f'"{element.primary_label}"')
+                    
+                    # Add secondary label if available
+                    if element.secondary_label:
+                        line_parts.append(f"({element.secondary_label})")
+                    
+                    # Add state hints if available
+                    if element.state_hint:
+                        line_parts.append(f"[{element.state_hint}]")
+                    
+                    # Add href for links
+                    if element.href_short:
+                        line_parts.append(f"-> {element.href_short}")
+                    
+                    catalog_lines.append(" ".join(line_parts))
+                
+                elem_lines = "\n".join(catalog_lines)
+                catalog_info = f"\n⚡ 要素カタログ (v{catalog.catalog_version[:8]}): {catalog.short_summary}\n"
+                
+                # Also include structured DOM for context
+                dom_text = elements.to_text(max_lines=None)
+                
+            except Exception as e:
+                log.warning("Failed to generate element catalog: %s", e)
+                # Fallback to original method
+                index_mode = False
+        
+        # Fallback to original element listing if not using index mode
+        if not index_mode:
+            nodes: list[DOMElementNode] = []
+            if isinstance(elements, DOMElementNode):
+                _collect_interactive(elements, nodes)
+                dom_text = elements.to_text(max_lines=None)
+            elif isinstance(elements, list):
+                for n in elements:
+                    if isinstance(n, DOMElementNode):
+                        _collect_interactive(n, nodes)
+            
+            nodes.sort(key=lambda x: x.highlightIndex or 0)
+            elem_lines = "\n".join(
+                f"[{n.highlightIndex}] <{n.tagName}> {n.text or ''} id={n.attributes.get('id')} class={n.attributes.get('class')}"
+                for n in nodes
+            )
 
     template = """
         あなたは、ウェブサイトの構造とユーザーインターフェースを深く理解し、常に最も効率的で安定した方法でタスクを達成しようとする、経験豊富なWebオートメーションスペシャリストです。
@@ -343,31 +399,43 @@ def build_prompt(
 
     <action_object> は次のいずれか:
     { "action": "navigate",       "target": "https://example.com" }
-    { "action": "click",          "target": "css=button.submit" }
+    { "action": "click",          "target": "index=0" }      # ★推奨: インデックス指定
+    { "action": "click",          "target": "css=button.submit" }  # 従来方式
     { "action": "click_text",     "text":   "次へ" }
-    { "action": "type",           "target": "css=input[name=q]", "value": "検索ワード" }
+    { "action": "type",           "target": "index=1", "value": "検索ワード" }  # ★推奨
     { "action": "wait",           "ms": 1000 }
     { "action": "scroll",         "target": "css=div.list", "direction": "down", "amount": 400 }
     { "action": "go_back" }
     { "action": "go_forward" }
-    { "action": "hover",          "target": "css=div.menu" }
-    { "action": "select_option",   "target": "css=select", "value": "option1" }
-    { "action": "press_key",      "key": "Enter", "target": "css=input" }
+    { "action": "hover",          "target": "index=2" }      # ★推奨
+    { "action": "select_option",   "target": "index=3", "value": "option1" }  # ★推奨
+    { "action": "press_key",      "key": "Enter", "target": "index=4" }  # ★推奨
     { "action": "wait_for_selector", "target": "css=button.ok", "ms": 3000 }
     { "action": "extract_text",    "target": "css=div.content" }
     { "action": "eval_js",        "script": "document.title" }
     { "action": "stop",           "reason": "Need user confirmation", "message": "Are you a robot?" }
+    
+    # 新しい補助アクション
+    { "action": "refresh_catalog" }   # カタログを更新（ナビゲーション後等）
+    { "action": "scroll_to_text", "text": "探したいテキスト" }  # テキストまでスクロール
+    { "action": "wait", "until": "network_idle|selector|timeout", "value": "css=.loading", "timeout": 5000 }
 
     |ルール|
-    1. ページ遷移を含むステップでは**必ず**遷移を最後にし、次ターンで `wait_for_selector` → 目的操作の順に分離する。
-    2. 与えられた情報にある要素のみ操作してよい。要素名を予想してアクションを生成することはしてはいけない。
-    3. ユーザーの要求がすべて完了したのを、これまでのステップを見て確認した場合には、簡易的なユーザーへのメッセージと、 `actions` を **空配列** で返し、`complete:true`。
-    4. `click` はCSSセレクタで指定します。**非表示要素(`aria-hidden='true'`など)を避け、ユニークな属性(id, name, data-testidなど)を優先してください。**
-    5. `click_text` は厳密一致用。大小・空白の揺れが想定される場合は `click` と `:text-is()` / `:has-text()` を**他属性と併用**して指定する。
-    6. 待機は固定 `wait` より **`wait_for_selector` を優先**。ページ遷移直後の `wait(ms≥1000)` は 1 回のみ許容し、それ以外は対象要素に対する `wait_for_selector` を基本とする。
-    7. 類似要素が複数ある場合は `:nth-of-type()` や `:has-text()` などで特定性を高める。
-    8. 一度に出力できる `actions` は最大3件。状況確認が必要な場合は `complete:false` とし段階的に進める。
-    9. 一度に有効な複数の操作を出す場合には、各アクションの間に0.5秒の待機を設ける
+    1. **要素指定方法**: 一般的にインデックス指定 `target: "index=N"` を使用する。cssセレクタ `css=...` は最後の手段とする。
+    2. **エラー処理**: 
+       - CATALOG_OUTDATED エラーの場合 → `refresh_catalog` を実行
+       - ELEMENT_NOT_FOUND エラーの場合 → `scroll_to_text` → `refresh_catalog` → 再試行
+       - ELEMENT_NOT_INTERACTABLE エラーの場合 → `scroll_to_text` でスクロール → `refresh_catalog` → 再試行
+    3. **要素が見つからない場合**: `scroll_to_text` で関連テキストまでスクロール → `refresh_catalog` → インデックス指定で再試行
+    4. ページ遷移を含むステップでは**必ず**遷移を最後にし、次ターンで `refresh_catalog` → 目的操作の順に分離する。
+    5. 与えられた情報にある要素のみ操作してよい。要素名を予想してアクションを生成することはしてはいけない。
+    6. ユーザーの要求がすべて完了したのを、これまでのステップを見て確認した場合には、簡易的なユーザーへのメッセージと、 `actions` を **空配列** で返し、`complete:true` また `is_done:true`。
+    7. `click` はインデックス指定を優先。**非表示要素や無効要素を避け、表示されているインタラクティブ要素のインデックスを使用**。
+    8. `click_text` は厳密一致用。大小・空白の揺れが想定される場合は `click` と `index=N` を使用する。
+    9. 待機は固定 `wait` より **`wait_for_selector` を優先**。ページ遷移直後の `wait(ms≥1000)` は 1 回のみ許容し、それ以外は対象要素に対する `wait_for_selector` を基本とする。
+    10. 類似要素が複数ある場合でも、インデックス指定により正確に特定できる。
+    11. 一度に出力できる `actions` は最大3件。状況確認が必要な場合は `complete:false` とし段階的に進める。
+    12. 一度に有効な複数の操作を出す場合には、各アクションの間に0.5秒の待機を設ける
     10. **ユーザーがページ内テキストを要求している場合**:
         - `navigate` や `click` を行わずとも情報が取れるなら `actions` は空。
         - 説明部にページから抽出したテキストを含める（必要に応じて要約）。
@@ -543,7 +611,7 @@ def build_prompt(
 "
     ========================================================================
 
-    ---- 現在のページのDOMツリー ----
+    ---- 現在のページのDOMツリー ----{catalog_info}
     {dom_text}
     --------------------------------
     ## これまでの会話履歴
@@ -561,6 +629,7 @@ def build_prompt(
     system_prompt = (
         template.replace("{MAX_STEPS}", str(MAX_STEPS))
         .replace("{dom_text}", dom_text)
+        .replace("{catalog_info}", catalog_info)
         .replace("{past_conv}", past_conv)
         .replace("{cmd}", cmd)
         .replace("{add_img}", add_img)
