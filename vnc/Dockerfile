@@ -12,7 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # ---- Python ライブラリ -------------------------------------------------
-RUN pip install --no-cache-dir "playwright[all]==1.44.0" flask httpx jsonschema>=4.0 \
+RUN pip install --no-cache-dir \
+      "playwright[all]==1.44.0" \
+      flask \
+      httpx \
+      "jsonschema>=4.0" \
+      "pydantic>=2.5" \
   && playwright install --with-deps chromium
   
 
