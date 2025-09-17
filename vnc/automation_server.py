@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import httpx
 from flask import Flask, Response, jsonify, request
 from jsonschema import Draft7Validator, ValidationError
-from playwright.async_api import Error as PwError, async_playwright
+from playwright.async_api import Error as PwError, Locator, async_playwright
 
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 
@@ -1220,7 +1220,7 @@ async def _safe_click(l, force=False, timeout=None):
     """Enhanced safe clicking with multiple fallback strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
-        
+
     try:
         await _prepare_element(l, timeout)
         
@@ -1246,13 +1246,240 @@ async def _safe_click(l, force=False, timeout=None):
             raise
 
 
-async def _safe_fill(l, val: str, timeout=None):
+_TEXT_INPUT_SELECTOR = (
+    "input:not([type='hidden']):not([disabled]):not([readonly]), "
+    "textarea:not([disabled]):not([readonly]), "
+    "[contenteditable='true']"
+)
+_TEXT_INPUT_SELECTOR = "".join(_TEXT_INPUT_SELECTOR)
+
+
+async def _describe_element_for_typing(loc: Locator) -> Dict[str, Any]:
+    """Return metadata about the locator's first element for typing decisions."""
+    try:
+        target = loc.nth(0)
+        info = await target.evaluate(
+            """
+            (el) => {
+                const tag = el.tagName ? el.tagName.toLowerCase() : '';
+                const type = (el.type || '').toLowerCase ? (el.type || '').toLowerCase() : '';
+                const role = (el.getAttribute('role') || '').toLowerCase();
+                return {
+                    tag,
+                    type,
+                    role,
+                    name: el.getAttribute('name') || '',
+                    id: el.id || '',
+                    placeholder: el.getAttribute('placeholder') || '',
+                    disabled: !!el.disabled,
+                    readOnly: !!el.readOnly,
+                    contentEditable:
+                        el.isContentEditable ||
+                        (el.getAttribute('contenteditable') || '').toLowerCase() === 'true'
+                };
+            }
+            """
+        )
+        if not isinstance(info, dict):
+            return {}
+        # Normalise common fields
+        info["tag"] = (info.get("tag") or "").lower()
+        info["type"] = (info.get("type") or "").lower()
+        info["role"] = (info.get("role") or "").lower()
+        return info
+    except Exception as exc:
+        log.debug("Failed to describe element for typing: %s", exc)
+        return {}
+
+
+def _element_is_text_editable(info: Dict[str, Any]) -> bool:
+    """Return True if metadata indicates the element can accept text input."""
+    if not info:
+        return False
+
+    if info.get("contentEditable"):
+        return True
+
+    role = info.get("role") or ""
+    if role in {"textbox", "searchbox", "combobox"}:
+        return True
+
+    if info.get("disabled") or info.get("readOnly"):
+        return False
+
+    tag = info.get("tag") or ""
+    if tag == "textarea":
+        return True
+
+    if tag == "input":
+        input_type = info.get("type") or ""
+        allowed_types = {
+            "",
+            "text",
+            "search",
+            "email",
+            "tel",
+            "url",
+            "password",
+            "number",
+        }
+        return input_type in allowed_types
+
+    return False
+
+
+def _summarize_element(info: Dict[str, Any]) -> str:
+    """Summarise element metadata for warning messages."""
+    if not info:
+        return "unknown element"
+
+    parts: List[str] = []
+    tag = info.get("tag")
+    if tag:
+        parts.append(f"tag={tag}")
+    input_type = info.get("type")
+    if input_type:
+        parts.append(f"type={input_type}")
+    role = info.get("role")
+    if role:
+        parts.append(f"role={role}")
+    if info.get("contentEditable"):
+        parts.append("contentEditable=true")
+    if info.get("disabled"):
+        parts.append("disabled=true")
+    if info.get("readOnly"):
+        parts.append("readOnly=true")
+    identifier = info.get("name") or info.get("id") or info.get("placeholder")
+    if identifier:
+        trimmed = identifier.strip()
+        if len(trimmed) > 40:
+            trimmed = trimmed[:37] + "..."
+        parts.append(f"identifier={trimmed}")
+    return ", ".join(parts) if parts else "unknown element"
+
+
+async def _find_text_input_fallback(loc: Locator) -> tuple[Optional[Locator], Optional[str]]:
+    """Try to find a more appropriate text input related to the locator."""
+    if PAGE is None:
+        return None, None
+
+    try:
+        target = loc.nth(0)
+    except Exception:
+        return None, None
+
+    try:
+        descendants = target.locator(_TEXT_INPUT_SELECTOR)
+        if await descendants.count():
+            candidate = descendants.first
+            info = await _describe_element_for_typing(candidate)
+            if _element_is_text_editable(info):
+                return candidate, "descendant"
+    except Exception as exc:
+        log.debug("Text input descendant search failed: %s", exc)
+
+    try:
+        label_for = await target.get_attribute("for")
+    except Exception:
+        label_for = None
+
+    if label_for:
+        candidate = PAGE.locator(f"#{label_for}")
+        try:
+            if await candidate.count():
+                info = await _describe_element_for_typing(candidate)
+                if _element_is_text_editable(info):
+                    return candidate, "label_for"
+        except Exception as exc:
+            log.debug("label_for fallback failed for %s: %s", label_for, exc)
+
+    for attr in ("aria-controls", "aria-labelledby", "aria-describedby"):
+        try:
+            attr_value = await target.get_attribute(attr)
+        except Exception:
+            attr_value = None
+        if not attr_value:
+            continue
+        for candidate_id in attr_value.split():
+            candidate_id = candidate_id.strip()
+            if not candidate_id:
+                continue
+            candidate = PAGE.locator(f"#{candidate_id}")
+            try:
+                if await candidate.count():
+                    info = await _describe_element_for_typing(candidate)
+                    if _element_is_text_editable(info):
+                        return candidate, attr
+            except Exception as exc:
+                log.debug("%s fallback failed for %s: %s", attr, candidate_id, exc)
+
+    # Look for following text inputs in the DOM order
+    sibling_queries = [
+        "xpath=following::input[not(@type='hidden') and not(@disabled) and not(@readonly)][1]",
+        "xpath=following::textarea[not(@disabled) and not(@readonly)][1]",
+    ]
+    for query in sibling_queries:
+        try:
+            sibling = target.locator(query)
+            if await sibling.count():
+                info = await _describe_element_for_typing(sibling)
+                if _element_is_text_editable(info):
+                    return sibling, "sibling"
+        except Exception as exc:
+            log.debug("Sibling search failed for query %s: %s", query, exc)
+
+    # Traverse up to find a nearby input inside ancestor containers
+    current = target
+    for depth in range(3):
+        try:
+            current = current.locator("xpath=..").nth(0)
+        except Exception:
+            break
+        try:
+            candidate = current.locator(_TEXT_INPUT_SELECTOR)
+            if await candidate.count():
+                info = await _describe_element_for_typing(candidate)
+                if _element_is_text_editable(info):
+                    return candidate, f"ancestor_depth_{depth + 1}"
+        except Exception as exc:
+            log.debug("Ancestor search failed at depth %d: %s", depth + 1, exc)
+
+    return None, None
+
+
+async def _safe_fill(l, val: str, timeout=None, *, original_target: str = ""):
     """Enhanced safe filling with multiple strategies."""
     if timeout is None:
         timeout = ACTION_TIMEOUT
 
     retry_error = None
     try:
+        metadata = await _describe_element_for_typing(l)
+        if not _element_is_text_editable(metadata):
+            fallback_loc, fallback_reason = await _find_text_input_fallback(l)
+            if fallback_loc is not None:
+                log.info(
+                    "Resolved non-editable target '%s' to nearby input using %s fallback (%s)",
+                    original_target or "<unknown>",
+                    fallback_reason or "unknown",
+                    _summarize_element(await _describe_element_for_typing(fallback_loc)),
+                )
+                l = fallback_loc
+                metadata = await _describe_element_for_typing(l)
+                if not _element_is_text_editable(metadata):
+                    summary = _summarize_element(metadata)
+                    raise Exception(
+                        "Resolved element is still not text-editable ("
+                        + summary
+                        + "). Try a more specific input selector."
+                    )
+            else:
+                summary = _summarize_element(metadata)
+                raise Exception(
+                    "Target is not text-editable (" + summary + "). "
+                    "Use a selector that points to an input/textarea element or click the link instead."
+                )
+
         # Ensure the element exists before interacting with it
         await l.first.wait_for(state="attached", timeout=timeout)
 
@@ -2250,7 +2477,12 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 if a in ("click", "click_text"):
                     await _safe_click(loc, timeout=action_timeout)
                 elif a == "type":
-                    await _safe_fill(loc, val, timeout=action_timeout)
+                    await _safe_fill(
+                        loc,
+                        val,
+                        timeout=action_timeout,
+                        original_target=display_target,
+                    )
                 elif a == "hover":
                     await _safe_hover(loc, timeout=action_timeout)
                 elif a == "select_option":
