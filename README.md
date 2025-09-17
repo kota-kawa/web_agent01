@@ -21,13 +21,20 @@ The registry currently includes the following typed actions, all implemented in 
 | --- | --- |
 | `navigate` | Load a URL with optional follow-up wait conditions.【F:automation/dsl/models.py†L269-L279】 |
 | `click` | Click a selector with configurable button/count/delay.【F:automation/dsl/models.py†L281-L293】 |
+| `hover` | Hover over a selector before interacting or revealing menus.【F:automation/dsl/models.py†L304-L311】 |
 | `type` | Fill text inputs, optionally clearing first and pressing Enter.【F:automation/dsl/models.py†L295-L307】 |
 | `select` | Choose options by value or label from `<select>` elements.【F:automation/dsl/models.py†L309-L318】 |
 | `press_key` | Dispatch key combinations either to the focused element or the page.【F:automation/dsl/models.py†L321-L341】 |
 | `wait` | Wait for timeouts, document states, or selector visibility.【F:automation/dsl/models.py†L343-L362】 |
 | `scroll` | Scroll the viewport or a target element into view.【F:automation/dsl/models.py†L365-L379】 |
+| `scroll_to_text` | Scroll until text snippets appear in view.【F:automation/dsl/models.py†L402-L412】 |
 | `switch_tab` | Activate another page within the browser context (index, URL, title, etc.).【F:automation/dsl/models.py†L382-L390】 |
 | `focus_iframe` | Push/pop iframe focus using index/name/url/selector strategies.【F:automation/dsl/models.py†L393-L401】 |
+| `refresh_catalog` | Rebuild the index catalog before using `index=N` selectors.【F:automation/dsl/models.py†L435-L441】 |
+| `eval_js` | Evaluate arbitrary JavaScript and capture the result.【F:automation/dsl/models.py†L445-L451】 |
+| `click_blank_area` | Click outside elements to dismiss overlays/popups.【F:automation/dsl/models.py†L456-L463】 |
+| `close_popup` | Detect and close modal/pop-up overlays safely.【F:automation/dsl/models.py†L466-L473】 |
+| `stop` | Pause execution and wait for user feedback (captcha, confirmation, etc.).【F:automation/dsl/models.py†L476-L483】 |
 | `screenshot` | Capture viewport, full-page, or element screenshots.【F:automation/dsl/models.py†L404-L414】 |
 | `extract` | Read text/value/href/html from a selector.【F:automation/dsl/models.py†L417-L426】 |
 | `assert` | Assert element state (visible, hidden, attached, detached).【F:automation/dsl/models.py†L429-L438】 |
@@ -44,6 +51,8 @@ Legacy controller helpers translate high-level calls (e.g. `basic.click("#submit
 2. Validates click/wait sequencing and other structural constraints.【F:vnc/executor.py†L391-L397】
 3. Performs a dry run to resolve selectors up front, surfacing locator failures before acting.【F:vnc/executor.py†L398-L405】
 4. Executes each action with retries, exponential backoff, and specialised handlers for navigation, clicking, typing, scrolling, tab/iframe switching, screenshots, extraction, and assertions.【F:vnc/executor.py†L94-L335】【F:vnc/executor.py†L407-L434】
+
+Shared helper modules (`vnc/safe_interactions.py`, `vnc/page_stability.py`, and `vnc/page_actions.py`) consolidate element-preparation fallbacks, SPA stabilisation, and page-level interactions so both the executor and automation server reuse the same hardened routines.【F:vnc/safe_interactions.py†L1-L362】【F:vnc/page_stability.py†L1-L120】【F:vnc/page_actions.py†L1-L160】
 
 Every executed step is logged with a JSONL event, screenshot, selector metadata, and stable DOM digest, and failures also emit `error_report.json`.【F:vnc/executor.py†L436-L481】【F:vnc/structured_logging.py†L12-L75】 Run directories are created automatically under `runs/<run_id>/` (configurable).【F:vnc/config.py†L12-L84】
 
@@ -95,7 +104,7 @@ Once healthy, the automation API is available on `http://localhost:7000` and the
 Runtime defaults for the typed executor (timeouts, retries, log directory, headless/headful, screenshot mode) can be overridden via `AGENT_*` environment variables or a `[agent]` table in `config.toml` and are parsed by `vnc/config.py`.【F:vnc/config.py†L12-L76】 The automation server honours additional environment variables for navigation and locator timeouts, retry counts, SPA stabilisation, catalog behaviour, and domain allow/block lists (`ACTION_TIMEOUT`, `NAVIGATION_TIMEOUT`, `WAIT_FOR_SELECTOR_TIMEOUT`, `MAX_DSL_ACTIONS`, `INDEX_MODE`, `ALLOWED_DOMAINS`, `BLOCKED_DOMAINS`, etc.).【F:vnc/automation_server.py†L60-L107】
 
 ## Tests
-Run the test suite with `pytest -q`. The tests cover registry parsing of legacy payloads, legacy payload emission, typed run validation, and selector/string normalisation used by the front-end controller.【F:tests/test_dsl_models.py†L1-L53】【F:tests/test_normalize_actions.py†L1-L57】 Additional integration tests can be added under `tests/` as needed.
+Run the test suite with `pytest -q`. The tests cover registry parsing of legacy and new payloads, wrapper parity for newly added actions, typed run validation, and selector/string normalisation used by the front-end controller.【F:tests/test_dsl_models.py†L1-L104】【F:tests/test_normalize_actions.py†L1-L57】 Additional integration tests can be added under `tests/` as needed.
 
 ## Additional resources
 - Legacy action helpers (`agent/actions/basic.py`) remain available for prompt engineering while still benefiting from the typed models.【F:agent/actions/basic.py†L1-L130】

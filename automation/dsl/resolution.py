@@ -29,6 +29,7 @@ class ResolvedNode:
     strategy: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    locator: Any | None = field(default=None, repr=False)
     element: Any | None = field(default=None, repr=False)
 
 
@@ -38,6 +39,7 @@ class ResolutionAttempt:
 
     selector: Selector
     locator: Any
+    element: Any
     dom_path: str
     text_digest: str
     strategy: str
@@ -54,5 +56,6 @@ class ResolutionAttempt:
             strategy=self.strategy,
             metadata=dict(self.metadata),
             warnings=list(warnings or []),
-            element=self.locator,
+            locator=self.locator,
+            element=self.element,
         )
