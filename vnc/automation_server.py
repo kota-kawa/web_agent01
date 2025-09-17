@@ -2644,6 +2644,7 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
 # -------------------------------------------------- HTTP エンドポイント
 @app.post("/execute-dsl")
 def execute_dsl():
+    global _CURRENT_CATALOG_SIGNATURE
     correlation_id = str(uuid.uuid4())[:8]
     log.info("Starting DSL execution with correlation ID: %s", correlation_id)
 
