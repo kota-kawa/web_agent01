@@ -19,7 +19,6 @@ DEFAULTS: Dict[str, Any] = {
     "log_root": "runs",
     "headless": True,
     "screenshot_mode": "viewport",
-    "screenshot_timeout_ms": 5000,
 }
 
 
@@ -34,7 +33,6 @@ class RunConfig:
     log_root: Path = field(default_factory=lambda: Path(DEFAULTS["log_root"]))
     headless: bool = DEFAULTS["headless"]
     screenshot_mode: str = DEFAULTS["screenshot_mode"]
-    screenshot_timeout_ms: int = DEFAULTS["screenshot_timeout_ms"]
 
     @classmethod
     def from_mapping(cls, mapping: Dict[str, Any]) -> "RunConfig":
@@ -51,7 +49,6 @@ class RunConfig:
             log_root=Path(data["log_root"]),
             headless=bool(str(data["headless"]).lower() in {"true", "1", "yes"}),
             screenshot_mode=str(data["screenshot_mode"]),
-            screenshot_timeout_ms=int(data["screenshot_timeout_ms"]),
         )
 
 

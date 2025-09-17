@@ -91,15 +91,16 @@ class AsyncExecutor:
     def submit_playwright_execution(
         self,
         task_id: str,
-        execute_func: Callable[[Dict[str, Any]], Dict[str, Any]],
-        payload: Dict[str, Any],
+        execute_func: Callable,
+        actions: list,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """Submit Playwright execution for async processing."""
+        """Submit Playwright execution for async processing (optimized for immediate execution)."""
         task = self.tasks.get(task_id)
         if not task:
             log.error("Task %s not found", task_id)
             return False
-
+            
         if task.status != TaskStatus.PENDING:
             log.error("Task %s is not in pending state: %s", task_id, task.status)
             return False
@@ -128,11 +129,11 @@ class AsyncExecutor:
                 task.status = TaskStatus.RUNNING
                 task.started_at = time.time()
                 log.debug("Starting execution for task %s", task_id)
-
+                
                 # Execute the Playwright operations immediately
-                payload_data: Dict[str, Any] = dict(payload)
-                if not payload_data.get("actions") and not payload_data.get("plan"):
-                    raise ValueError("Execution payload must include 'actions' or 'plan'")
+                payload_data: Dict[str, Any] = {"actions": actions}
+                if payload:
+                    payload_data.update(payload)
                 result = execute_func(payload_data)
                 
                 # Ensure warnings are properly formatted and truncated
