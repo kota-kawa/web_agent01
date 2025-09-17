@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from typing import Any, Dict
 import requests
 from flask import (
@@ -99,6 +100,136 @@ os.makedirs(LOG_DIR, exist_ok=True)
 HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
 
 
+def _format_index_value(value: Any) -> str | None:
+    """Convert index-like values to the legacy ``index=N`` selector form."""
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        if value < 0:
+            return None
+        return f"index={value}"
+
+    if isinstance(value, float):
+        if value.is_integer() and value >= 0:
+            return f"index={int(value)}"
+        return None
+
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+
+    if not text:
+        return None
+
+    try:
+        idx = int(text)
+    except ValueError:
+        return None
+
+    if idx < 0:
+        return None
+
+    return f"index={idx}"
+
+
+def _escape_quotes(value: str) -> str:
+    return value.replace("\"", "\\\"")
+
+
+def _stringify_selector(selector: Any) -> str:
+    """Convert structured selector data into the legacy string-based DSL form."""
+
+    if selector is None:
+        return ""
+
+    if isinstance(selector, str):
+        return selector
+
+    if isinstance(selector, list):
+        parts = []
+        for item in selector:
+            formatted = _stringify_selector(item)
+            if formatted:
+                if formatted not in parts:
+                    parts.append(formatted)
+        return " || ".join(parts)
+
+    index_form = _format_index_value(selector)
+    if index_form:
+        return index_form
+
+    if isinstance(selector, dict):
+        if "selector" in selector and selector["selector"]:
+            candidate = _stringify_selector(selector["selector"])
+            if candidate:
+                return candidate
+
+        if "index" in selector:
+            index_form = _format_index_value(selector.get("index"))
+            if index_form:
+                return index_form
+
+        css_value = selector.get("css")
+        if css_value:
+            return f"css={css_value}"
+
+        xpath_value = selector.get("xpath")
+        if xpath_value:
+            return f"xpath={xpath_value}"
+
+        role_value = selector.get("role")
+        if role_value:
+            name_value = selector.get("name") or selector.get("text")
+            role_value = str(role_value).strip()
+            if name_value:
+                name_text = _escape_quotes(str(name_value).strip())
+                if name_text:
+                    return f'role={role_value}[name="{name_text}"]'
+            if role_value:
+                return f"role={role_value}"
+
+        text_value = selector.get("text")
+        if text_value:
+            return str(text_value)
+
+        aria_label = selector.get("aria_label") or selector.get("aria-label")
+        if aria_label:
+            escaped = _escape_quotes(str(aria_label).strip())
+            if escaped:
+                return f'css=[aria-label="{escaped}"]'
+
+        stable_id = selector.get("stable_id")
+        if stable_id:
+            stable = str(stable_id).strip()
+            if stable:
+                escaped = _escape_quotes(stable)
+                candidates = [f'css=[data-testid="{escaped}"]', f'css=[name="{escaped}"]']
+                if re.fullmatch(r"[A-Za-z_][-A-Za-z0-9_]*", stable):
+                    candidates.insert(1, f"css=#{stable}")
+                return " || ".join(candidates)
+
+        for key in ("value", "target"):
+            if selector.get(key):
+                candidate = _stringify_selector(selector[key])
+                if candidate:
+                    return candidate
+
+        for key, value in selector.items():
+            if isinstance(value, str) and value.strip():
+                return value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return str(value)
+
+    # Fallback to simple string conversion for any remaining types
+    try:
+        return str(selector)
+    except Exception:
+        return ""
+
+
 def normalize_actions(llm_response):
     """Extract and normalize actions from LLM response (optimized for speed)."""
     if not llm_response:
@@ -126,12 +257,18 @@ def normalize_actions(llm_response):
             normalized_action["target"] = action["selector"]
             
         # Handle click_text action (optimized)
-        elif (normalized_action.get("action") == "click_text" and 
+        elif (normalized_action.get("action") == "click_text" and
               "text" in action and "target" not in action):
             normalized_action["target"] = action["text"]
-            
+
+        if "target" in normalized_action:
+            normalized_action["target"] = _stringify_selector(normalized_action["target"])
+
+        if "value" in normalized_action and not isinstance(normalized_action["value"], str):
+            normalized_action["value"] = str(normalized_action["value"])
+
         normalized.append(normalized_action)
-    
+
     return normalized
 
 
