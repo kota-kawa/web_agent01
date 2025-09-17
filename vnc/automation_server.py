@@ -11,6 +11,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -21,6 +22,8 @@ from jsonschema import Draft7Validator, ValidationError
 from playwright.async_api import Error as PwError, Locator, async_playwright
 
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
+from vnc.executor import RunExecutor
+from vnc.config import load_config
 
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
@@ -2655,10 +2658,35 @@ def execute_dsl():
     nav_detected = False
     observation_signature: Optional[Dict[str, Any]] = None
 
+    def _handle_typed_run(payload: Dict[str, Any]):
+        try:
+            _run(_init_browser())
+            if PAGE is None:
+                raise RuntimeError("Browser page is not initialized")
+            if USE_INCOGNITO_CONTEXT:
+                _run(_create_clean_context())
+            executor = RunExecutor(PAGE)
+            result = _run(executor.run(payload))
+            result.setdefault("correlation_id", correlation_id)
+            return jsonify(result)
+        except Exception as exc:
+            log.exception("[%s] Typed DSL execution failed: %s", correlation_id, exc)
+            response = {
+                "success": False,
+                "error": {"code": "EXECUTION_FAILED", "message": str(exc), "details": {}},
+                "warnings": warnings,
+                "html": html,
+                "correlation_id": correlation_id,
+                "results": [],
+            }
+            return jsonify(response)
+
     try:
         data = request.get_json(force=True)
         if isinstance(data, list):
             data = {"actions": data}
+        if "plan" in data:
+            return _handle_typed_run(data)
         _validate_schema(data)
     except ValidationError as ve:
         warnings.append(f"[{correlation_id}] ERROR:auto:InvalidDSL - {str(ve)}")
@@ -3027,9 +3055,22 @@ def post_stop_response():
     
     # Clear the stop request
     _STOP_REQUEST = None
-    
+
     # Return the user response for inclusion in conversation history
     return jsonify({"status": "success", "user_response": user_response})
+
+
+@app.get("/events/<run_id>")
+def get_run_events(run_id: str):
+    """Return structured log events for the given run identifier."""
+    config = load_config()
+    events_path = Path(config.log_root) / run_id / "events.jsonl"
+    if not events_path.exists():
+        return jsonify({"error": "events_not_found"}), 404
+    try:
+        return Response(events_path.read_text(encoding="utf-8"), mimetype="application/json")
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.get("/healthz")
