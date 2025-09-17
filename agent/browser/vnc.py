@@ -46,6 +46,31 @@ def _truncate_warning(warning_msg, max_length=None):
     return warning_msg
 
 
+def _update_catalog_cache_from_response(result):
+    """Update element catalog cache based on executor response metadata."""
+
+    if not isinstance(result, dict):
+        return
+
+    observation = result.get("observation")
+    if not isinstance(observation, dict):
+        return
+
+    if not observation.get("catalog_version"):
+        return
+
+    try:
+        from agent.element_catalog import update_cache_from_signature
+    except Exception as exc:  # pragma: no cover - defensive safeguard
+        log.debug("Skipping catalog cache update: %s", exc)
+        return
+
+    try:
+        update_cache_from_signature(observation)
+    except Exception as exc:  # pragma: no cover - defensive safeguard
+        log.debug("Failed to propagate catalog cache update: %s", exc)
+
+
 def execute_dsl(payload, timeout=120):
     """Forward DSL JSON to the automation server with retry logic."""
     if not payload.get("actions"):
@@ -70,7 +95,9 @@ def execute_dsl(payload, timeout=120):
             r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=(5, timeout))
             r.raise_for_status()
             result = r.json()
-            
+
+            _update_catalog_cache_from_response(result)
+
             # Success - log if this was a retry
             if attempt > 1:
                 log.info("DSL execution succeeded on retry attempt %d", attempt)
