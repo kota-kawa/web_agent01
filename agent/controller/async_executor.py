@@ -109,7 +109,21 @@ class AsyncExecutor:
             """Return warning message without truncation (character limits removed)."""
             # Character limits removed for conversation history as requested
             return warning_msg
-            
+
+        def _format_error_info(error_info: Any) -> str:
+            """Normalize error information into a readable string."""
+            if isinstance(error_info, dict):
+                message = error_info.get("message") or "Unknown error"
+                code = error_info.get("code")
+                details = error_info.get("details")
+                segments = [message]
+                if code:
+                    segments.append(f"code={code}")
+                if details:
+                    segments.append(f"details={details}")
+                return " | ".join(segments)
+            return str(error_info)
+
         def run_execution():
             try:
                 task.status = TaskStatus.RUNNING
@@ -127,13 +141,15 @@ class AsyncExecutor:
                     if "warnings" in result and result["warnings"]:
                         # Include all warning messages without character limits
                         result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
-                    
+
                     # If execution returned an error but not in warnings format, convert it
-                    if "error" in result and result["error"]:
-                        error_msg = result["error"]
+                    error_info = result.get("error")
+                    if error_info:
+                        formatted_error = _format_error_info(error_info)
                         if "warnings" not in result:
                             result["warnings"] = []
-                        result["warnings"].append(_truncate_warning(f"ERROR:auto:{error_msg}"))
+                        result["warnings"].append(_truncate_warning(f"ERROR:auto:{formatted_error}"))
+                        result["error"] = None
                 
                 task.result = result
                 task.status = TaskStatus.COMPLETED

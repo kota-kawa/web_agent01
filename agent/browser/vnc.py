@@ -87,11 +87,23 @@ def execute_dsl(payload, timeout=120):
                     result["warnings"].append(f"INFO:auto:Execution succeeded on retry attempt {attempt} after {len(all_errors)} failed attempts")
             
             # Handle both old error format and new warnings format
-            if "error" in result:
-                # Convert old error format to new warnings format
-                error_msg = result.get("message", result.get("error", "Unknown error"))
+            error_info = result.get("error")
+            if error_info:
+                # Convert structured error information into warning format
+                if isinstance(error_info, dict):
+                    message = error_info.get("message") or "Unknown error"
+                    code = error_info.get("code")
+                    details = error_info.get("details")
+                    parts = [message]
+                    if code:
+                        parts.append(f"code={code}")
+                    if details:
+                        parts.append(f"details={details}")
+                    error_msg = " | ".join(parts)
+                else:
+                    error_msg = str(error_info)
                 final_warning = _truncate_warning(f"ERROR:auto:{error_msg}")
-                return {"html": "", "warnings": [final_warning]}
+                return {"html": result.get("html", ""), "warnings": [final_warning]}
             
             # Capture additional Playwright-specific errors and information
             # Even if the request succeeded, there might be important warnings/errors from Playwright
