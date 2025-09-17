@@ -11,6 +11,8 @@ import os
 import re
 import time
 import uuid
+from collections import OrderedDict
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -93,6 +95,13 @@ SPA_STABILIZE_TIMEOUT = int(
 MAX_DSL_ACTIONS = int(os.getenv("MAX_DSL_ACTIONS", "50"))  # DSL アクション数上限
 INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
 CATALOG_MAX_ELEMENTS = int(os.getenv("CATALOG_MAX_ELEMENTS", "120"))
+
+CATALOG_CACHE_DIR = Path(
+    os.getenv("CATALOG_CACHE_DIR")
+    or (Path(__file__).resolve().parents[1] / "catalog_cache")
+)
+CATALOG_CACHE_LIMIT = int(os.getenv("CATALOG_CACHE_LIMIT", "10"))
+_CATALOG_ARCHIVE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 
 # Security and navigation configuration
@@ -529,6 +538,320 @@ def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Di
     }
 
 
+def _catalog_cache_path(version: str) -> Path:
+    """Build the cache file path for a given catalog version."""
+
+    sanitized = version.strip()
+    return CATALOG_CACHE_DIR / f"{sanitized}.json"
+
+
+def _dedupe_selectors(selectors: Iterable[str]) -> List[str]:
+    """Remove duplicates while preserving selector order."""
+
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for selector in selectors:
+        if not selector or not isinstance(selector, str):
+            continue
+        normalized = selector.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _compose_text_signature(entry: Dict[str, Any]) -> str:
+    """Create a textual signature by combining primary labels and nearby text."""
+
+    parts: List[str] = []
+    for key in ("primary_label", "secondary_label", "section_hint", "state_hint"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    for text in entry.get("nearest_texts", []) or []:
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return " ".join(parts)
+
+
+def _build_selector_fallbacks(entry: Dict[str, Any]) -> List[str]:
+    """Generate fallback selectors from catalog metadata when robust selectors are empty."""
+
+    candidates: List[str] = []
+    role = (entry.get("role") or "").strip()
+    primary_label = (entry.get("primary_label") or "").strip()
+    href_full = (entry.get("href_full") or entry.get("href_short") or "").strip()
+
+    if role and primary_label:
+        quoted = primary_label.replace('"', '\\"')
+        candidates.append(f'role={role}[name="{quoted}"]')
+    if primary_label:
+        candidates.append(f"text={primary_label}")
+    for nearby in entry.get("nearest_texts", []) or []:
+        if isinstance(nearby, str) and nearby.strip():
+            candidates.append(f"text={nearby.strip()}")
+    if href_full:
+        quoted_href = href_full.replace('"', '\\"')
+        candidates.append(f'css=[href="{quoted_href}"]')
+
+    return _dedupe_selectors(candidates)
+
+
+def _store_catalog_snapshot(catalog: Dict[str, Any]) -> None:
+    """Persist catalog snapshot to memory and disk, pruning to the configured limit."""
+
+    if not INDEX_MODE:
+        return
+    version = str(catalog.get("catalog_version") or "").strip()
+    if not version:
+        return
+
+    snapshot = {
+        "catalog_version": version,
+        "index_map": dict(catalog.get("index_map") or {}),
+        "dom_hash": catalog.get("dom_hash"),
+        "url": catalog.get("url"),
+        "title": catalog.get("title"),
+        "generated_at": catalog.get("generated_at"),
+    }
+
+    try:
+        CATALOG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        log.warning("Failed to create catalog cache directory %s: %s", CATALOG_CACHE_DIR, exc)
+
+    _CATALOG_ARCHIVE.pop(version, None)
+    _CATALOG_ARCHIVE[version] = snapshot
+
+    try:
+        with _catalog_cache_path(version).open("w", encoding="utf-8") as handle:
+            json.dump(snapshot, handle, ensure_ascii=False, indent=2)
+    except Exception as exc:  # pragma: no cover - IO failure is non-fatal
+        log.warning("Failed to persist catalog snapshot %s: %s", version, exc)
+
+    if CATALOG_CACHE_LIMIT <= 0:
+        return
+
+    while len(_CATALOG_ARCHIVE) > CATALOG_CACHE_LIMIT:
+        oldest_version, _ = _CATALOG_ARCHIVE.popitem(last=False)
+        if oldest_version == version:
+            continue
+        try:
+            path = _catalog_cache_path(oldest_version)
+            if path.exists():
+                path.unlink()
+        except Exception:  # pragma: no cover - cache pruning best effort
+            log.debug("Failed to remove old catalog snapshot %s", oldest_version)
+
+
+def _load_catalog_snapshot(version: str) -> Optional[Dict[str, Any]]:
+    """Load a catalog snapshot from memory or disk."""
+
+    if not version:
+        return None
+    if version in _CATALOG_ARCHIVE:
+        snapshot = _CATALOG_ARCHIVE[version]
+        _CATALOG_ARCHIVE.move_to_end(version)
+        return snapshot
+
+    path = _catalog_cache_path(version)
+    if not path.exists():
+        return None
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:  # pragma: no cover - IO failure is non-fatal
+        log.warning("Failed to load catalog snapshot %s: %s", version, exc)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    _CATALOG_ARCHIVE[version] = data
+
+    if CATALOG_CACHE_LIMIT > 0 and len(_CATALOG_ARCHIVE) > CATALOG_CACHE_LIMIT:
+        while len(_CATALOG_ARCHIVE) > CATALOG_CACHE_LIMIT:
+            oldest_version, _ = _CATALOG_ARCHIVE.popitem(last=False)
+            if oldest_version == version:
+                continue
+            try:
+                old_path = _catalog_cache_path(oldest_version)
+                if old_path.exists():
+                    old_path.unlink()
+            except Exception:  # pragma: no cover - best effort cleanup
+                log.debug("Failed to prune catalog snapshot %s", oldest_version)
+
+    return data
+
+
+def _find_matching_catalog_entry(
+    expected_entry: Dict[str, Any],
+    candidate_index_map: Dict[str, Dict[str, Any]],
+) -> Tuple[Optional[int], Optional[Dict[str, Any]], Dict[str, float]]:
+    """Find the best matching entry in the current catalog for a prior index entry."""
+
+    best_index: Optional[int] = None
+    best_entry: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+    best_reason = {"dom_hash": 0.0, "selector_overlap": 0.0, "textual": 0.0, "score": 0.0}
+
+    expected_hash = (expected_entry.get("dom_path_hash") or "").strip()
+    expected_selectors = _dedupe_selectors(expected_entry.get("robust_selectors", []) or [])
+    expected_selector_set = set(expected_selectors)
+    expected_text = _compose_text_signature(expected_entry)
+
+    for idx_str, candidate in (candidate_index_map or {}).items():
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            idx = int(idx_str)
+        except (TypeError, ValueError):
+            continue
+
+        candidate_hash = (candidate.get("dom_path_hash") or "").strip()
+        candidate_selectors = _dedupe_selectors(candidate.get("robust_selectors", []) or [])
+        candidate_selector_set = set(candidate_selectors)
+        candidate_text = _compose_text_signature(candidate)
+
+        dom_match = 1.0 if expected_hash and expected_hash == candidate_hash else 0.0
+        if expected_hash and not candidate_hash:
+            dom_match = 0.0
+
+        overlap = 0.0
+        if expected_selector_set and candidate_selector_set:
+            shared = expected_selector_set.intersection(candidate_selector_set)
+            overlap = len(shared) / float(max(len(expected_selector_set), len(candidate_selector_set)))
+
+        textual_similarity = 0.0
+        if expected_text and candidate_text:
+            textual_similarity = SequenceMatcher(None, expected_text, candidate_text).ratio()
+
+        score = (dom_match * 3.0) + (overlap * 2.0) + textual_similarity
+
+        if score > best_score:
+            best_score = score
+            best_index = idx
+            best_entry = candidate
+            best_reason = {
+                "dom_hash": dom_match,
+                "selector_overlap": overlap,
+                "textual": textual_similarity,
+                "score": score,
+            }
+
+        # Prefer exact DOM hash matches even if scores tie due to weight rounding
+        elif score == best_score and dom_match > best_reason.get("dom_hash", 0.0):
+            best_index = idx
+            best_entry = candidate
+            best_reason = {
+                "dom_hash": dom_match,
+                "selector_overlap": overlap,
+                "textual": textual_similarity,
+                "score": score,
+            }
+
+    if best_score <= 0:
+        return None, None, best_reason
+
+    return best_index, best_entry, best_reason
+
+
+def _rebind_actions_for_catalog(
+    actions: List[Dict[str, Any]],
+    expected_version: Optional[str],
+    current_catalog: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Attempt to update actions bound to catalog indices when versions diverge."""
+
+    if not INDEX_MODE or not actions or not expected_version:
+        return []
+
+    snapshot = _load_catalog_snapshot(expected_version)
+    if not snapshot:
+        return [
+            (
+                "WARNING:auto:Catalog snapshot unavailable for version "
+                f"{expected_version}. A new plan is required."
+            )
+        ]
+
+    current = current_catalog or _CURRENT_CATALOG or {}
+    index_map = current.get("index_map") or {}
+    if not index_map:
+        return [
+            "WARNING:auto:Current catalog missing index map. Unable to rebind indices. A new plan is required.",
+        ]
+
+    expected_index_map = snapshot.get("index_map") or {}
+    mapping_cache: Dict[int, Dict[str, Any]] = {}
+    messages: List[str] = []
+
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        raw_target = action.get("target")
+        if not isinstance(raw_target, str):
+            continue
+        expected_index = _parse_index_target(raw_target)
+        if expected_index is None:
+            continue
+
+        created_mapping = False
+        if expected_index not in mapping_cache:
+            expected_entry = expected_index_map.get(str(expected_index)) or {}
+            match_index, match_entry, reason = _find_matching_catalog_entry(expected_entry, index_map)
+
+            combined_selectors: List[str] = []
+            combined_selectors.extend(expected_entry.get("robust_selectors", []) or [])
+            if match_entry:
+                combined_selectors.extend(match_entry.get("robust_selectors", []) or [])
+            combined_selectors.extend(_build_selector_fallbacks(expected_entry))
+            if match_entry:
+                combined_selectors.extend(_build_selector_fallbacks(match_entry))
+            selectors = _dedupe_selectors(combined_selectors)
+
+            binding: Dict[str, Any] = {
+                "target": raw_target,
+                "expected_index": expected_index,
+                "match_index": match_index,
+                "selectors": selectors,
+                "match_reason": reason,
+                "expected_catalog_version": expected_version,
+                "current_catalog_version": current.get("catalog_version"),
+            }
+
+            if match_index is None:
+                message = (
+                    "WARNING:auto:Catalog rebind failed for index "
+                    f"{expected_index}. A new plan is required."
+                )
+            else:
+                message = (
+                    "INFO:auto:Catalog index "
+                    f"{expected_index} rebound to {match_index} "
+                    f"(dom_hash={reason.get('dom_hash', 0.0):.2f}, "
+                    f"selector_overlap={reason.get('selector_overlap', 0.0):.2f}, "
+                    f"textual={reason.get('textual', 0.0):.2f})."
+                )
+
+            mapping_cache[expected_index] = {"binding": binding, "message": message}
+            created_mapping = True
+
+        cached = mapping_cache[expected_index]
+        action["_catalog_binding"] = dict(cached["binding"])
+
+        match_index = cached["binding"].get("match_index")
+        if match_index is not None:
+            action["target"] = f"index={int(match_index)}"
+
+        if created_mapping:
+            messages.append(cached["message"])
+
+    return messages
+
+
 async def _compute_dom_signature() -> Dict[str, Any]:
     if PAGE is None:
         return {}
@@ -579,6 +902,7 @@ async def _generate_element_catalog(force: bool = False) -> Dict[str, Any]:
         catalog["generated_at"] = time.time()
         _CURRENT_CATALOG = catalog
         _CURRENT_CATALOG_SIGNATURE = signature
+        _store_catalog_snapshot(catalog)
         log.info(
             "Element catalog generated: version=%s entries=%d",
             signature.get("catalog_version"),
@@ -1604,10 +1928,30 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
 
         locator_actions = {"click", "click_text", "type", "hover", "select_option", "press_key", "extract_text"}
         if a in locator_actions:
-            selectors_to_try: List[str] = []
+            binding_info = act.get("_catalog_binding") or {}
+            binding_selectors = _dedupe_selectors(binding_info.get("selectors", []) or [])
+            selectors_to_try: List[str] = list(binding_selectors)
             resolved_entry: Optional[Dict[str, Any]] = None
             chosen_selector: Optional[str] = None
             index_value = _parse_index_target(tgt)
+            binding_match_index_raw = binding_info.get("match_index")
+            match_index_override: Optional[int] = None
+            try:
+                if binding_match_index_raw is not None:
+                    match_index_override = int(binding_match_index_raw)
+            except (TypeError, ValueError):
+                match_index_override = None
+
+            if match_index_override is not None:
+                index_value = match_index_override
+            elif (
+                index_value is not None
+                and binding_info
+                and binding_match_index_raw is None
+                and binding_selectors
+            ):
+                # Rebinding failed but fallback selectors are available. Skip stale index lookup.
+                index_value = None
 
             if index_value is not None:
                 auto_refresh_message: Optional[str] = None
@@ -1649,14 +1993,18 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                             "Element catalog is not available. Please execute refresh_catalog.",
                             {"index": index_value},
                         ) from exc
-                selectors_to_try, resolved_entry = _resolve_index_entry(index_value)
+                selectors_from_index, resolved_entry = _resolve_index_entry(index_value)
+                selectors_to_try.extend(selectors_from_index)
                 if auto_refresh_message:
                     action_warnings.append(auto_refresh_message)
             else:
-                if not _validate_selector(tgt):
-                    action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
-                    return action_warnings
-                selectors_to_try = [tgt]
+                if not selectors_to_try:
+                    if not _validate_selector(tgt):
+                        action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
+                        return action_warnings
+                    selectors_to_try.append(tgt)
+
+            selectors_to_try = _dedupe_selectors(selectors_to_try)
 
             if PAGE is None:
                 error_msg = f"Browser not initialized - cannot execute {a} action"
@@ -2070,6 +2418,14 @@ def execute_dsl():
                     f"[{correlation_id}] ERROR:auto:Automatic catalog refresh failed - {str(exc)}"
                 )
             current_version = new_version
+            if uses_catalog_indices:
+                rebind_messages = _rebind_actions_for_catalog(
+                    actions,
+                    expected_catalog_version,
+                    _CURRENT_CATALOG,
+                )
+                for message in rebind_messages:
+                    warnings.append(f"[{correlation_id}] {message}")
             if (
                 uses_catalog_indices
                 and expected_catalog_version
