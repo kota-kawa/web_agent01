@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import random
 import time
 from dataclasses import dataclass, field
@@ -39,6 +40,9 @@ from automation.dsl.resolution import ResolvedNode
 from .config import RunConfig, ensure_run_directories, load_config
 from .selector_resolver import SelectorResolver, StableNodeStore
 from .structured_logging import LogPaths, StructuredLogger, prepare_log_paths
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -293,17 +297,29 @@ class ActionPerformer:
         return ActionOutcome(ok=True, details={"frame": target.strategy})
 
     async def _screenshot(self, action: ScreenshotAction) -> ActionOutcome:
-        frame = self.context.current_frame
         mode = action.mode
         screenshot_path = self.context.paths.shots / f"manual_{int(time.time()*1000)}.png"
-        if mode == "viewport":
-            await self.context.page.screenshot(path=str(screenshot_path))
-        elif mode == "full":
-            await self.context.page.screenshot(path=str(screenshot_path), full_page=True)
-        elif mode == "element" and action.selector:
-            resolved = await self._resolve(action)
-            await resolved.element.screenshot(path=str(screenshot_path))
-            return ActionOutcome(ok=True, details={"path": str(screenshot_path)}, resolved=resolved)
+        timeout = self.context.config.screenshot_timeout_ms
+        try:
+            if mode == "viewport":
+                await self.context.page.screenshot(
+                    path=str(screenshot_path),
+                    timeout=timeout,
+                    animations="disabled",
+                )
+            elif mode == "full":
+                await self.context.page.screenshot(
+                    path=str(screenshot_path),
+                    full_page=True,
+                    timeout=timeout,
+                    animations="disabled",
+                )
+            elif mode == "element" and action.selector:
+                resolved = await self._resolve(action)
+                await resolved.element.screenshot(path=str(screenshot_path), timeout=timeout)
+                return ActionOutcome(ok=True, details={"path": str(screenshot_path)}, resolved=resolved)
+        except PlaywrightError as exc:
+            raise ExecutionError("Screenshot capture failed", code="SCREENSHOT_ERROR", details={"error": str(exc)}) from exc
         return ActionOutcome(ok=True, details={"path": str(screenshot_path)})
 
     async def _extract(self, action: ExtractAction) -> ActionOutcome:
@@ -447,18 +463,41 @@ class RunExecutor:
             }
         next_step = context.logger.next_step_index()
         screenshot_path = context.paths.shots / f"step_{next_step:04d}.png"
-        await context.page.screenshot(path=str(screenshot_path))
+        screenshot_recorded: Optional[Path] = screenshot_path
+        metadata: Dict[str, Any] = {}
+        warnings = list(outcome.warnings)
+        try:
+            await context.page.screenshot(
+                path=str(screenshot_path),
+                timeout=context.config.screenshot_timeout_ms,
+                animations="disabled",
+            )
+        except PlaywrightError as exc:
+            message = f"Screenshot capture failed: {exc}"
+            logger.warning(message)
+            warnings.append(message)
+            metadata["screenshot_error"] = message
+            screenshot_recorded = None
+        except Exception as exc:
+            message = f"Screenshot capture unexpected failure: {exc}"
+            logger.warning(message)
+            warnings.append(message)
+            metadata["screenshot_error"] = message
+            screenshot_recorded = None
+        outcome.warnings = warnings
         step = context.logger.log_event(
             action=action.payload(),
             resolved_selector=resolved_payload,
             result=outcome.details,
-            warnings=outcome.warnings,
+            warnings=warnings,
             error=outcome.error,
             dom_digest_sha=dom_digest,
-            screenshot_path=screenshot_path,
+            screenshot_path=screenshot_recorded,
+            metadata=metadata or None,
         )
         outcome.details.setdefault("step", step)
-        outcome.details.setdefault("screenshot", str(screenshot_path))
+        if screenshot_recorded:
+            outcome.details.setdefault("screenshot", str(screenshot_recorded))
 
     def _write_error_report(
         self,
