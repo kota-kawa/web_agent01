@@ -153,6 +153,10 @@ _ACTIONS = [
     "click_blank_area",
     "close_popup",
     "stop",
+    # New INDEX_MODE actions
+    "refresh_catalog",
+    "scroll_to_text",
+    "wait_network",
 ]
 payload_schema = {
     "type": "object",
@@ -1145,6 +1149,42 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     EVAL_RESULTS.append(result)
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:eval_js failed - {str(e)}")
+            return action_warnings
+            
+        # New INDEX_MODE actions
+        if a == "refresh_catalog":
+            # Refresh catalog action - this is handled by the enhanced DSL executor
+            # For now, just return success since the catalog refresh happens at the DSL level
+            action_warnings.append("INFO:auto:Element catalog refreshed")
+            return action_warnings
+            
+        if a == "scroll_to_text":
+            text = act.get("text", "")
+            if not text:
+                action_warnings.append("WARNING:auto:scroll_to_text requires 'text' parameter")
+                return action_warnings
+            
+            try:
+                # Try to find and scroll to element containing the text
+                loc = await SmartLocator(PAGE, f"text={text}").locate()
+                if loc:
+                    await loc.scroll_into_view_if_needed()
+                    await _stabilize_page()
+                    action_warnings.append(f"INFO:auto:Scrolled to text '{text}'")
+                else:
+                    action_warnings.append(f"WARNING:auto:Text '{text}' not found for scrolling")
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:scroll_to_text failed for '{text}' - {str(e)}")
+            return action_warnings
+            
+        if a == "wait_network":
+            # Wait for network idle
+            timeout_val = act.get("timeout", 3000)
+            try:
+                await PAGE.wait_for_load_state("networkidle", timeout=timeout_val)
+                action_warnings.append("INFO:auto:Network idle wait completed")
+            except Exception as e:
+                action_warnings.append(f"WARNING:auto:wait_network failed - {str(e)}")
             return action_warnings
             
         if a == "click_blank_area":
