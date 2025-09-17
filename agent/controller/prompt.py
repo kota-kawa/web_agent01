@@ -448,8 +448,9 @@ def build_prompt(
     { "action": "scroll", "to": 500, "container": {"css": "div.scrollable"} }
 
     **キーボード操作:**
-    { "action": "press_key", "keys": ["Enter"], "scope": "active_element" }
+    { "action": "press_key", "key": "Enter", "scope": "active_element" }
     { "action": "press_key", "keys": ["Control", "c"], "scope": "page" }
+    (Typed DSL plan 形式では `keys` リストを使用できるが、通常の `actions` 配列を返す場合は `key` を必ず含め、複数キーは "Control+Shift+P" のように連結する。)
 
     **タブとフレーム管理:**
     { "action": "switch_tab", "target": {"strategy": "index", "value": 1} }
@@ -472,6 +473,8 @@ def build_prompt(
     { "action": "go_forward" }
     { "action": "hover", "target": "css=div.menu" }
     { "action": "eval_js", "script": "document.title" }
+    { "action": "click_blank_area" }
+    { "action": "close_popup" }
     { "action": "refresh_catalog" }
     { "action": "scroll_to_text", "target": "検索語や見出しなど" }
 
@@ -517,14 +520,31 @@ def build_prompt(
         def type_text(target: str | dict, text: str, clear: bool = False, press_enter: bool = False) -> Dict:
             return {"action": "type", "target": target, "text": text, "clear": clear, "press_enter": press_enter}
 
-        # select: ドロップダウン選択
+        # select: ドロップダウン選択（Typed DSL plan では `value_or_label`、actions 配列では `value` を指定）
         def select_option(target: str | dict, value_or_label: str) -> Dict:
-            return {"action": "select", "target": target, "value_or_label": value_or_label}
+            return {"action": "select_option", "target": target, "value": value_or_label}
 
-        # wait: 待機（条件指定サポート）
-        def wait(timeout_ms: int = 1000, for_condition: dict = None) -> Dict:
-            action = {"action": "wait", "timeout_ms": timeout_ms}
-            if for_condition: action["for"] = for_condition
+        # wait: 待機（Typed DSL plan では `timeout_ms`/`for`、actions 配列では `ms`/`until`/`target` を用いる）
+        def wait(
+            ms: int = 1000,
+            until: str | dict | None = None,
+            target: str | dict | None = None,
+            state: str | None = None,
+        ) -> Dict:
+            action = {"action": "wait", "ms": ms}
+            if isinstance(until, dict):
+                selector = until.get("selector") or until.get("target")
+                if selector is not None:
+                    action["until"] = "selector"
+                    action["target"] = selector
+                if until.get("state"):
+                    action["state"] = until["state"]
+            elif isinstance(until, str) and until:
+                action["until"] = until
+            if target is not None and "target" not in action:
+                action["target"] = target
+            if state and action.get("until") == "selector":
+                action["state"] = state
             return action
 
         # scroll: スクロール（要素指定・方向制御）
@@ -535,9 +555,12 @@ def build_prompt(
             if container: action["container"] = container
             return action
 
-        # press_key: キー操作（スコープ指定）
-        def press_key(keys: list, scope: str = "active_element") -> Dict:
-            return {"action": "press_key", "keys": keys, "scope": scope}
+        # press_key: キー操作（スコープ・対象指定）
+        def press_key(key: str, scope: str = "active_element", target: str | dict | None = None) -> Dict:
+            action = {"action": "press_key", "key": key, "scope": scope}
+            if target is not None:
+                action["target"] = target
+            return action
 
         # extract: 情報抽出（属性指定）
         def extract(target: str | dict, attr: str = "text") -> Dict:
@@ -576,11 +599,19 @@ def build_prompt(
             return {"action": "hover", "target": target}
         def eval_js(script: str) -> Dict:
             return {"action": "eval_js", "script": script}
+        def click_blank_area() -> Dict:
+            return {"action": "click_blank_area"}
+        def close_popup() -> Dict:
+            return {"action": "close_popup"}
+        def refresh_catalog() -> Dict:
+            return {"action": "refresh_catalog"}
+        def scroll_to_text(text: str) -> Dict:
+            return {"action": "scroll_to_text", "target": text}
 
     ============= ブラウザ操作 DSL 出力ルール（必読・厳守）======================
     目的 : Playwright 側 /execute-dsl エンドポイントで 100% 受理・実行可能な
             JSON を生成し、「locator not found」や Timeout を極小化すること。
-    制約 : 返答は **JSONの前の説明文 + JSON(DSL) オブジェクトのみ**。前後に Markdown・説明・改行・コードフェンス禁止。
+    制約 : 返答は **プレーンテキストの説明文** に続いて **```json フェンス内の DSL オブジェクト** を出力する構成とする。説明文にはMarkdownの箇条書きや追加コードフェンスを使わず、JSON部分には余計な文字列を含めない。
     
     ========================================================================
     1. トップレベル構造
@@ -592,25 +623,30 @@ def build_prompt(
     - JSON は UTF-8 / 無コメント / 最終要素に “,” を付けない。
 
     ========================================================================
-    2. アクションは 15 種のみ
+    2. actions 配列で使用できるレガシー互換アクション一覧
+    ※ `plan` を含む Typed DSL を実行する場合は navigate/click/type/select/press_key/wait/scroll/switch_tab/focus_iframe/screenshot/extract/assert などの構造化アクションを使用できる。それ以外の場合は下表の名称と必須キーを厳守する。
 
-    | action            | 必須キー                                   | 追加キー            | 説明                 |
-    |-------------------|--------------------------------------------|--------------------|----------------------|
-    | navigate          | target (URL)                              | —                  | URL へ遷移           |
-    | click             | target (CSS/XPath)                        | —                  | 要素クリック         |
-    | click_text        | target (完全一致文字列)                    | —                  | 可視文字列クリック   |
-    | type              | target, value                             | —                  | テキスト入力         |
-    | wait              | ms (整数≥0)                               | retry (整数)       | 指定 ms 待機         |
-    | scroll            | amount (整数), direction ("up"/"down")    | target (任意)      | スクロール           |
-    | go_back           | —                                         | —                  | ブラウザ戻る         |
-    | go_forward        | —                                         | —                  | ブラウザ進む         |
-    | hover             | target                                    | —                  | ホバー               |
-    | select_option     | target, value                             | —                  | ドロップダウン選択   |
-    | press_key         | key                                       | target(**Enter時は必須**。それ以外は任意） | キー送信 |
-    | wait_for_selector | target, ms                                | —                  | 要素待機             |
-    | extract_text      | target                                    | attr (任意)        | テキスト取得         |
-    | eval_js           | script                                    | —                  | JavaScript 実行      |
-    | stop              | reason                                    | message (任意)     | 実行停止・ユーザー入力待機 |
+    | action            | 必須キー                                     | 追加キー                           | 説明                 |
+    |-------------------|----------------------------------------------|------------------------------------|----------------------|
+    | navigate          | target (URL)                                 | wait_for, until, ms                | URL へ遷移           |
+    | click             | target (CSS/XPath/selector dict/index指定)   | button, click_count, delay         | 要素クリック         |
+    | click_text        | target (完全一致文字列)                      | —                                  | 可視文字列クリック   |
+    | type              | target, value                                | clear, press_enter                 | テキスト入力         |
+    | wait              | ms または until                              | retry, target, state               | 指定時間/状態待機    |
+    | wait_for_selector | target, ms                                   | state                              | 要素待機             |
+    | scroll            | amount または target                         | direction, container               | スクロール           |
+    | go_back           | —                                            | —                                  | ブラウザ戻る         |
+    | go_forward        | —                                            | —                                  | ブラウザ進む         |
+    | hover             | target                                       | —                                  | ホバー               |
+    | select_option     | target, value                                | —                                  | ドロップダウン選択   |
+    | press_key         | key                                          | target                             | キー送信             |
+    | extract_text      | target                                       | attr                               | テキスト取得         |
+    | eval_js           | script                                       | —                                  | JavaScript 実行      |
+    | stop              | reason                                       | message                            | 実行停止・ユーザー入力待機 |
+    | click_blank_area  | —                                            | —                                  | 空白領域クリック     |
+    | close_popup       | —                                            | —                                  | ポップアップ閉じる   |
+    | refresh_catalog   | —                                            | —                                  | カタログ再取得       |
+    | scroll_to_text    | target (探す文字列)                           | —                                  | テキスト付近までスクロール |
 
     **上記以外の action 名・キーは絶対に出力しない。**
 
