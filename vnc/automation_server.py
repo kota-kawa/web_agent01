@@ -775,7 +775,7 @@ validator = Draft7Validator(payload_schema)
 def _validate_schema(data: Dict) -> None:
     errs = sorted(validator.iter_errors(data), key=lambda e: e.path)
     if errs:
-        raise ValidationError("; ".join(err.msg for err in errs))
+        raise ValidationError("; ".join(err.message for err in errs))
 
 
 def _validate_url(url: str) -> bool:
