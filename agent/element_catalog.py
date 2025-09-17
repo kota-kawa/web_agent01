@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 INDEX_MODE_ENABLED = os.getenv("INDEX_MODE", "true").lower() == "true"
 
 _cached_catalog: Optional[Dict[str, Any]] = None
+_last_observed_version: Optional[str] = None
 
 
 def _normalize_catalog(raw: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -34,7 +35,43 @@ def is_enabled() -> bool:
 
 
 def reset_cache() -> None:
-    global _cached_catalog
+    global _cached_catalog, _last_observed_version
+    _cached_catalog = None
+    _last_observed_version = None
+
+
+def update_cache_from_signature(signature: Optional[Dict[str, Any]]) -> None:
+    """Update cached catalog metadata after observing a new catalog signature."""
+
+    if not INDEX_MODE_ENABLED:
+        return
+
+    if not isinstance(signature, dict):
+        return
+
+    metadata = signature.get("metadata") or {}
+    observed_version = signature.get("catalog_version") or metadata.get("catalog_version")
+    if not observed_version:
+        return
+
+    global _cached_catalog, _last_observed_version
+
+    if _last_observed_version == observed_version:
+        return
+
+    cached_version = (_cached_catalog or {}).get("catalog_version")
+    _last_observed_version = observed_version
+
+    if cached_version == observed_version:
+        return
+
+    if _cached_catalog is not None:
+        log.debug(
+            "Observed new catalog version; invalidating cache (cached=%s observed=%s)",
+            cached_version,
+            observed_version,
+        )
+
     _cached_catalog = None
 
 
@@ -61,16 +98,17 @@ def get_catalog(refresh: bool = False) -> Dict[str, Any]:
                 "abbreviated": [],
                 "full": [],
                 "metadata": {},
-                "catalog_version": None,
+                "catalog_version": _last_observed_version,
                 "index_mode_enabled": True,
                 "error": {"message": str(exc)},
             }
         _cached_catalog = _normalize_catalog(raw)
+        _last_observed_version = _cached_catalog.get("catalog_version")
     return _cached_catalog or {
         "abbreviated": [],
         "full": [],
         "metadata": {},
-        "catalog_version": None,
+        "catalog_version": _last_observed_version,
         "index_mode_enabled": True,
         "error": None,
     }

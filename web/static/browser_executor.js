@@ -50,6 +50,146 @@ let isExecutingTask = false;
 /* ======================================
    Normalize DSL actions
    ====================================== */
+function formatIndexValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return "";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "";
+    if (Number.isInteger(value) && value >= 0) {
+      return `index=${value}`;
+    }
+    return "";
+  }
+
+  let text;
+  try {
+    text = String(value).trim();
+  } catch (err) {
+    return "";
+  }
+
+  if (!text) return "";
+  if (!/^[-+]?\d+$/.test(text)) return "";
+
+  const idx = Number.parseInt(text, 10);
+  if (Number.isNaN(idx) || idx < 0) return "";
+  return `index=${idx}`;
+}
+
+function escapeQuotes(value) {
+  return String(value).replace(/"/g, '\\"');
+}
+
+function stringifySelector(selector) {
+  if (selector === null || selector === undefined) {
+    return "";
+  }
+
+  if (typeof selector === "string") {
+    return selector;
+  }
+
+  if (Array.isArray(selector)) {
+    const parts = [];
+    selector.forEach(item => {
+      const formatted = stringifySelector(item);
+      if (formatted && !parts.includes(formatted)) {
+        parts.push(formatted);
+      }
+    });
+    return parts.join(" || ");
+  }
+
+  const indexForm = formatIndexValue(selector);
+  if (indexForm) {
+    return indexForm;
+  }
+
+  if (typeof selector === "object") {
+    if (selector.selector) {
+      const candidate = stringifySelector(selector.selector);
+      if (candidate) return candidate;
+    }
+
+    if ("index" in selector) {
+      const candidate = formatIndexValue(selector.index);
+      if (candidate) return candidate;
+    }
+
+    if (selector.css) {
+      return `css=${selector.css}`;
+    }
+
+    if (selector.xpath) {
+      return `xpath=${selector.xpath}`;
+    }
+
+    if (selector.role) {
+      const roleValue = String(selector.role).trim();
+      if (roleValue) {
+        const nameValue = selector.name ?? selector.text;
+        if (nameValue !== undefined && nameValue !== null) {
+          const nameText = String(nameValue).trim();
+          if (nameText) {
+            const escapedName = escapeQuotes(nameText);
+            return `role=${roleValue}[name="${escapedName}"]`;
+          }
+        }
+        return `role=${roleValue}`;
+      }
+    }
+
+    if (selector.text !== undefined && selector.text !== null) {
+      return String(selector.text);
+    }
+
+    const ariaLabel = selector.aria_label ?? selector["aria-label"];
+    if (ariaLabel !== undefined && ariaLabel !== null) {
+      const escaped = escapeQuotes(String(ariaLabel).trim());
+      if (escaped) {
+        return `css=[aria-label="${escaped}"]`;
+      }
+    }
+
+    const stableId = selector.stable_id ?? selector.stableId;
+    if (stableId !== undefined && stableId !== null) {
+      const stable = String(stableId).trim();
+      if (stable) {
+        const escaped = escapeQuotes(stable);
+        const candidates = [`css=[data-testid="${escaped}"]`];
+        if (/^[A-Za-z_][-A-Za-z0-9_]*$/.test(stable)) {
+          candidates.push(`css=#${stable}`);
+        }
+        candidates.push(`css=[name="${escaped}"]`);
+        return candidates.join(" || ");
+      }
+    }
+
+    for (const key of ["value", "target"]) {
+      if (key in selector && selector[key] !== undefined && selector[key] !== null) {
+        const candidate = stringifySelector(selector[key]);
+        if (candidate) return candidate;
+      }
+    }
+
+    for (const value of Object.values(selector)) {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+      }
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return String(value);
+      }
+    }
+  }
+
+  try {
+    return String(selector);
+  } catch (err) {
+    return "";
+  }
+}
+
 function normalizeActions(instr) {
   if (!instr) return [];
   const acts = Array.isArray(instr.actions) ? instr.actions
@@ -60,6 +200,21 @@ function normalizeActions(instr) {
     if (a.action) a.action = String(a.action).toLowerCase();
     if (a.selector && !a.target) a.target = a.selector;
     if (a.text && a.action === "click_text" && !a.target) a.target = a.text;
+    if ("target" in a) {
+      a.target = stringifySelector(a.target);
+    }
+    if ("value" in a) {
+      if (typeof a.value === "string") {
+        // keep as-is
+      } else if (Array.isArray(a.value) || (a.value && typeof a.value === "object")) {
+        a.value = stringifySelector(a.value);
+      } else if (a.value !== undefined && a.value !== null) {
+        a.value = String(a.value);
+      } else {
+        a.value = "";
+      }
+    }
+    if ("text" in a && typeof a.text !== "string") a.text = stringifySelector(a.text);
     return a;
   });
 }
@@ -303,8 +458,9 @@ function displayWarnings(warnings, correlationId) {
 
 function requiresApproval(acts) {
   return acts.some(a => {
-    const t = (a.text || a.target || "").toLowerCase();
-    return /購入|削除|checkout|pay|支払/.test(t);
+    const raw = stringifySelector(a?.text ?? a?.target ?? "");
+    const lowered = raw.toLowerCase();
+    return /購入|削除|checkout|pay|支払/.test(lowered);
   });
 }
 
