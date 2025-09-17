@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
 import re
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 
@@ -65,6 +66,8 @@ SPA_STABILIZE_TIMEOUT = int(
     os.getenv("SPA_STABILIZE_TIMEOUT", "2000")
 )  # ms  SPA描画安定待ち
 MAX_DSL_ACTIONS = int(os.getenv("MAX_DSL_ACTIONS", "50"))  # DSL アクション数上限
+INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
+CATALOG_MAX_ELEMENTS = int(os.getenv("CATALOG_MAX_ELEMENTS", "120"))
 
 
 # Security and navigation configuration
@@ -131,8 +134,560 @@ def _classify_error(error_str: str) -> tuple[str, bool]:
     # Default classification as internal
     return f"内部処理エラー - {error_str}", True
 
+
+_CATALOG_LOCK = asyncio.Lock()
+_CURRENT_CATALOG: Optional[Dict[str, Any]] = None
+_CURRENT_CATALOG_SIGNATURE: Optional[Dict[str, Any]] = None
+_INDEX_ADOPTION_HISTORY: List[Tuple[str, int, str, str]] = []
+_MAX_ADOPTION_HISTORY = 50
+
+
+CATALOG_COLLECTION_SCRIPT = """
+(() => {
+  const results = [];
+  const interactiveSelectors = [
+    'a[href]',
+    'button',
+    'input:not([type="hidden"])',
+    'select',
+    'textarea',
+    'summary',
+    '[contenteditable="true"]',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="tab"]',
+    '[role="menuitem"]',
+    '[role="option"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="textbox"]'
+  ];
+
+  const tags = new Set();
+  interactiveSelectors.forEach(sel => {
+    for (const el of document.querySelectorAll(sel)) {
+      tags.add(el);
+    }
+  });
+
+  const isVisible = (el) => {
+    if (!(el instanceof Element)) return false;
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  const getRole = (el) => {
+    const ariaRole = el.getAttribute('role');
+    if (ariaRole) return ariaRole.trim().toLowerCase();
+    const tag = el.tagName.toLowerCase();
+    const type = el.getAttribute('type');
+    if (tag === 'a') return 'link';
+    if (tag === 'button') return 'button';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'summary') return 'button';
+    if (tag === 'input') {
+      if (type === 'submit' || type === 'button' || type === 'reset') return 'button';
+      if (type === 'checkbox') return 'checkbox';
+      if (type === 'radio') return 'radio';
+      return 'textbox';
+    }
+    return '';
+  };
+
+  const getLabelFromIds = (el) => {
+    const labelledby = el.getAttribute('aria-labelledby');
+    if (!labelledby) return '';
+    const ids = labelledby.split(/\s+/).filter(Boolean);
+    const parts = [];
+    ids.forEach(id => {
+      const ref = document.getElementById(id);
+      if (ref) {
+        const text = ref.innerText || ref.textContent;
+        if (text) parts.push(text.trim());
+      }
+    });
+    return parts.join(' ').trim();
+  };
+
+  const getPrimaryLabel = (el) => {
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+    const labelled = getLabelFromIds(el);
+    if (labelled) return labelled;
+    const text = (el.innerText || '').trim();
+    if (text) return text;
+    const value = el.value && typeof el.value === 'string' ? el.value.trim() : '';
+    if (value) return value;
+    const placeholder = el.getAttribute('placeholder');
+    if (placeholder && placeholder.trim()) return placeholder.trim();
+    const alt = el.getAttribute('alt');
+    if (alt && alt.trim()) return alt.trim();
+    return '';
+  };
+
+  const getSecondaryLabel = (el, primary) => {
+    const placeholder = el.getAttribute('placeholder');
+    if (placeholder && placeholder.trim() && placeholder.trim() !== primary) return placeholder.trim();
+    const title = el.getAttribute('title');
+    if (title && title.trim() && title.trim() !== primary) return title.trim();
+    const ariaDescription = el.getAttribute('aria-description');
+    if (ariaDescription && ariaDescription.trim()) return ariaDescription.trim();
+    return '';
+  };
+
+  const getStateHint = (el) => {
+    const states = [];
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
+    if (el.getAttribute('aria-selected') === 'true') states.push('selected');
+    if (el.getAttribute('aria-checked') === 'true') states.push('checked');
+    if (el.getAttribute('aria-expanded') === 'true') states.push('expanded');
+    return states.join(', ');
+  };
+
+  const computeXPath = (el) => {
+    if (el === document.body) return '/html/body';
+    const parts = [];
+    while (el && el.nodeType === Node.ELEMENT_NODE) {
+      let index = 1;
+      let sibling = el.previousElementSibling;
+      while (sibling) {
+        if (sibling.tagName === el.tagName) index++;
+        sibling = sibling.previousElementSibling;
+      }
+      parts.unshift(`/${el.tagName.toLowerCase()}[${index}]`);
+      el = el.parentElement;
+    }
+    return parts.join('');
+  };
+
+  const cssEscape = (value) => {
+    if (window.CSS && window.CSS.escape) {
+      return window.CSS.escape(value);
+    }
+    return value.replace(/([#.;:])/g, '\\$1');
+  };
+
+  const buildSelectors = (el, role, primaryLabel) => {
+    const selectors = [];
+    const trimmedPrimary = primaryLabel ? primaryLabel.substring(0, 80) : '';
+    if (role && trimmedPrimary) {
+      const quoted = trimmedPrimary.replace(/"/g, '\\"');
+      selectors.push(`role=${role}[name="${quoted}"]`);
+    }
+    if (trimmedPrimary) {
+      selectors.push(`text=${trimmedPrimary}`);
+    }
+    const testId = el.getAttribute('data-testid');
+    if (testId) {
+      selectors.push(`css=[data-testid="${testId.replace(/"/g, '\\"')}"]`);
+    }
+    const elId = el.id;
+    if (elId) {
+      selectors.push(`css=#${cssEscape(elId)}`);
+    }
+    const nameAttr = el.getAttribute('name');
+    if (nameAttr) {
+      selectors.push(`css=[name="${nameAttr.replace(/"/g, '\\"')}"]`);
+    }
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel) {
+      selectors.push(`css=[aria-label="${ariaLabel.replace(/"/g, '\\"')}"]`);
+    }
+    const classList = Array.from(el.classList || []);
+    if (classList.length && classList.length <= 3) {
+      selectors.push(`css=${el.tagName.toLowerCase()}.${classList.map(cssEscape).join('.')}`);
+    }
+    selectors.push(`xpath=${computeXPath(el)}`);
+    const uniqueSelectors = [];
+    const seen = new Set();
+    selectors.forEach(sel => {
+      if (sel && !seen.has(sel)) {
+        seen.add(sel);
+        uniqueSelectors.push(sel);
+      }
+    });
+    return uniqueSelectors;
+  };
+
+  const findSection = (el) => {
+    let current = el;
+    const sectionTags = ['section', 'article', 'nav', 'main', 'aside', 'form', 'fieldset', 'details'];
+    while (current) {
+      if (sectionTags.includes(current.tagName?.toLowerCase())) {
+        const rect = current.getBoundingClientRect();
+        let headingText = '';
+        const heading = current.querySelector('h1, h2, h3, h4, h5, h6');
+        if (heading && heading.innerText.trim()) {
+          headingText = heading.innerText.trim();
+        }
+        const ariaLabel = current.getAttribute('aria-label');
+        if (!headingText && ariaLabel) headingText = ariaLabel.trim();
+        if (!headingText && current.id) headingText = current.id;
+        return {
+          sectionId: headingText || sectionTags[0],
+          sectionHint: headingText,
+          sectionTop: rect.top
+        };
+      }
+      current = current.parentElement;
+    }
+    const bodyRect = document.body.getBoundingClientRect();
+    return { sectionId: 'page', sectionHint: 'Page', sectionTop: bodyRect.top };
+  };
+
+  const nearestTexts = (el, primary, secondary) => {
+    const texts = [];
+    if (primary) texts.push(primary);
+    if (secondary && secondary !== primary) texts.push(secondary);
+    const describedby = el.getAttribute('aria-describedby');
+    if (describedby) {
+      describedby.split(/\s+/).forEach(id => {
+        const ref = document.getElementById(id);
+        if (ref) {
+          const text = (ref.innerText || ref.textContent || '').trim();
+          if (text) texts.push(text);
+        }
+      });
+    }
+    const title = el.getAttribute('title');
+    if (title) texts.push(title.trim());
+    return Array.from(new Set(texts)).slice(0, 5);
+  };
+
+  const entries = [];
+  for (const el of tags) {
+    if (!isVisible(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const role = getRole(el);
+    const primary = getPrimaryLabel(el);
+    const secondary = getSecondaryLabel(el, primary);
+    const section = findSection(el);
+    const state = getStateHint(el);
+    const href = el.getAttribute('href');
+    entries.push({
+      role,
+      tag: el.tagName.toLowerCase(),
+      primaryLabel: primary ? primary.substring(0, 120) : '',
+      secondaryLabel: secondary ? secondary.substring(0, 120) : '',
+      sectionHint: section.sectionHint || '',
+      sectionId: section.sectionId || 'page',
+      sectionTop: section.sectionTop || rect.top,
+      stateHint: state,
+      hrefFull: href || '',
+      hrefShort: href ? (href.length > 80 ? `${href.substring(0, 77)}...` : href) : '',
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+      selectors: buildSelectors(el, role, primary),
+      domPath: computeXPath(el),
+      nearestTexts: nearestTexts(el, primary, secondary)
+    });
+  }
+
+  entries.sort((a, b) => {
+    if (Math.abs(a.sectionTop - b.sectionTop) > 4) return a.sectionTop - b.sectionTop;
+    if (Math.abs(a.rect.top - b.rect.top) > 4) return a.rect.top - b.rect.top;
+    return a.rect.left - b.rect.left;
+  });
+
+  const limited = entries.slice(0, %d);
+  limited.forEach((entry, idx) => {
+    entry.index = idx;
+  });
+
+  return {
+    elements: limited,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight
+    }
+  };
+})()
+""" % CATALOG_MAX_ELEMENTS
+
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
+
+
+class ExecutionError(Exception):
+    """Custom exception carrying structured error information."""
+
+    def __init__(self, code: str, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
+
+def _trim(text: str, limit: int) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Dict[str, Any]:
+    elements = raw.get("elements", []) if isinstance(raw, dict) else []
+    abbreviated: List[Dict[str, Any]] = []
+    full: List[Dict[str, Any]] = []
+    index_map: Dict[str, Dict[str, Any]] = {}
+
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        if idx is None:
+            continue
+        primary = _trim(item.get("primaryLabel", ""), 60)
+        secondary = _trim(item.get("secondaryLabel", ""), 40)
+        state = _trim(item.get("stateHint", ""), 40)
+        section_hint = _trim(item.get("sectionHint", ""), 60)
+        href_short = _trim(item.get("hrefShort", ""), 80)
+        selectors = [s for s in item.get("selectors", []) if isinstance(s, str) and s]
+        rect = item.get("rect") or {}
+        bbox = {
+            "x": float(rect.get("left", 0.0)),
+            "y": float(rect.get("top", 0.0)),
+            "width": float(rect.get("width", 0.0)),
+            "height": float(rect.get("height", 0.0)),
+        }
+        dom_path = item.get("domPath", "")
+        dom_path_hash = hashlib.sha1(dom_path.encode("utf-8", "ignore")).hexdigest() if dom_path else ""
+        nearest_texts = [
+            _trim(t, 80)
+            for t in item.get("nearestTexts", [])
+            if isinstance(t, str) and t.strip()
+        ]
+
+        abbreviated_entry = {
+            "index": idx,
+            "role": item.get("role", ""),
+            "tag": item.get("tag", ""),
+            "primary_label": primary,
+            "secondary_label": secondary,
+            "section_hint": section_hint,
+            "state_hint": state,
+            "href_short": href_short,
+        }
+
+        full_entry = {
+            "index": idx,
+            "role": item.get("role", ""),
+            "tag": item.get("tag", ""),
+            "primary_label": primary,
+            "secondary_label": secondary,
+            "section_hint": section_hint,
+            "state_hint": state,
+            "href_full": item.get("hrefFull", ""),
+            "href_short": href_short,
+            "robust_selectors": selectors,
+            "bbox": bbox,
+            "visible": True,
+            "disabled": bool(item.get("disabled", False)),
+            "dom_path_hash": dom_path_hash,
+            "nearest_texts": nearest_texts,
+            "section_id": _trim(str(item.get("sectionId", "page")), 80),
+        }
+
+        abbreviated.append(abbreviated_entry)
+        full.append(full_entry)
+        index_map[str(idx)] = full_entry
+
+    return {
+        "abbreviated": abbreviated,
+        "full": full,
+        "index_map": index_map,
+    }
+
+
+async def _compute_dom_signature() -> Dict[str, Any]:
+    if PAGE is None:
+        return {}
+    try:
+        url = await PAGE.url()
+        title = await PAGE.title()
+        content = await PAGE.content()
+        viewport = PAGE.viewport_size or {}
+        dom_hash = hashlib.sha1(content.encode("utf-8", "ignore")).hexdigest()
+        viewport_hash = hashlib.sha1(
+            json.dumps(viewport or {}, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        version_seed = f"{url}|{dom_hash}|{viewport_hash}"
+        catalog_version = hashlib.sha1(version_seed.encode("utf-8")).hexdigest()
+        return {
+            "url": url,
+            "title": title,
+            "dom_hash": dom_hash,
+            "viewport_hash": viewport_hash,
+            "catalog_version": catalog_version,
+        }
+    except Exception as exc:  # pragma: no cover - defensive
+        log.error("Failed to compute DOM signature: %s", exc)
+        return {}
+
+
+async def _generate_element_catalog(force: bool = False) -> Dict[str, Any]:
+    global _CURRENT_CATALOG, _CURRENT_CATALOG_SIGNATURE
+    if not INDEX_MODE:
+        return {}
+    if PAGE is None:
+        raise ExecutionError("CATALOG_UNAVAILABLE", "Browser page not initialized")
+
+    async with _CATALOG_LOCK:
+        signature = await _compute_dom_signature()
+        if not signature:
+            _CURRENT_CATALOG = None
+            _CURRENT_CATALOG_SIGNATURE = None
+            return {}
+
+        current_version = (_CURRENT_CATALOG_SIGNATURE or {}).get("catalog_version")
+        if not force and _CURRENT_CATALOG and current_version == signature.get("catalog_version"):
+            return _CURRENT_CATALOG
+
+        raw_data = await PAGE.evaluate(CATALOG_COLLECTION_SCRIPT)
+        catalog = _build_catalog_entries(raw_data, signature)
+        catalog.update(signature)
+        catalog["generated_at"] = time.time()
+        _CURRENT_CATALOG = catalog
+        _CURRENT_CATALOG_SIGNATURE = signature
+        log.info(
+            "Element catalog generated: version=%s entries=%d",
+            signature.get("catalog_version"),
+            len(catalog.get("abbreviated", [])),
+        )
+        return catalog
+
+
+async def _ensure_catalog_signature() -> Dict[str, Any]:
+    global _CURRENT_CATALOG_SIGNATURE
+    if not INDEX_MODE or PAGE is None:
+        return _CURRENT_CATALOG_SIGNATURE or {}
+    if _CURRENT_CATALOG_SIGNATURE is None:
+        _CURRENT_CATALOG_SIGNATURE = await _compute_dom_signature()
+        if _CURRENT_CATALOG_SIGNATURE:
+            _CURRENT_CATALOG_SIGNATURE["generated_at"] = time.time()
+    return _CURRENT_CATALOG_SIGNATURE or {}
+
+
+def _mark_catalog_outdated(new_signature: Optional[Dict[str, Any]] = None) -> None:
+    global _CURRENT_CATALOG, _CURRENT_CATALOG_SIGNATURE
+    _CURRENT_CATALOG = None
+    if new_signature:
+        new_signature = dict(new_signature)
+        new_signature["generated_at"] = time.time()
+        _CURRENT_CATALOG_SIGNATURE = new_signature
+
+
+def _build_observation(nav_detected: bool = False, signature: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    sig = signature or _CURRENT_CATALOG_SIGNATURE or {}
+    title = sig.get("title") or ""
+    url = sig.get("url") or ""
+    if title:
+        short_summary = _trim(title, 120)
+    elif url:
+        short_summary = _trim(url, 120)
+    else:
+        short_summary = ""
+    return {
+        "url": url,
+        "title": title,
+        "short_summary": short_summary,
+        "catalog_version": sig.get("catalog_version"),
+        "nav_detected": bool(nav_detected),
+    }
+
+
+def _parse_index_target(target: str) -> Optional[int]:
+    if not target or not isinstance(target, str):
+        return None
+    text = target.strip()
+    if not text.lower().startswith("index="):
+        return None
+    try:
+        return int(text.split("=", 1)[1])
+    except ValueError:
+        return None
+
+
+def _log_index_adoption(version: str, index: int, selector: str, action: str) -> None:
+    entry = (version or "", index, selector, action)
+    _INDEX_ADOPTION_HISTORY.append(entry)
+    if len(_INDEX_ADOPTION_HISTORY) > _MAX_ADOPTION_HISTORY:
+        _INDEX_ADOPTION_HISTORY.pop(0)
+    log.info(
+        "Catalog selector adoption: version=%s index=%s selector=%s action=%s",
+        version,
+        index,
+        selector,
+        action,
+    )
+
+
+def _resolve_index_entry(index: int) -> Tuple[List[str], Dict[str, Any]]:
+    if not INDEX_MODE:
+        raise ExecutionError(
+            "UNSUPPORTED_ACTION",
+            "Index-based targeting is disabled in this environment",
+            {"index": index},
+        )
+
+    if not isinstance(index, int) or index < 0:
+        raise ExecutionError("ELEMENT_NOT_FOUND", f"Invalid catalog index: {index}", {"index": index})
+
+    if not _CURRENT_CATALOG or "index_map" not in _CURRENT_CATALOG:
+        raise ExecutionError(
+            "CATALOG_OUTDATED",
+            "Element catalog is not available. Please execute refresh_catalog.",
+            {"index": index},
+        )
+
+    entry = _CURRENT_CATALOG["index_map"].get(str(index))
+    if not entry:
+        raise ExecutionError(
+            "ELEMENT_NOT_FOUND",
+            f"Index {index} not present in current catalog",
+            {"index": index},
+        )
+
+    selectors = entry.get("robust_selectors") or []
+    if not selectors:
+        raise ExecutionError(
+            "ELEMENT_NOT_FOUND",
+            f"No selectors recorded for index {index}",
+            {"index": index},
+        )
+
+    return selectors, entry
+
+
+def _collect_basic_signature() -> Dict[str, Any]:
+    if PAGE is None:
+        return {}
+
+    def _value_from_attribute(attr_name: str) -> str:
+        try:
+            attr = getattr(PAGE, attr_name, None)
+            if callable(attr):
+                return _run(attr()) if asyncio.iscoroutinefunction(attr) else attr()
+            return attr or ""
+        except TypeError:
+            try:
+                return attr()
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+
+    url = _value_from_attribute("url") or ""
+    title = _value_from_attribute("title") or ""
+    signature = {"url": url, "title": title}
+    if INDEX_MODE and _CURRENT_CATALOG_SIGNATURE:
+        signature["catalog_version"] = _CURRENT_CATALOG_SIGNATURE.get("catalog_version")
+    return signature
 
 # -------------------------------------------------- DSL スキーマ
 _ACTIONS = [
@@ -153,6 +708,8 @@ _ACTIONS = [
     "click_blank_area",
     "close_popup",
     "stop",
+    "refresh_catalog",
+    "scroll_to_text",
 ]
 payload_schema = {
     "type": "object",
@@ -232,6 +789,20 @@ def _validate_action_params(act: Dict) -> List[str]:
         reason = act.get("reason", "")
         if not reason:
             warnings.append("ERROR:auto:Stop action requires non-empty 'reason'")
+
+    elif action == "wait":
+        wait_until = (act.get("until") or "").strip()
+        if wait_until and wait_until not in {"network_idle", "selector", "timeout"}:
+            warnings.append(f"ERROR:auto:Unsupported wait condition '{wait_until}'")
+        if wait_until == "selector":
+            selector = act.get("target") or act.get("value", "")
+            if not _validate_selector(selector):
+                warnings.append("ERROR:auto:wait selector condition requires non-empty selector in 'target' or 'value'")
+
+    elif action == "scroll_to_text":
+        text = act.get("target") or act.get("text") or act.get("value")
+        if not text or not str(text).strip():
+            warnings.append("ERROR:auto:scroll_to_text requires non-empty 'target' or 'text'")
 
     # Validate timeout values
     ms = act.get("ms")
@@ -1026,9 +1597,26 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
 
     try:
         # Check if PAGE is available for actions that need it
-        page_required_actions = ["navigate", "go_back", "go_forward", "wait", "wait_for_selector", 
-                                "scroll", "eval_js", "click", "click_text", "type", "hover", 
-                                "select_option", "press_key", "extract_text", "click_blank_area", "close_popup"]
+        page_required_actions = [
+            "navigate",
+            "go_back",
+            "go_forward",
+            "wait",
+            "wait_for_selector",
+            "scroll",
+            "eval_js",
+            "click",
+            "click_text",
+            "type",
+            "hover",
+            "select_option",
+            "press_key",
+            "extract_text",
+            "click_blank_area",
+            "close_popup",
+            "refresh_catalog",
+            "scroll_to_text",
+        ]
         
         if a in page_required_actions and PAGE is None:
             error_msg = f"Browser not initialized - cannot execute {a} action"
@@ -1042,7 +1630,7 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
         if a == "stop":
             reason = act.get("reason", "user_intervention")
             message = act.get("message", "")
-            
+
             # Create a stop request that will be handled by the frontend
             stop_info = {
                 "reason": reason,
@@ -1056,6 +1644,23 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             
             # Add a warning to indicate the stop action was executed
             action_warnings.append(f"STOP:auto:Execution paused - {reason}: {message}")
+            return action_warnings
+
+        if a == "refresh_catalog":
+            if not INDEX_MODE:
+                action_warnings.append("INFO:auto:Index-based catalog is disabled")
+                return action_warnings
+            try:
+                catalog = await _generate_element_catalog(force=True)
+                version = (catalog or {}).get("catalog_version") or (_CURRENT_CATALOG_SIGNATURE or {}).get("catalog_version")
+                action_warnings.append(
+                    f"INFO:auto:Element catalog refreshed (version={version})"
+                )
+            except ExecutionError as exc:
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{exc}")
+                else:
+                    raise
             return action_warnings
 
         # -- navigate / wait / scroll はロケータ不要
@@ -1106,8 +1711,40 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             return action_warnings
             
         if a == "wait":
-            timeout = ms if ms > 0 else 1000
-            await PAGE.wait_for_timeout(timeout)
+            wait_until = (act.get("until") or "").strip()
+            default_ms = ms if ms > 0 else 1000
+
+            def _coerce_timeout(value: Any, fallback: int) -> int:
+                try:
+                    val_int = int(value)
+                    return val_int if val_int > 0 else fallback
+                except (TypeError, ValueError):
+                    return fallback
+
+            if wait_until == "network_idle":
+                timeout = _coerce_timeout(act.get("value"), max(default_ms, 3000))
+                try:
+                    await PAGE.wait_for_load_state("networkidle", timeout=timeout)
+                except Exception as exc:
+                    if is_final_retry:
+                        action_warnings.append(f"WARNING:auto:wait network_idle failed - {str(exc)}")
+                    else:
+                        raise
+            elif wait_until == "selector":
+                selector = act.get("target") or act.get("value")
+                if not selector:
+                    action_warnings.append("WARNING:auto:wait selector condition missing selector")
+                    return action_warnings
+                try:
+                    await SmartLocator(PAGE, selector).locate()
+                except Exception as exc:
+                    if is_final_retry:
+                        action_warnings.append(f"WARNING:auto:wait selector failed - {str(exc)}")
+                    else:
+                        raise
+            else:
+                timeout = _coerce_timeout(act.get("value"), default_ms)
+                await PAGE.wait_for_timeout(timeout)
             return action_warnings
             
         if a == "wait_for_selector":
@@ -1136,7 +1773,42 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             else:
                 await PAGE.evaluate("(y)=>window.scrollBy(0,y)", offset)
             return action_warnings
-            
+
+        if a == "scroll_to_text":
+            text = act.get("target") or act.get("text") or act.get("value")
+            if not text or not str(text).strip():
+                action_warnings.append("WARNING:auto:scroll_to_text missing target text")
+                return action_warnings
+            script = """
+                (needle) => {
+                    if (!needle) return false;
+                    const target = String(needle).trim().toLowerCase();
+                    if (!target) return false;
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                    while (walker.nextNode()) {
+                        const el = walker.currentNode;
+                        if (!(el instanceof Element)) continue;
+                        const style = window.getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') continue;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        const content = (el.innerText || el.textContent || '').toLowerCase();
+                        if (content.includes(target)) {
+                            el.scrollIntoView({behavior: 'instant', block: 'center'});
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """
+            try:
+                found = await PAGE.evaluate(script, str(text))
+            except Exception as exc:
+                raise ExecutionError("ELEMENT_NOT_FOUND", f"scroll_to_text failed - {str(exc)}", {"text": text})
+            if not found:
+                raise ExecutionError("ELEMENT_NOT_FOUND", f"Text '{text}' not found on page", {"text": text})
+            return action_warnings
+
         if a == "eval_js":
             script = act.get("script") or val
             if script:
@@ -1325,95 +1997,131 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 action_warnings.append(f"WARNING:auto:close_popup failed - {str(e)}")
             return action_warnings
 
-        # -- ロケータ系
-        if not _validate_selector(tgt):
-            action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
-            return action_warnings
+        locator_actions = {"click", "click_text", "type", "hover", "select_option", "press_key", "extract_text"}
+        if a in locator_actions:
+            selectors_to_try: List[str] = []
+            resolved_entry: Optional[Dict[str, Any]] = None
+            chosen_selector: Optional[str] = None
+            index_value = _parse_index_target(tgt)
 
-        # Check if PAGE is available before proceeding
-        if PAGE is None:
-            error_msg = f"Browser not initialized - cannot execute {a} action"
-            if is_final_retry:
-                action_warnings.append(f"WARNING:auto:{error_msg}")
-                return action_warnings
+            if index_value is not None:
+                selectors_to_try, resolved_entry = _resolve_index_entry(index_value)
             else:
+                if not _validate_selector(tgt):
+                    action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
+                    return action_warnings
+                selectors_to_try = [tgt]
+
+            if PAGE is None:
+                error_msg = f"Browser not initialized - cannot execute {a} action"
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{error_msg}")
+                    return action_warnings
                 raise Exception(error_msg)
 
-        loc: Optional = None
-        for attempt in range(LOCATOR_RETRIES):
-            try:
-                if a == "click_text":
-                    if "||" in tgt or tgt.strip().startswith(("css=", "text=", "role=", "xpath=")):
-                        loc = await SmartLocator(PAGE, tgt).locate()
-                    else:
-                        loc = await SmartLocator(PAGE, f"text={tgt}").locate()
-                else:
-                    loc = await SmartLocator(PAGE, tgt).locate()
+            loc: Optional = None
+            last_error: Optional[str] = None
+            for selector in selectors_to_try:
+                candidate = selector
+                for attempt in range(LOCATOR_RETRIES):
+                    try:
+                        if a == "click_text" and index_value is None:
+                            if "||" in candidate or candidate.strip().startswith(("css=", "text=", "role=", "xpath=")):
+                                loc = await SmartLocator(PAGE, candidate).locate()
+                            else:
+                                loc = await SmartLocator(PAGE, f"text={candidate}").locate()
+                        else:
+                            loc = await SmartLocator(PAGE, candidate).locate()
+                        if loc is not None:
+                            chosen_selector = candidate
+                            break
+                        await _stabilize_page()
+                    except Exception as exc:
+                        last_error = str(exc)
+                        if attempt == LOCATOR_RETRIES - 1:
+                            action_warnings.append(
+                                f"WARNING:auto:Locator search failed for '{candidate}' - {last_error}"
+                            )
                 if loc is not None:
                     break
-                await _stabilize_page()
-            except Exception as e:
-                if attempt == LOCATOR_RETRIES - 1:
-                    action_warnings.append(f"WARNING:auto:Locator search failed for '{tgt}' - {str(e)}")
 
-        if loc is None:
-            error_msg = f"Element not found: {tgt}. Consider using alternative selectors or text matching."
-            if is_final_retry:
-                # On final retry, add warning and continue
-                action_warnings.append(f"WARNING:auto:{error_msg}")
-                return action_warnings
-            else:
-                # Not final retry, raise exception to trigger retry
+            if loc is None:
+                if index_value is not None:
+                    raise ExecutionError(
+                        "ELEMENT_NOT_FOUND",
+                        f"Catalog index {index_value} could not be resolved to a live element",
+                        {"index": index_value, "selectors": selectors_to_try},
+                    )
+                error_msg = (
+                    f"Element not found: {tgt}. Consider using alternative selectors or text matching."
+                )
+                if is_final_retry:
+                    action_warnings.append(f"WARNING:auto:{error_msg}")
+                    return action_warnings
                 raise Exception(error_msg)
 
-        # Execute the action with enhanced error handling
-        # Determine timeout for this specific action
-        action_timeout = ACTION_TIMEOUT if ms == 0 else ms
-        
-        try:
-            if a in ("click", "click_text"):
-                await _safe_click(loc, timeout=action_timeout)
-            elif a == "type":
-                await _safe_fill(loc, val, timeout=action_timeout)
-            elif a == "hover":
-                await _safe_hover(loc, timeout=action_timeout)
-            elif a == "select_option":
-                await _safe_select(loc, val, timeout=action_timeout)
-            elif a == "press_key":
-                key = act.get("key", "")
-                if key:
-                    await _safe_press(loc, key, timeout=action_timeout)
-                else:
-                    # Fallback to page-level keypress
-                    if key:
-                        await PAGE.keyboard.press(key)
-                    else:
-                        action_warnings.append(f"WARNING:auto:No key specified for press_key action")
-            elif a == "extract_text":
-                try:
-                    attr = act.get("attr")
-                    if attr:
-                        text = await loc.get_attribute(attr)
-                    else:
-                        text = await loc.inner_text()
-                    EXTRACTED_TEXTS.append(text or "")
-                except Exception as e:
-                    action_warnings.append(f"WARNING:auto:extract_text failed - {str(e)}")
-        except Exception as e:
-            # Enhanced error reporting to help LLM understand what failed and make better decisions
-            error_msg = str(e)
-            if "failed -" in error_msg and ("Original:" in error_msg or "Fallback" in error_msg):
-                # This is a fallback failure with context - provide detailed info and guidance to LLM
-                action_guidance = _get_action_guidance(a, tgt, error_msg)
-                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' after trying multiple methods. {error_msg}. {action_guidance}")
-            else:
-                # Standard error reporting with basic guidance
-                basic_guidance = _get_basic_guidance(a, error_msg)
-                action_warnings.append(f"WARNING:auto:{a} operation failed for '{tgt}' - {error_msg}. {basic_guidance}")
+            if index_value is not None and resolved_entry:
+                catalog_version = (_CURRENT_CATALOG_SIGNATURE or {}).get("catalog_version", "")
+                _log_index_adoption(catalog_version, index_value, chosen_selector or selectors_to_try[0], a)
 
+            # Execute the action with enhanced error handling
+            action_timeout = ACTION_TIMEOUT if ms == 0 else ms
+
+            try:
+                display_target = chosen_selector or tgt
+                if a in ("click", "click_text"):
+                    await _safe_click(loc, timeout=action_timeout)
+                elif a == "type":
+                    await _safe_fill(loc, val, timeout=action_timeout)
+                elif a == "hover":
+                    await _safe_hover(loc, timeout=action_timeout)
+                elif a == "select_option":
+                    await _safe_select(loc, val, timeout=action_timeout)
+                elif a == "press_key":
+                    key = act.get("key", "")
+                    if key:
+                        await _safe_press(loc, key, timeout=action_timeout)
+                    else:
+                        if key:
+                            await PAGE.keyboard.press(key)
+                        else:
+                            action_warnings.append("WARNING:auto:No key specified for press_key action")
+                elif a == "extract_text":
+                    try:
+                        attr = act.get("attr")
+                        if attr:
+                            text = await loc.get_attribute(attr)
+                        else:
+                            text = await loc.inner_text()
+                        EXTRACTED_TEXTS.append(text or "")
+                    except Exception as e:
+                        action_warnings.append(f"WARNING:auto:extract_text failed - {str(e)}")
+                return action_warnings
+            except ExecutionError:
+                raise
+            except Exception as e:
+                error_msg = str(e)
+                if "failed -" in error_msg and ("Original:" in error_msg or "Fallback" in error_msg):
+                    action_guidance = _get_action_guidance(a, display_target, error_msg)
+                    action_warnings.append(
+                        f"WARNING:auto:{a} operation failed for '{display_target}' after trying multiple methods. {error_msg}. {action_guidance}"
+                    )
+                else:
+                    basic_guidance = _get_basic_guidance(a, error_msg)
+                    action_warnings.append(
+                        f"WARNING:auto:{a} operation failed for '{display_target}' - {error_msg}. {basic_guidance}"
+                    )
+                return action_warnings
+
+        # Actions that reach here without return fall back to success
+        return action_warnings
+
+    except ExecutionError as exc:
+        action_warnings.append(f"ERROR:auto:{exc}")
+        raise
     except Exception as e:
         action_warnings.append(f"WARNING:auto:Action '{a}' failed - {str(e)}")
-    
+
     return action_warnings
 
 
@@ -1474,15 +2182,18 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                 action_warnings = await _apply(act, is_final_retry)
                 all_warnings.extend(action_warnings)
                 action_executed = True
-                
+
                 # Enhanced DOM stabilization after each action
                 await _stabilize_page()
                 break
-                
+
+            except ExecutionError as exec_err:
+                log.error("[%s] Execution error on action %d: %s", correlation_id, i + 1, str(exec_err))
+                raise
             except Exception as e:
                 error_msg = f"Action {i+1} '{act.get('action', 'unknown')}' attempt {attempt}/{retries} failed: {str(e)}"
                 log.error("[%s] %s", correlation_id, error_msg)
-                
+
                 if attempt == retries:
                     # Final retry failure - try once more with is_final_retry=True to get warnings
                     try:
@@ -1523,89 +2234,229 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
 # -------------------------------------------------- HTTP エンドポイント
 @app.post("/execute-dsl")
 def execute_dsl():
-    # Generate correlation ID for request tracking
     correlation_id = str(uuid.uuid4())[:8]
     log.info("Starting DSL execution with correlation ID: %s", correlation_id)
-    
-    warnings = []
-    
+
+    warnings: List[str] = []
+    success = True
+    error_info: Optional[Dict[str, Any]] = None
+    html = ""
+    nav_detected = False
+    observation_signature: Optional[Dict[str, Any]] = None
+
     try:
         data = request.get_json(force=True)
-        # 配列だけ来た場合の後方互換
         if isinstance(data, list):
             data = {"actions": data}
         _validate_schema(data)
-        
-        # Validate individual actions
-        for i, action in enumerate(data.get("actions", [])):
-            action_warnings = _validate_action_params(action)
-            if action_warnings:
-                # Add correlation ID and action index to warnings
-                for warning in action_warnings:
-                    warnings.append(f"[{correlation_id}] Action {i+1}: {warning}")
-        
     except ValidationError as ve:
-        warning_msg = f"[{correlation_id}] ERROR:auto:InvalidDSL - {str(ve)}"
-        warnings.append(warning_msg)
-        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
+        warnings.append(f"[{correlation_id}] ERROR:auto:InvalidDSL - {str(ve)}")
+        success = False
+        error_info = {"code": "INVALID_DSL", "message": str(ve), "details": {}}
+        observation_signature = _run(_ensure_catalog_signature()) if INDEX_MODE else _collect_basic_signature()
+        html = _run(_safe_get_page_content()) if PAGE else ""
+        response = {
+            "success": success,
+            "error": error_info,
+            "warnings": warnings,
+            "html": html,
+            "correlation_id": correlation_id,
+            "observation": _build_observation(nav_detected=False, signature=observation_signature),
+            "is_done": False,
+            "complete": False,
+        }
+        return jsonify(response)
     except Exception as e:
-        warning_msg = f"[{correlation_id}] ERROR:auto:ParseError - {str(e)}"
-        warnings.append(warning_msg)
-        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
+        warnings.append(f"[{correlation_id}] ERROR:auto:ParseError - {str(e)}")
+        success = False
+        error_info = {"code": "INVALID_DSL", "message": str(e), "details": {}}
+        observation_signature = _run(_ensure_catalog_signature()) if INDEX_MODE else _collect_basic_signature()
+        html = _run(_safe_get_page_content()) if PAGE else ""
+        response = {
+            "success": success,
+            "error": error_info,
+            "warnings": warnings,
+            "html": html,
+            "correlation_id": correlation_id,
+            "observation": _build_observation(nav_detected=False, signature=observation_signature),
+            "is_done": False,
+            "complete": False,
+        }
+        return jsonify(response)
 
-    # If there are validation warnings for critical actions, skip execution
-    critical_errors = [w for w in warnings if "Invalid navigate URL" in w or "Invalid selector" in w]
+    actions = data.get("actions", [])
+    for i, action in enumerate(actions):
+        for warning in _validate_action_params(action):
+            warnings.append(f"[{correlation_id}] Action {i+1}: {warning}")
+
+    critical_errors = [
+        w
+        for w in warnings
+        if "Invalid navigate URL" in w or "Invalid selector" in w or "scroll_to_text requires" in w
+    ]
     if critical_errors:
         log.warning("Skipping execution due to critical validation errors: %s", critical_errors)
-        return jsonify({"html": "", "warnings": warnings, "correlation_id": correlation_id})
-    
-    # Check DSL size limit
-    action_count = len(data.get("actions", []))
+        success = False
+        error_info = {
+            "code": "INVALID_DSL",
+            "message": "Critical validation errors detected in DSL actions",
+            "details": {"warnings": critical_errors},
+        }
+        observation_signature = _run(_ensure_catalog_signature()) if INDEX_MODE else _collect_basic_signature()
+        html = _run(_safe_get_page_content()) if PAGE else ""
+        response = {
+            "success": success,
+            "error": error_info,
+            "warnings": warnings,
+            "html": html,
+            "correlation_id": correlation_id,
+            "observation": _build_observation(nav_detected=False, signature=observation_signature),
+            "is_done": False,
+            "complete": False,
+        }
+        return jsonify(response)
+
+    action_count = len(actions)
     if action_count > MAX_DSL_ACTIONS:
-        warning_msg = f"[{correlation_id}] ERROR:auto:DSL too large - {action_count} actions exceed limit of {MAX_DSL_ACTIONS}. Consider splitting into smaller chunks."
-        warnings.append(warning_msg)
-        # Truncate to limit but still execute  
-        data["actions"] = data["actions"][:MAX_DSL_ACTIONS]
+        warnings.append(
+            f"[{correlation_id}] ERROR:auto:DSL too large - {action_count} actions exceed limit of {MAX_DSL_ACTIONS}. Consider splitting into smaller chunks."
+        )
+        actions = actions[:MAX_DSL_ACTIONS]
+        data["actions"] = actions
+
+    complete_flag = bool(data.get("complete"))
+    expected_catalog_version = data.get("expected_catalog_version")
 
     try:
         _run(_init_browser())
-        
-        # Check browser health before execution
         if not _run(_check_browser_health()):
             log.warning("[%s] Browser unhealthy, recreating...", correlation_id)
             _run(_recreate_browser())
-        
-        # Optionally create clean context
         if USE_INCOGNITO_CONTEXT:
             _run(_create_clean_context())
-            
-        html, action_warns = _run(_run_actions_with_lock(data["actions"], correlation_id))
+    except Exception as init_error:
+        success = False
+        error_info = {
+            "code": "BROWSER_INIT_FAILED",
+            "message": str(init_error),
+            "details": {},
+        }
+        observation_signature = _run(_ensure_catalog_signature()) if INDEX_MODE else _collect_basic_signature()
+        response = {
+            "success": success,
+            "error": error_info,
+            "warnings": warnings,
+            "html": html,
+            "correlation_id": correlation_id,
+            "observation": _build_observation(nav_detected=False, signature=observation_signature),
+            "is_done": complete_flag,
+            "complete": complete_flag,
+        }
+        return jsonify(response)
+
+    before_signature: Optional[Dict[str, Any]] = None
+    if INDEX_MODE:
+        observation_signature = _run(_ensure_catalog_signature())
+        before_signature = dict(observation_signature) if observation_signature else {}
+        current_version = (observation_signature or {}).get("catalog_version")
+        refresh_only = all(a.get("action") == "refresh_catalog" for a in actions)
+        if expected_catalog_version and current_version and current_version != expected_catalog_version and not refresh_only:
+            success = False
+            error_info = {
+                "code": "CATALOG_OUTDATED",
+                "message": "Element catalog is outdated. Please execute refresh_catalog.",
+                "details": {
+                    "expected": expected_catalog_version,
+                    "current": current_version,
+                },
+            }
+            html = _run(_safe_get_page_content()) if PAGE else ""
+            response = {
+                "success": success,
+                "error": error_info,
+                "warnings": warnings,
+                "html": html,
+                "correlation_id": correlation_id,
+                "observation": _build_observation(nav_detected=False, signature=observation_signature),
+                "is_done": complete_flag,
+                "complete": complete_flag,
+            }
+            return jsonify(response)
+    else:
+        observation_signature = _collect_basic_signature()
+
+    try:
+        html_result, action_warns = _run(_run_actions_with_lock(actions, correlation_id))
         warnings.extend(action_warns)
-        
-        # Check if periodic browser refresh is needed
+
         refresh_done = _run(_check_and_refresh_browser(correlation_id))
         if refresh_done:
             warnings.append(f"INFO:auto:[{correlation_id}] Browser context refreshed for stability")
-        
-        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
-        
+
+        html = html_result
+
+    except ExecutionError as exec_err:
+        success = False
+        error_info = {
+            "code": exec_err.code,
+            "message": str(exec_err),
+            "details": exec_err.details,
+        }
+        log.warning(
+            "[%s] Structured execution error: code=%s message=%s details=%s",
+            correlation_id,
+            exec_err.code,
+            str(exec_err),
+            exec_err.details,
+        )
+        html = _run(_safe_get_page_content()) if PAGE else ""
+        if INDEX_MODE:
+            observation_signature = observation_signature or _run(_ensure_catalog_signature())
+        else:
+            observation_signature = observation_signature or _collect_basic_signature()
+
     except Exception as e:
-        error_msg = f"[{correlation_id}] ExecutionError - {str(e)}"
-        log.exception("DSL execution failed: %s", error_msg)
-        warnings.append(f"ERROR:auto:{error_msg}")
-        
-        # Save debug artifacts on critical failure
-        debug_info = _run(_save_debug_artifacts(correlation_id, error_msg))
+        success = False
+        err_message = str(e)
+        log.exception("DSL execution failed: %s", err_message)
+        warnings.append(f"ERROR:auto:[{correlation_id}] ExecutionError - {err_message}")
+        debug_info = _run(_save_debug_artifacts(correlation_id, err_message))
         if debug_info:
             warnings.append(f"DEBUG:auto:{debug_info}")
-        
-        # Return current page HTML even on failure to provide context
+        html = _run(_safe_get_page_content()) if PAGE else ""
+        if INDEX_MODE:
+            observation_signature = observation_signature or _run(_ensure_catalog_signature())
+        else:
+            observation_signature = observation_signature or _collect_basic_signature()
+        error_info = {"code": "UNEXPECTED_ERROR", "message": err_message, "details": {}}
+
+    if INDEX_MODE:
         try:
-            html = _run(_safe_get_page_content()) if PAGE else ""
-        except Exception:
-            html = ""
-            
-        return jsonify({"html": html, "warnings": warnings, "correlation_id": correlation_id})
+            after_signature = _run(_compute_dom_signature())
+        except Exception as exc:
+            log.debug("Failed to compute DOM signature after execution: %s", exc)
+            after_signature = observation_signature or before_signature
+        if after_signature:
+            if before_signature and after_signature.get("catalog_version") != before_signature.get("catalog_version"):
+                nav_detected = True
+                _mark_catalog_outdated(after_signature)
+            else:
+                _CURRENT_CATALOG_SIGNATURE = after_signature
+            observation_signature = after_signature
+    else:
+        observation_signature = observation_signature or _collect_basic_signature()
+
+    response = {
+        "success": success,
+        "error": error_info,
+        "warnings": warnings,
+        "html": html,
+        "correlation_id": correlation_id,
+        "observation": _build_observation(nav_detected=nav_detected, signature=observation_signature),
+        "is_done": complete_flag,
+        "complete": complete_flag,
+    }
+    return jsonify(response)
 
 
 @app.get("/source")
@@ -1657,6 +2508,61 @@ def elements():
     except Exception as e:
         log.error("elements error: %s", e)
         return jsonify([])
+
+
+@app.get("/catalog")
+def catalog():
+    if not INDEX_MODE:
+        return jsonify(
+            {
+                "abbreviated": [],
+                "full": [],
+                "catalog_version": None,
+                "index_mode_enabled": False,
+            }
+        )
+
+    refresh_requested = request.args.get("refresh", "false").lower() in {"1", "true", "yes"}
+
+    try:
+        if not PAGE or not _run(_check_browser_health()):
+            _run(_init_browser())
+        catalog_data = _run(_generate_element_catalog(force=refresh_requested))
+        signature = _CURRENT_CATALOG_SIGNATURE or {}
+        return jsonify(
+            {
+                "abbreviated": catalog_data.get("abbreviated", []),
+                "full": catalog_data.get("full", []),
+                "catalog_version": signature.get("catalog_version"),
+                "metadata": {
+                    "url": signature.get("url"),
+                    "title": signature.get("title"),
+                },
+                "index_mode_enabled": True,
+            }
+        )
+    except ExecutionError as exc:
+        log.warning("Catalog generation error: %s", exc)
+        return jsonify(
+            {
+                "abbreviated": [],
+                "full": [],
+                "catalog_version": None,
+                "index_mode_enabled": True,
+                "error": {"code": exc.code, "message": str(exc), "details": exc.details},
+            }
+        )
+    except Exception as e:
+        log.error("catalog error: %s", e)
+        return jsonify(
+            {
+                "abbreviated": [],
+                "full": [],
+                "catalog_version": None,
+                "index_mode_enabled": True,
+                "error": {"code": "CATALOG_ERROR", "message": str(e)},
+            }
+        )
 
 
 @app.get("/extracted")

@@ -88,7 +88,13 @@ class AsyncExecutor:
         
         return task_id
     
-    def submit_playwright_execution(self, task_id: str, execute_func: Callable, actions: list) -> bool:
+    def submit_playwright_execution(
+        self,
+        task_id: str,
+        execute_func: Callable,
+        actions: list,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Submit Playwright execution for async processing (optimized for immediate execution)."""
         task = self.tasks.get(task_id)
         if not task:
@@ -111,7 +117,10 @@ class AsyncExecutor:
                 log.debug("Starting execution for task %s", task_id)
                 
                 # Execute the Playwright operations immediately
-                result = execute_func({"actions": actions})
+                payload_data: Dict[str, Any] = {"actions": actions}
+                if payload:
+                    payload_data.update(payload)
+                result = execute_func(payload_data)
                 
                 # Ensure warnings are properly formatted and truncated
                 if result and isinstance(result, dict):
