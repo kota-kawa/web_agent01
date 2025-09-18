@@ -170,7 +170,7 @@ DOM_SNAPSHOT_SCRIPT = """
     return null;
   }
 
-  let counter = 1;
+  let counter = 0;
   const allElements = Array.from(document.querySelectorAll('*'));
   
   function serialize(node, depth = 0) {
