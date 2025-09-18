@@ -26,7 +26,7 @@ async def prepare_locator(page: Page, locator: Locator, timeout: Optional[int] =
     del page  # Only required for a consistent signature; retained for future use.
 
     timeout = timeout if timeout is not None else DEFAULT_ACTION_TIMEOUT
-    target = locator.first
+    target = locator
     await target.wait_for(state="attached", timeout=timeout)
     await target.scroll_into_view_if_needed(timeout=timeout)
     await target.wait_for(state="visible", timeout=timeout)
@@ -125,17 +125,17 @@ async def safe_fill(
                     "Use a selector that points to an input/textarea element or click the link instead."
                 )
 
-        await target.first.wait_for(state="attached", timeout=timeout)
+        await target.wait_for(state="attached", timeout=timeout)
 
         element_visible = True
         try:
-            element_visible = await target.first.is_visible()
+            element_visible = await target.is_visible()
         except Exception:
             element_visible = True
 
         if not element_visible:
             try:
-                await target.first.wait_for(state="visible", timeout=min(1000, timeout))
+                await target.wait_for(state="visible", timeout=min(1000, timeout))
                 element_visible = True
             except Exception:
                 element_visible = False
@@ -158,7 +158,7 @@ async def safe_fill(
     except Exception as exc:
         log.warning("Fill retry with alternative method due to: %s", exc)
         try:
-            element_visible = await target.first.is_visible()
+            element_visible = await target.is_visible()
         except Exception:
             element_visible = False
 
@@ -178,7 +178,7 @@ async def safe_fill(
                 retry_error = alternative_error
 
         try:
-            await target.first.evaluate(
+            await target.evaluate(
                 """
                 (el, value) => {
                     if (!el) {
