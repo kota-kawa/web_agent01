@@ -52,9 +52,6 @@ from vnc.page_actions import (
     scroll_to_text as perform_scroll_to_text,
 )
 
-# Import browser-use adapter
-from vnc.browser_use_adapter import get_browser_adapter, close_browser_adapter, BrowserUseAdapter
-
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -1625,13 +1622,11 @@ def _validate_action_params(act: Dict) -> List[str]:
     return warnings
 
 
-# -------------------------------------------------- Browser-use 管理
+# -------------------------------------------------- Playwright 管理
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
 
-# Replace Playwright globals with browser-use adapter
-PW = BROWSER = PAGE = None  # Keep for compatibility with legacy code
-_BROWSER_ADAPTER: Optional[BrowserUseAdapter] = None
+PW = BROWSER = PAGE = None
 EXTRACTED_TEXTS: List[str] = []
 EVAL_RESULTS: List[str] = []
 WARNINGS: List[str] = []
@@ -1756,35 +1751,51 @@ def _run(coro):
 
 
 async def _get_page_url_value() -> str:
-    """Safely retrieve the current page URL using browser-use adapter."""
-    global _BROWSER_ADAPTER
-    
-    if _BROWSER_ADAPTER is None:
+    """Safely retrieve the current page URL for both async and property-based APIs."""
+    if PAGE is None:
         return ""
 
     try:
-        return await _BROWSER_ADAPTER.get_url()
+        attr = getattr(PAGE, "url", "")
     except Exception as exc:
-        log.debug("Failed to get URL from browser-use adapter: %s", exc)
+        log.debug("Unable to access page.url: %s", exc)
         return ""
+
+    try:
+        if callable(attr):
+            value = attr()
+            if inspect.isawaitable(value):
+                value = await value
+        else:
+            value = attr
+    except TypeError:
+        # Some Playwright versions expose url as a simple property; if callable checks
+        # misfire fall back to the raw attribute value.
+        value = attr
+    except Exception as exc:
+        log.debug("Failed to resolve page URL: %s", exc)
+        return ""
+
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _get_page_url_sync() -> str:
     """Helper used by Flask routes to fetch the current page URL safely."""
-    global _BROWSER_ADAPTER
-    
-    if _BROWSER_ADAPTER is None:
+    if PAGE is None:
         return ""
 
     try:
         return _run(_get_page_url_value())
     except RuntimeError as exc:
-        # Fallback to empty string if the event loop is already running.
+        # Fallback to direct attribute access if the event loop is already running.
         log.debug("Event loop busy while fetching page URL: %s", exc)
-        return ""
     except Exception as exc:
         log.debug("Failed to fetch page URL via event loop: %s", exc)
-        return ""
+
+    attr = getattr(PAGE, "url", "")
+    return attr if isinstance(attr, str) else ""
 
 
 async def _wait_cdp(t: int = 15) -> bool:
@@ -1800,28 +1811,28 @@ async def _wait_cdp(t: int = 15) -> bool:
 
 
 async def _check_browser_health() -> bool:
-    """Check if browser-use adapter is still functional."""
+    """Check if browser and page are still functional."""
     try:
-        global _BROWSER_ADAPTER
-        if _BROWSER_ADAPTER is None:
+        if PAGE is None or BROWSER is None:
             return False
         
-        # Use browser-use adapter health check
-        return await _BROWSER_ADAPTER.is_healthy()
+        # Simple health check - try to evaluate a basic script
+        await PAGE.evaluate("() => document.readyState")
+        return True
     except Exception as e:
         log.warning("Browser health check failed: %s", e)
         return False
 
 
 async def _recreate_browser():
-    """Recreate browser-use adapter when health check fails."""
-    global PW, BROWSER, PAGE, _BROWSER_ADAPTER
+    """Recreate browser and page when health check fails."""
+    global PW, BROWSER, PAGE
     
     # Save current URL before closing the browser to preserve task context
     current_url = None
-    if _BROWSER_ADAPTER:
+    if PAGE:
         try:
-            current_url = await _BROWSER_ADAPTER.get_url()
+            current_url = await _get_page_url_value()
             # Avoid restoring internal about: pages and default/initial URLs
             if (current_url and 
                 not current_url.startswith("about:") and 
@@ -1836,22 +1847,33 @@ async def _recreate_browser():
         except Exception:
             current_url = None
     
-    # Close existing browser-use adapter
     try:
-        if _BROWSER_ADAPTER:
-            await _BROWSER_ADAPTER.close()
-    except Exception as e:
-        log.warning("Error closing browser adapter: %s", e)
+        if PAGE:
+            try:
+                await PAGE.close()
+            except Exception:
+                pass
+        if BROWSER:
+            try:
+                await BROWSER.close()
+            except Exception:
+                pass
+        if PW:
+            try:
+                await PW.stop()
+            except Exception:
+                pass
+    except Exception:
+        pass
     
-    # Reset globals for compatibility
+    # Reset globals
     PW = BROWSER = PAGE = None
-    _BROWSER_ADAPTER = None
     
-    # Reinitialize browser-use adapter
+    # Reinitialize (but don't reset first init flag, as this is a recreation)
     await _init_browser()
     
     # Navigate back to preserved URL if we had one
-    if current_url and _BROWSER_ADAPTER:
+    if current_url and PAGE:
         # Multiple retry attempts with different strategies to ensure URL restoration
         restore_attempts = [
             {"wait_until": "load", "timeout": NAVIGATION_TIMEOUT},
@@ -1864,26 +1886,23 @@ async def _recreate_browser():
             try:
                 log.info("Navigating back to preserved URL after browser recreation (attempt %d/%d): %s", 
                         i + 1, len(restore_attempts), current_url)
-                result = await _BROWSER_ADAPTER.navigate(current_url, **attempt_params)
+                await PAGE.goto(current_url, **attempt_params)
                 
-                if result.get("success"):
-                    # Verify we successfully navigated to the intended URL
-                    try:
-                        final_url = await _BROWSER_ADAPTER.get_url()
-                        if final_url == current_url or final_url.startswith(current_url):
-                            log.info("Successfully restored URL after browser recreation: %s", final_url)
-                            url_restored = True
-                            break
-                        else:
-                            log.warning("URL restoration attempt %d resulted in different URL: %s (expected: %s)", 
-                                      i + 1, final_url, current_url)
-                    except Exception as url_check_error:
-                        # If we can't verify the URL but navigation didn't throw, assume success
-                        log.warning("Could not verify URL after navigation attempt %d: %s", i + 1, url_check_error)
+                # Verify we successfully navigated to the intended URL
+                try:
+                    final_url = await _get_page_url_value()
+                    if final_url == current_url or final_url.startswith(current_url):
+                        log.info("Successfully restored URL after browser recreation: %s", final_url)
                         url_restored = True
                         break
-                else:
-                    log.warning("URL restoration attempt %d failed: %s", i + 1, result.get("error", "Unknown error"))
+                    else:
+                        log.warning("URL restoration attempt %d resulted in different URL: %s (expected: %s)", 
+                                  i + 1, final_url, current_url)
+                except Exception as url_check_error:
+                    # If we can't verify the URL but navigation didn't throw, assume success
+                    log.warning("Could not verify URL after navigation attempt %d: %s", i + 1, url_check_error)
+                    url_restored = True
+                    break
                     
             except Exception as e:
                 log.warning("URL restoration attempt %d failed for %s: %s", i + 1, current_url, e)
@@ -1896,30 +1915,46 @@ async def _recreate_browser():
             # Do NOT navigate to DEFAULT_URL as fallback - stay where we are
             log.info("Browser recreation complete - remaining on current page instead of falling back to default URL")
 async def _init_browser():
-    global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT, _BROWSER_ADAPTER
-    
-    # Check if browser-use adapter is already healthy
-    if _BROWSER_ADAPTER and await _BROWSER_ADAPTER.is_healthy():
-        # Set PAGE to a placeholder for compatibility with legacy code
-        PAGE = "browser-use-active"
+    global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT
+    if PAGE and await _check_browser_health():
         return
         
-    # Initialize browser-use adapter
-    _BROWSER_ADAPTER = await get_browser_adapter()
+    PW = await async_playwright().start()
+
+    if await _wait_cdp():
+        try:
+            BROWSER = await PW.chromium.connect_over_cdp(CDP_URL)
+            ctx = (
+                BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
+            )
+            PAGE = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await PAGE.bring_to_front()
+        except PwError:
+            pass
+
+    if PAGE is None:
+        BROWSER = await PW.chromium.launch(headless=True)
+        PAGE = await BROWSER.new_page()
+
+    # Inject event listener tracking script on every navigation
+    global _WATCHER_SCRIPT
+    if _WATCHER_SCRIPT is None:
+        path = os.path.join(os.path.dirname(__file__), "eventWatcher.js")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                _WATCHER_SCRIPT = f.read()
     
-    # Set compatibility variables for legacy code
-    PW = "browser-use-pw"
-    BROWSER = "browser-use-browser" 
-    PAGE = "browser-use-page"
+    if _WATCHER_SCRIPT:
+        try:
+            await PAGE.add_init_script(_WATCHER_SCRIPT)
+        except Exception as e:
+            log.error("add_init_script failed: %s", e)
 
     # Only navigate to DEFAULT_URL on the very first initialization
     if _BROWSER_FIRST_INIT:
         try:
-            result = await _BROWSER_ADAPTER.navigate(DEFAULT_URL, wait_until="load", timeout=NAVIGATION_TIMEOUT)
-            if result.get("success"):
-                log.info("Initial navigation to default URL: %s", DEFAULT_URL)
-            else:
-                log.warning("Failed to navigate to default URL: %s", result.get("error", "Unknown error"))
+            await PAGE.goto(DEFAULT_URL, wait_until="load", timeout=NAVIGATION_TIMEOUT)
+            log.info("Initial navigation to default URL: %s", DEFAULT_URL)
         except Exception as e:
             log.warning("Failed to navigate to default URL: %s", e)
         
@@ -1927,7 +1962,7 @@ async def _init_browser():
     else:
         log.info("Browser recreated - skipping navigation to default URL")
         
-    log.info("browser-use adapter ready")
+    log.info("browser ready")
 
 
 # -------------------------------------------------- アクション実装
@@ -1992,59 +2027,44 @@ async def _safe_press(l: Locator, key: str, timeout: Optional[int] = None):
 
 async def _list_elements(limit: int = 50) -> List[Dict]:
     """Return list of clickable/input elements with basic info."""
-    global _BROWSER_ADAPTER
-    
-    if not _BROWSER_ADAPTER or not _BROWSER_ADAPTER.page:
-        # Return placeholder elements for compatibility
-        return [
-            {
-                "index": 0,
-                "tag": "div",
-                "text": "Browser-use adapter placeholder element",
-                "id": "placeholder",
-                "class": "adapter-placeholder",
-                "xpath": "/html/body/div[1]",
-            }
-        ]
-    
-    try:
-        els = []
-        # Use browser-use adapter to get elements
-        result = await _BROWSER_ADAPTER.evaluate("""
-            () => {
-                const elements = Array.from(document.querySelectorAll('a,button,input,textarea,select'));
-                return elements.slice(0, arguments[0]).map((el, i) => {
-                    if (!el.offsetParent && el.style.display === 'none') return null;
-                    
-                    function getXPath(el) {
-                        if (el === document.body) return '/html/body';
-                        let ix = 0, s = el.previousSibling;
-                        while (s) { 
-                            if (s.nodeType === 1 && s.tagName === el.tagName) ix++; 
-                            s = s.previousSibling; 
-                        }
-                        return getXPath(el.parentNode) + '/' + el.tagName.toLowerCase() + '[' + (ix + 1) + ']';
+    els = []
+    loc = PAGE.locator("a,button,input,textarea,select")
+    count = await loc.count()
+    for i in range(min(count, limit)):
+        el = loc.nth(i)
+        try:
+            if not await el.is_visible():
+                continue
+            tag = await el.evaluate("el => el.tagName.toLowerCase()")
+            text = (await el.inner_text()).strip()[:50]
+            id_attr = await el.get_attribute("id")
+            cls = await el.get_attribute("class")
+            xpath = await el.evaluate(
+                """
+                el => {
+                    function xp(e){
+                        if(e===document.body) return '/html/body';
+                        let ix=0,s=e.previousSibling;
+                        while(s){ if(s.nodeType===1 && s.tagName===e.tagName) ix++; s=s.previousSibling; }
+                        return xp(e.parentNode)+'/'+e.tagName.toLowerCase()+'['+(ix+1)+']';
                     }
-                    
-                    return {
-                        index: i,
-                        tag: el.tagName.toLowerCase(),
-                        text: (el.innerText || el.textContent || '').trim().substring(0, 50),
-                        id: el.id || null,
-                        class: el.className || null,
-                        xpath: getXPath(el)
-                    };
-                }).filter(Boolean);
-            }
-        """)
-        
-        if result:
-            return result[:limit]
-            
-    except Exception as e:
-        log.error(f"Failed to list elements: {e}")
-    
-    return []
+                    return xp(el);
+                }
+                """
+            )
+            els.append(
+                {
+                    "index": len(els),
+                    "tag": tag,
+                    "text": text,
+                    "id": id_attr,
+                    "class": cls,
+                    "xpath": xpath,
+                }
+            )
+        except Exception:
+            continue
+    return els
 
 
 
@@ -2067,16 +2087,14 @@ async def _wait_for_loading_indicators_to_disappear(timeout: int = 3000):
 
 
 async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> str:
-    global _BROWSER_ADAPTER
-    if _BROWSER_ADAPTER is None:
+    if PAGE is None:
         return ""
-    
-    # Use browser-use adapter to get page content
-    try:
-        return await _BROWSER_ADAPTER.get_page_content()
-    except Exception as e:
-        log.error("Failed to get page content from browser-use adapter: %s", e)
-        return ""
+    return await safe_get_page_content(
+        PAGE,
+        max_retries=max_retries,
+        delay_ms=delay_ms,
+        stabilization_timeout=SPA_STABILIZE_TIMEOUT,
+    )
 
 
 async def _stabilize_page():
@@ -2940,8 +2958,7 @@ def execute_dsl():
 def source():
     try:
         # Only initialize browser if it's not already healthy
-        global _BROWSER_ADAPTER
-        if not _BROWSER_ADAPTER or not _run(_check_browser_health()):
+        if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
         return Response(_run(_safe_get_page_content()), mimetype="text/plain")
     except Exception as e:
@@ -2953,10 +2970,9 @@ def source():
 def current_url():
     try:
         # Only initialize browser if it's not already healthy
-        global _BROWSER_ADAPTER
-        if not _BROWSER_ADAPTER or not _run(_check_browser_health()):
+        if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
-        url = _get_page_url_sync()
+        url = _get_page_url_sync() if PAGE else ""
         return jsonify({"url": url})
     except Exception as e:
         log.error("url error: %s", e)
@@ -2967,10 +2983,9 @@ def current_url():
 def screenshot():
     try:
         # Only initialize browser if it's not already healthy
-        global _BROWSER_ADAPTER
-        if not _BROWSER_ADAPTER or not _run(_check_browser_health()):
+        if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
-        img = _run(_BROWSER_ADAPTER.screenshot())
+        img = _run(PAGE.screenshot(type="png"))
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
         log.error("screenshot error: %s", e)
@@ -2981,8 +2996,7 @@ def screenshot():
 def elements():
     try:
         # Only initialize browser if it's not already healthy
-        global _BROWSER_ADAPTER
-        if not _BROWSER_ADAPTER or not _run(_check_browser_health()):
+        if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
         data = _run(_list_elements())
         return jsonify(data)
