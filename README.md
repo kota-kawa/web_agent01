@@ -1,112 +1,103 @@
 # Web Automation Agent
 
 ## Overview
-This project combines a typed browser-automation DSL, a Playwright-based execution service, and a Flask control plane that cooperates with LLM planners to automate web browsing tasks deterministically. The typed models that describe automation plans live under `automation/dsl`, the Playwright runtime is exposed via the HTTP API in `vnc/automation_server.py`, and the interactive controller/UI is implemented in `web/app.py`.【F:automation/dsl/models.py†L1-L454】【F:vnc/automation_server.py†L1-L3082】【F:web/app.py†L1-L160】
+Web Automation Agent combines a strongly typed browser automation DSL, a hardened Playwright execution service, and a Flask-based controller that collaborates with LLM planners. Typed plans live under `automation/dsl`, the Playwright runtime is provided by the services in `vnc/`, and the conversational UI with LLM integration resides in `web/` and `agent/`.
 
-### Repository layout
-- `automation/dsl/`: Pydantic v2 models, selector utilities, and the action registry used to validate typed plans before execution.【F:automation/dsl/models.py†L1-L454】【F:automation/dsl/registry.py†L1-L186】
-- `vnc/`: Playwright service exposing `/execute-dsl` alongside helper endpoints for HTML capture, screenshots, element catalogs, and structured run logs.【F:vnc/automation_server.py†L2647-L3082】
-- `web/`: Flask application that orchestrates prompts, calls the automation service asynchronously, and normalises legacy selector formats for LLM output.【F:web/app.py†L1-L160】【F:tests/test_normalize_actions.py†L1-L57】
-- `agent/`: Front-end helpers, legacy action shims, async execution manager, and browser client used by the controller.【F:agent/actions/basic.py†L1-L130】【F:agent/controller/async_executor.py†L1-L200】【F:agent/browser/vnc.py†L1-L200】
-- `examples/`: Ready-made typed plans that can be sent to the executor (e.g. `examples/booking_task.json`).【F:examples/booking_task.json†L1-L14】
-- `tests/`: Pytest suite covering model normalisation, selector conversion, and prompt helpers.【F:tests/test_dsl_models.py†L1-L53】【F:tests/test_normalize_actions.py†L1-L57】
+## Project layout
+- `automation/dsl/` – Pydantic v2 models for selectors and actions, the shared action registry, and utilities describing resolved DOM nodes.
+- `vnc/` – Playwright server (`automation_server.py`), typed executor (`executor.py`), selector resolution (`selector_resolver.py`), safe interaction helpers, structured logging, and runtime configuration loaders.
+- `agent/` – Legacy action shims, the async execution controller, browser API client, element catalog cache/formatters, LLM clients, memory helpers, and the CLI entry point.
+- `web/` – Flask application, templates, and static assets that power the interactive controller.
+- `examples/` – Ready-to-run typed plans (see `booking_task.json`).
+- `tests/` – Pytest suite covering DSL validation, selector resolution, catalog handling, prompt generation, safe interactions, and DOM snapshot scripts.
+- `docker-compose.yml` – Local development stack that boots both the automation service and the controller UI.
 
-## Typed DSL
-Plans are defined as strongly typed Pydantic models. `Selector` supports composite strategies (CSS, role, text, ARIA label, etc.) with explicit priority ordering and legacy compatibility helpers.【F:automation/dsl/models.py†L17-L132】 Each action subclass extends `ActionBase`, providing both canonical `payload()` and `legacy_payload()` serialisations so that the controller can reuse the same definitions.【F:automation/dsl/models.py†L200-L262】
+## Typed automation DSL
+### Selectors and plans
+`automation/dsl/models.py` defines `Selector`, a composite description that supports CSS, XPath, role, text, ARIA label, `index=N`, and stable identifier strategies with explicit priority ordering. Actions inherit from `ActionBase` and can serialise to typed or legacy payloads. `automation/dsl/registry.py` exposes an `ActionRegistry` plus `RunPlan`/`RunRequest` models that coerce arbitrary JSON into validated plans, making it possible to parse either `{"plan": [...]}` payloads or raw action lists.
 
 ### Built-in actions
-The registry currently includes the following typed actions, all implemented in `automation/dsl/models.py` and registered in `automation/dsl/registry.py`:
+The DSL ships with the following actions:
 
 | Action | Purpose |
 | --- | --- |
-| `navigate` | Load a URL with optional follow-up wait conditions.【F:automation/dsl/models.py†L269-L279】 |
-| `click` | Click a selector with configurable button/count/delay.【F:automation/dsl/models.py†L281-L293】 |
-| `hover` | Hover over a selector before interacting or revealing menus.【F:automation/dsl/models.py†L304-L311】 |
-| `type` | Fill text inputs, optionally clearing first and pressing Enter.【F:automation/dsl/models.py†L295-L307】 |
-| `select` | Choose options by value or label from `<select>` elements.【F:automation/dsl/models.py†L309-L318】 |
-| `press_key` | Dispatch key combinations either to the focused element or the page.【F:automation/dsl/models.py†L321-L341】 |
-| `wait` | Wait for timeouts, document states, or selector visibility.【F:automation/dsl/models.py†L343-L362】 |
-| `scroll` | Scroll the viewport or a target element into view.【F:automation/dsl/models.py†L365-L379】 |
-| `scroll_to_text` | Scroll until text snippets appear in view.【F:automation/dsl/models.py†L402-L412】 |
-| `switch_tab` | Activate another page within the browser context (index, URL, title, etc.).【F:automation/dsl/models.py†L382-L390】 |
-| `focus_iframe` | Push/pop iframe focus using index/name/url/selector strategies.【F:automation/dsl/models.py†L393-L401】 |
-| `refresh_catalog` | Rebuild the index catalog before using `index=N` selectors.【F:automation/dsl/models.py†L435-L441】 |
-| `eval_js` | Evaluate arbitrary JavaScript and capture the result.【F:automation/dsl/models.py†L445-L451】 |
-| `click_blank_area` | Click outside elements to dismiss overlays/popups.【F:automation/dsl/models.py†L456-L463】 |
-| `close_popup` | Detect and close modal/pop-up overlays safely.【F:automation/dsl/models.py†L466-L473】 |
-| `stop` | Pause execution and wait for user feedback (captcha, confirmation, etc.).【F:automation/dsl/models.py†L476-L483】 |
-| `screenshot` | Capture viewport, full-page, or element screenshots.【F:automation/dsl/models.py†L404-L414】 |
-| `extract` | Read text/value/href/html from a selector.【F:automation/dsl/models.py†L417-L426】 |
-| `assert` | Assert element state (visible, hidden, attached, detached).【F:automation/dsl/models.py†L429-L438】 |
+| `navigate` | Navigate to a URL and optionally wait for a state, selector, or timeout.
+| `click` | Click selectors with configurable button, click count, and delay.
+| `hover` | Hover over an element to reveal menus or tooltips.
+| `type` | Fill inputs, optionally clearing first and pressing Enter.
+| `select` | Choose options from `<select>` elements by value or label.
+| `press_key` | Send key combinations scoped to the active element or entire page.
+| `wait` | Pause for timeouts, document states, or selector visibility.
+| `scroll` | Scroll by offset, to positions, or to target elements/containers.
+| `scroll_to_text` | Scroll until the requested text snippet is visible.
+| `switch_tab` | Activate pages by index, latest/previous/next, URL prefix, or title match.
+| `focus_iframe` | Enter/exit frames using index, name, URL, element selector, parent, or root strategies.
+| `refresh_catalog` | Request a rebuild of the element catalog when index mode is enabled.
+| `eval_js` | Evaluate JavaScript in the page and capture the result.
+| `click_blank_area` | Click outside elements to dismiss overlays.
+| `close_popup` | Detect and close modal/pop-up overlays.
+| `stop` | Pause execution and surface a stop-request to the controller.
+| `screenshot` | Capture viewport, full page, or element screenshots with optional filenames.
+| `extract` | Read text, value, href, or HTML from a selector.
+| `assert` | Assert element visibility/hidden/attachment states.
 
-An example typed plan is provided in `examples/booking_task.json` and can be sent to `/execute-dsl` directly.【F:examples/booking_task.json†L1-L14】
+`automation/dsl/models.py` also exposes `legacy_payload()` helpers so the same typed models can still emit the historical `{"action": ...}` schema that the controller expects.
 
-## Legacy compatibility
-Legacy controller helpers translate high-level calls (e.g. `basic.click("#submit")`) into the legacy action schema while still using the typed models internally.【F:agent/actions/basic.py†L1-L130】 The Playwright server continues to accept the historical `{"actions": [...]}` payload with the action types enumerated in `_ACTIONS`, validating inputs and coercing selectors before execution.【F:vnc/automation_server.py†L721-L835】 The Flask front-end also normalises structured selectors returned by LLMs into this legacy format to remain backwards compatible.【F:web/app.py†L103-L160】【F:tests/test_normalize_actions.py†L1-L57】
+## Selector resolution and legacy compatibility
+`automation/dsl/resolution.py` provides lightweight data structures describing how a selector was resolved (DOM path, score, warnings). `vnc/selector_resolver.py` consumes those structures to score candidates across CSS/text/role/stable-id strategies, maintain a `StableNodeStore`, and reuse DOM handles between steps. For legacy payloads, `vnc/locator_utils.py` implements `SmartLocator`, a best-effort resolver that understands `data-testid`, `role=`, text, placeholders, and raw CSS selectors. `agent/actions/basic.py` bridges the typed models back to the legacy helpers used by prompts and older planners.
 
-## Execution runtime
-`RunExecutor` powers typed runs. When `/execute-dsl` receives a payload containing a `plan`, the server initialises the browser (optionally recreating an incognito context), builds a `RunRequest`, and hands it to `RunExecutor`. The executor:
+## Playwright automation service
+`vnc/automation_server.py` exposes the HTTP API. It accepts typed plans (`{"plan": [...]}`) or legacy `{"actions": [...]}` payloads, performs JSON schema validation, enforces action limits, classifies errors, saves debug artifacts when enabled, and manages retries. When a typed plan is supplied it delegates to `RunExecutor` for deterministic execution; legacy payloads flow through the same safety wrappers while preserving backwards compatibility.
 
-1. Parses the payload into typed actions via the registry.【F:vnc/executor.py†L338-L390】
-2. Validates click/wait sequencing and other structural constraints.【F:vnc/executor.py†L391-L397】
-3. Performs a dry run to resolve selectors up front, surfacing locator failures before acting.【F:vnc/executor.py†L398-L405】
-4. Executes each action with retries, exponential backoff, and specialised handlers for navigation, clicking, typing, scrolling, tab/iframe switching, screenshots, extraction, and assertions.【F:vnc/executor.py†L94-L335】【F:vnc/executor.py†L407-L434】
+### Typed executor
+`vnc/executor.py` drives typed runs. It loads configuration from `vnc/config.py`, prepares run directories, and initialises `StructuredLogger`/`LogPaths` from `vnc/structured_logging.py`. `ActionPerformer` performs a dry run to resolve selectors via `SelectorResolver`, executes each action with stabilisation from `vnc/page_stability.py`, and reuses hardened helpers in `vnc/safe_interactions.py` and `vnc/page_actions.py`. Retries apply exponential backoff, screenshots are written for every step, and failures generate `error_report.json` entries alongside structured JSONL logs.
 
-Shared helper modules (`vnc/safe_interactions.py`, `vnc/page_stability.py`, and `vnc/page_actions.py`) consolidate element-preparation fallbacks, SPA stabilisation, and page-level interactions so both the executor and automation server reuse the same hardened routines.【F:vnc/safe_interactions.py†L1-L362】【F:vnc/page_stability.py†L1-L120】【F:vnc/page_actions.py†L1-L160】
+### HTTP endpoints
+Key endpoints include:
+- `POST /execute-dsl` – Run typed or legacy payloads with correlation IDs and catalog awareness.
+- `GET /source`, `/url`, `/screenshot` – Fetch current page HTML, URL, and screenshots.
+- `GET /elements` – Return lightweight element summaries for debugging.
+- `GET /catalog` – Serve the element catalog (abbreviated + full) when index mode is active.
+- `GET /extracted` / `GET /eval_results` – Return data captured by `extract` and `eval_js` actions.
+- `GET /stop-request` / `POST /stop-response` – Facilitate the stop/resume handshake.
+- `GET /events/<run_id>` – Stream structured log events produced by the executor.
+- `GET /healthz` – Liveness probe used by Docker and the controller.
 
-Every executed step is logged with a JSONL event, screenshot, selector metadata, and stable DOM digest, and failures also emit `error_report.json`.【F:vnc/executor.py†L436-L481】【F:vnc/structured_logging.py†L12-L75】 Run directories are created automatically under `runs/<run_id>/` (configurable).【F:vnc/config.py†L12-L84】
-
-For legacy payloads, the Flask server still performs schema validation, catalog/version checks, and enhanced retries/error classification before replaying actions using Playwright helpers (safe click/fill/hover/select, popup closure, DOM stabilisation, etc.).【F:vnc/automation_server.py†L720-L3082】
+### Logs and artifacts
+Run data are stored under `runs/<run_id>/` (configurable) with per-step screenshots (`shots/step_XXXX.png`), chronological `events.jsonl` logs, and optional `error_report.json` files for failures.
 
 ## Element catalog and index mode
-When `INDEX_MODE` is enabled, `/execute-dsl` maintains a structured element catalog that maps numeric indices to robust selectors, bounding boxes, and nearby text. The catalog is regenerated on demand or when DOM signatures change, enabling planners to refer to `index=N` targets reliably.【F:vnc/automation_server.py†L537-L666】【F:vnc/automation_server.py†L588-L666】 The controller can refresh or request catalog metadata through dedicated actions and HTTP endpoints.【F:agent/actions/basic.py†L124-L131】【F:vnc/automation_server.py†L2975-L3027】
+When `INDEX_MODE` is enabled the server maintains an element catalog with stable indices, caching it on disk and refreshing automatically when DOM signatures change. `vnc/automation_server.py` can regenerate catalogs, reconcile mismatched versions, and rebind index-based actions. On the client side `agent/element_catalog.py` caches responses from `/catalog`, tracks observed versions, and formats abbreviated catalog entries for prompt injection.
 
-## Observability and artifacts
-Each run stores:
-- `events.jsonl` – chronological action logs including resolved selector metadata, warnings, and screenshot paths.【F:vnc/structured_logging.py†L31-L75】
-- `shots/step_XXXX.png` – per-step screenshots captured automatically.【F:vnc/executor.py†L436-L461】
-- `error_report.json` – summary of failed actions (when retries exhaust).【F:vnc/executor.py†L463-L481】
+## Agent controller, UI, and LLM integration
+`web/app.py` hosts the Flask UI, prepares prompts via `agent.controller.prompt`, dispatches plans asynchronously through `agent.controller.async_executor`, and talks to the Playwright service via `agent.browser.vnc` (HTML, DOM tree, element lists, DSL execution). Conversation history is persisted by `agent.utils.history` and surfaced through the simple memory interface in `agent.memory.simple`. LLM calls are routed through `agent.llm.client`, which supports Gemini and Groq models, optional screenshot attachments, and post-processing of JSON action plans. Front-end behaviour lives in `web/static/` while templates in `web/templates/` render the controller and run history.
 
-The server exposes `/events/<run_id>` so tooling or the CLI can stream structured telemetry after completion.【F:vnc/automation_server.py†L3063-L3074】【F:agent/run.py†L53-L65】
-
-## HTTP API quick reference
-Key endpoints served by `vnc/automation_server.py`:
-- `POST /execute-dsl` – Run typed (`plan`) or legacy (`actions`) payloads.【F:vnc/automation_server.py†L2647-L2921】
-- `GET /source` – Current page HTML.【F:vnc/automation_server.py†L2924-L2934】
-- `GET /url` – Current page URL.【F:vnc/automation_server.py†L2936-L2947】
-- `GET /screenshot` – Base64 PNG screenshot.【F:vnc/automation_server.py†L2949-L2959】
-- `GET /elements` – Lightweight DOM summary for debugging.【F:vnc/automation_server.py†L2962-L2972】
-- `GET /catalog` – Element catalog (abbreviated + full entries) when index mode is enabled.【F:vnc/automation_server.py†L2975-L3027】
-- `GET /extracted`, `GET /eval_results` – Data captured by `extract_text` and `eval_js` actions.【F:vnc/automation_server.py†L3030-L3037】
-- `GET /stop-request` / `POST /stop-response` – Pause/resume handshake for stop actions.【F:vnc/automation_server.py†L3040-L3060】
-- `GET /events/<run_id>` – Structured event log stream.【F:vnc/automation_server.py†L3063-L3074】
-- `GET /healthz` – Simple health probe used by Docker and the controller.【F:vnc/automation_server.py†L3076-L3079】
-
-## CLI usage
-A lightweight CLI wrapper is provided in `agent/run.py`:
+## CLI and examples
+Use `agent/run.py` to submit typed plans from the command line:
 
 ```bash
 python -m agent.run --task examples/booking_task.json --server http://localhost:7000 --stream
 ```
 
-Flags let you choose the server URL, override the log directory (`--out`), request headful execution, and stream events after completion.【F:agent/run.py†L21-L66】
+The example plan demonstrates how to send a `RunRequest` directly to `/execute-dsl`.
 
 ## Running locally
-A `docker-compose.yml` file starts both the Playwright service (with noVNC and CDP ports exposed) and the Flask controller/UI. The compose file mounts the repo into the containers so code changes are reflected immediately.【F:docker-compose.yml†L1-L39】 Launch the stack with:
+`docker-compose.yml` builds two containers: the Playwright automation service (exposing noVNC, CDP, and the API) and the Flask controller/UI. Start the stack with:
 
 ```bash
 docker-compose up --build
 ```
 
-Once healthy, the automation API is available on `http://localhost:7000` and the web UI on `http://localhost:5000`.
+By default both services honour the `START_URL` environment variable so the initial navigation is predictable.
 
 ## Configuration
-Runtime defaults for the typed executor (timeouts, retries, log directory, headless/headful, screenshot mode) can be overridden via `AGENT_*` environment variables or a `[agent]` table in `config.toml` and are parsed by `vnc/config.py`.【F:vnc/config.py†L12-L76】 The automation server honours additional environment variables for navigation and locator timeouts, retry counts, SPA stabilisation, catalog behaviour, and domain allow/block lists (`ACTION_TIMEOUT`, `NAVIGATION_TIMEOUT`, `WAIT_FOR_SELECTOR_TIMEOUT`, `MAX_DSL_ACTIONS`, `INDEX_MODE`, `ALLOWED_DOMAINS`, `BLOCKED_DOMAINS`, etc.).【F:vnc/automation_server.py†L60-L107】
+`vnc/config.py` reads defaults from `config.toml` and `AGENT_*` environment variables (timeouts, retry limits, headless/headful mode, log directory). `vnc/automation_server.py` respects additional environment toggles such as `ACTION_TIMEOUT`, `NAVIGATION_TIMEOUT`, `WAIT_FOR_SELECTOR_TIMEOUT`, `MAX_DSL_ACTIONS`, `INDEX_MODE`, domain allow/block lists, and `SAVE_DEBUG_ARTIFACTS`. The controller/UI honours `START_URL`, `MAX_STEPS`, and `LOG_DIR`, while the LLM client looks for `GEMINI_API_KEY`, `GEMINI_MODEL`, `GROQ_API_KEY`, and `GROQ_MODEL`.
 
-## Tests
-Run the test suite with `pytest -q`. The tests cover registry parsing of legacy and new payloads, wrapper parity for newly added actions, typed run validation, and selector/string normalisation used by the front-end controller.【F:tests/test_dsl_models.py†L1-L104】【F:tests/test_normalize_actions.py†L1-L57】 Additional integration tests can be added under `tests/` as needed.
+## Testing
+Run the test suite with:
 
-## Additional resources
-- Legacy action helpers (`agent/actions/basic.py`) remain available for prompt engineering while still benefiting from the typed models.【F:agent/actions/basic.py†L1-L130】
-- The async executor (`agent/controller/async_executor.py`) manages background Playwright tasks and converts structured errors into user-facing warnings for the UI.【F:agent/controller/async_executor.py†L1-L200】
-- Browser-facing helpers (`agent/browser/vnc.py`) provide retry logic, health checks, and warning normalisation when forwarding DSL payloads to the automation service.【F:agent/browser/vnc.py†L1-L200】
+```bash
+pytest -q
+```
+
+The suite validates DSL parsing and legacy parity (`tests/test_dsl_models.py`), catalog scripts and rebind logic (`tests/test_catalog_collection_script.py`, `tests/test_catalog_rebind.py`, `tests/test_element_catalog.py`), selector utilities and resolution scoring (`tests/test_locator_utils.py`, `tests/test_selector_resolver.py`), prompt helpers (`tests/test_prompt.py`, `tests/test_prompt_improvements.py`), safe interaction fallbacks (`tests/test_safe_interactions.py`), and DOM snapshot utilities (`tests/test_dom_snapshot_script.py`).
