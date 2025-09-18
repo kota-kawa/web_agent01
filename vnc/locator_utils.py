@@ -193,6 +193,34 @@ class SmartLocator:
             return False
         return value == expected
 
+    async def _is_unique_match(self, loc: Locator) -> bool:
+        try:
+            count = await loc.count()
+        except Exception:
+            return False
+        return count == 1
+
+    async def _matches_hint(self, loc: Locator, hint: _CssSelectorHint) -> bool:
+        if hint.tag:
+            try:
+                tag_name = await loc.first.evaluate("el => el.tagName.toLowerCase()")
+            except Exception:
+                return False
+            if tag_name != hint.tag:
+                return False
+
+        for attr, expected in hint.attributes.items():
+            if not expected:
+                continue
+            try:
+                actual = await loc.first.get_attribute(attr)
+            except Exception:
+                return False
+            if (actual or "").lower() != expected.lower():
+                return False
+
+        return True
+
     async def _is_interactive_element(self, loc: Locator) -> bool:
         """Check if element is interactive (button, input, link, etc.)"""
         try:
@@ -343,7 +371,7 @@ class SmartLocator:
                 if not hint.uses_hint(fallback):
                     continue
                 loc = await self._try(self.page.locator(fallback))
-                if loc:
+                if loc and await self._is_unique_match(loc) and await self._matches_hint(loc, hint):
                     return loc
 
         # Button with aria-label fallbacks
@@ -364,7 +392,7 @@ class SmartLocator:
                     if not hint.uses_hint(fallback):
                         continue
                     loc = await self._try(self.page.locator(fallback))
-                    if loc:
+                    if loc and await self._is_unique_match(loc) and await self._matches_hint(loc, hint):
                         return loc
 
         # Dynamic index-based selectors fallbacks
@@ -379,7 +407,7 @@ class SmartLocator:
                 if not hint.uses_hint(fallback):
                     continue
                 loc = await self._try(self.page.locator(fallback))
-                if loc:
+                if loc and await self._is_unique_match(loc) and await self._matches_hint(loc, hint):
                     return loc
 
         # Input field fallbacks
@@ -393,7 +421,7 @@ class SmartLocator:
                 if not hint.uses_hint(fallback):
                     continue
                 loc = await self._try(self.page.locator(fallback))
-                if loc:
+                if loc and await self._is_unique_match(loc) and await self._matches_hint(loc, hint):
                     return loc
 
         # General element type fallbacks
@@ -402,7 +430,7 @@ class SmartLocator:
             fallback = f"{element_type}:visible"
             if hint.uses_hint(fallback):
                 loc = await self._try(self.page.locator(fallback))
-                if loc:
+                if loc and await self._is_unique_match(loc) and await self._matches_hint(loc, hint):
                     return loc
 
         return None
