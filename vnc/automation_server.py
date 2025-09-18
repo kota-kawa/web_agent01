@@ -1992,44 +1992,59 @@ async def _safe_press(l: Locator, key: str, timeout: Optional[int] = None):
 
 async def _list_elements(limit: int = 50) -> List[Dict]:
     """Return list of clickable/input elements with basic info."""
-    els = []
-    loc = PAGE.locator("a,button,input,textarea,select")
-    count = await loc.count()
-    for i in range(min(count, limit)):
-        el = loc.nth(i)
-        try:
-            if not await el.is_visible():
-                continue
-            tag = await el.evaluate("el => el.tagName.toLowerCase()")
-            text = (await el.inner_text()).strip()[:50]
-            id_attr = await el.get_attribute("id")
-            cls = await el.get_attribute("class")
-            xpath = await el.evaluate(
-                """
-                el => {
-                    function xp(e){
-                        if(e===document.body) return '/html/body';
-                        let ix=0,s=e.previousSibling;
-                        while(s){ if(s.nodeType===1 && s.tagName===e.tagName) ix++; s=s.previousSibling; }
-                        return xp(e.parentNode)+'/'+e.tagName.toLowerCase()+'['+(ix+1)+']';
+    global _BROWSER_ADAPTER
+    
+    if not _BROWSER_ADAPTER or not _BROWSER_ADAPTER.page:
+        # Return placeholder elements for compatibility
+        return [
+            {
+                "index": 0,
+                "tag": "div",
+                "text": "Browser-use adapter placeholder element",
+                "id": "placeholder",
+                "class": "adapter-placeholder",
+                "xpath": "/html/body/div[1]",
+            }
+        ]
+    
+    try:
+        els = []
+        # Use browser-use adapter to get elements
+        result = await _BROWSER_ADAPTER.evaluate("""
+            () => {
+                const elements = Array.from(document.querySelectorAll('a,button,input,textarea,select'));
+                return elements.slice(0, arguments[0]).map((el, i) => {
+                    if (!el.offsetParent && el.style.display === 'none') return null;
+                    
+                    function getXPath(el) {
+                        if (el === document.body) return '/html/body';
+                        let ix = 0, s = el.previousSibling;
+                        while (s) { 
+                            if (s.nodeType === 1 && s.tagName === el.tagName) ix++; 
+                            s = s.previousSibling; 
+                        }
+                        return getXPath(el.parentNode) + '/' + el.tagName.toLowerCase() + '[' + (ix + 1) + ']';
                     }
-                    return xp(el);
-                }
-                """
-            )
-            els.append(
-                {
-                    "index": len(els),
-                    "tag": tag,
-                    "text": text,
-                    "id": id_attr,
-                    "class": cls,
-                    "xpath": xpath,
-                }
-            )
-        except Exception:
-            continue
-    return els
+                    
+                    return {
+                        index: i,
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.innerText || el.textContent || '').trim().substring(0, 50),
+                        id: el.id || null,
+                        class: el.className || null,
+                        xpath: getXPath(el)
+                    };
+                }).filter(Boolean);
+            }
+        """)
+        
+        if result:
+            return result[:limit]
+            
+    except Exception as e:
+        log.error(f"Failed to list elements: {e}")
+    
+    return []
 
 
 
@@ -2966,7 +2981,8 @@ def screenshot():
 def elements():
     try:
         # Only initialize browser if it's not already healthy
-        if not PAGE or not _run(_check_browser_health()):
+        global _BROWSER_ADAPTER
+        if not _BROWSER_ADAPTER or not _run(_check_browser_health()):
             _run(_init_browser())
         data = _run(_list_elements())
         return jsonify(data)

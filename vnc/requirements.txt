@@ -2,3 +2,4 @@ flask
 httpx
 playwright==1.44.0
 pydantic>=2.5
+# browser-use (when available, install with: pip install browser-use)
