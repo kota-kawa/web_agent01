@@ -258,7 +258,11 @@ class SelectorResolver:
     ) -> List[ResolutionAttempt]:
         attempts: List[ResolutionAttempt] = []
         count = await locator.count()
-        for index in range(min(count, MAX_CANDIDATES_PER_STRATEGY)):
+        limit = min(count, MAX_CANDIDATES_PER_STRATEGY)
+        indices = list(range(limit))
+        if selector.index is not None and 0 <= selector.index < count and selector.index not in indices:
+            indices.append(selector.index)
+        for index in indices:
             candidate_locator = locator.nth(index)
             handle = await candidate_locator.element_handle()
             if handle is None:
