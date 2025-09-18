@@ -198,11 +198,88 @@ CATALOG_COLLECTION_SCRIPT = """
   ];
 
   const tags = new Set();
+  const skipTagNames = new Set(['html', 'head', 'body']);
+  const registerCandidate = (el) => {
+    if (!el || !(el instanceof Element)) return;
+    const tagName = el.tagName ? el.tagName.toLowerCase() : '';
+    if (skipTagNames.has(tagName)) return;
+    tags.add(el);
+  };
   interactiveSelectors.forEach(sel => {
     for (const el of document.querySelectorAll(sel)) {
-      tags.add(el);
+      registerCandidate(el);
     }
   });
+
+  const hasAnyHandler = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    for (const key in el) {
+      if (key && key.startsWith('on') && typeof el[key] === 'function') {
+        return true;
+      }
+    }
+    if (el.attributes) {
+      for (const attr of el.attributes) {
+        if (attr && attr.name && attr.name.startsWith('on')) {
+          return true;
+        }
+      }
+    }
+    if (typeof getEventListeners === 'function') {
+      try {
+        const listeners = getEventListeners(el);
+        if (listeners && typeof listeners === 'object') {
+          for (const type in listeners) {
+            if (listeners[type] && listeners[type].length > 0) {
+              return true;
+            }
+          }
+        }
+      } catch (err) {
+        // ignore errors from getEventListeners
+      }
+    }
+    if (typeof window !== 'undefined' && typeof window.__ag_get_events === 'function') {
+      try {
+        const evs = window.__ag_get_events(el);
+        if (evs && evs.length > 0) {
+          return true;
+        }
+      } catch (err) {
+        // ignore errors from custom trackers
+      }
+    }
+    return false;
+  };
+
+  const focusableContainerTags = new Set(['div', 'span', 'section', 'article', 'main', 'aside', 'header', 'footer', 'nav', 'li']);
+  for (const el of document.querySelectorAll('*')) {
+    if (!el || !(el instanceof Element)) continue;
+    const tagName = el.tagName ? el.tagName.toLowerCase() : '';
+    const roleAttr = (el.getAttribute('role') || '').trim().toLowerCase();
+    const tabindexAttr = el.getAttribute('tabindex');
+    let explicitTabIndex = null;
+    if (tabindexAttr !== null && tabindexAttr !== '') {
+      const parsed = parseInt(tabindexAttr, 10);
+      if (!Number.isNaN(parsed)) {
+        explicitTabIndex = parsed;
+      }
+    }
+    const hasHandler = hasAnyHandler(el);
+    if (hasHandler) {
+      registerCandidate(el);
+    }
+    if (explicitTabIndex !== null && explicitTabIndex >= 0) {
+      registerCandidate(el);
+      continue;
+    }
+    if (!roleAttr && focusableContainerTags.has(tagName)) {
+      const computedTabIndex = typeof el.tabIndex === 'number' ? el.tabIndex : NaN;
+      if (!Number.isNaN(computedTabIndex) && computedTabIndex >= 0) {
+        registerCandidate(el);
+      }
+    }
+  }
 
   const isVisible = (el) => {
     if (!(el instanceof Element)) return false;
