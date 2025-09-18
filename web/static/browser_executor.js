@@ -190,33 +190,183 @@ function stringifySelector(selector) {
   }
 }
 
+const STRUCTURED_SELECTOR_NESTED_KEYS = new Set(["selector", "selectors", "frame", "container", "fallbacks"]);
+
+function normalizePriority(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : undefined;
+  }
+  if (Array.isArray(value)) {
+    const ordered = [];
+    const seen = new Set();
+    value.forEach(item => {
+      if (typeof item !== "string") return;
+      const trimmed = item.trim();
+      if (!trimmed || seen.has(trimmed)) return;
+      seen.add(trimmed);
+      ordered.push(trimmed);
+    });
+    return ordered.length ? ordered : undefined;
+  }
+  return undefined;
+}
+
+function normalizeStructuredSelector(selector) {
+  if (selector === null || selector === undefined) {
+    return undefined;
+  }
+
+  if (Array.isArray(selector)) {
+    const normalizedList = [];
+    selector.forEach(item => {
+      const normalizedItem = normalizeStructuredSelector(item);
+      if (normalizedItem !== undefined) {
+        normalizedList.push(normalizedItem);
+      }
+    });
+    return normalizedList;
+  }
+
+  if (typeof selector === "object") {
+    const normalized = {};
+    Object.entries(selector).forEach(([key, value]) => {
+      if (value === null || value === undefined) {
+        return;
+      }
+      if (STRUCTURED_SELECTOR_NESTED_KEYS.has(key)) {
+        const nested = normalizeStructuredSelector(value);
+        if (nested !== undefined) {
+          normalized[key] = nested;
+        }
+        return;
+      }
+      if (key === "priority") {
+        const normalizedPriority = normalizePriority(value);
+        if (normalizedPriority) {
+          normalized.priority = normalizedPriority;
+        }
+        return;
+      }
+      normalized[key] = value;
+    });
+    return normalized;
+  }
+
+  return selector;
+}
+
 function normalizeActions(instr) {
   if (!instr) return [];
   const acts = Array.isArray(instr.actions) ? instr.actions
              : Array.isArray(instr)          ? instr
              : instr.action                  ? [instr] : [];
-  return acts.map(o => {
-    const a = {...o};
-    if (a.action) a.action = String(a.action).toLowerCase();
-    if (a.selector && !a.target) a.target = a.selector;
-    if (a.text && a.action === "click_text" && !a.target) a.target = a.text;
-    if ("target" in a) {
-      a.target = stringifySelector(a.target);
-    }
-    if ("value" in a) {
-      if (typeof a.value === "string") {
-        // keep as-is
-      } else if (Array.isArray(a.value) || (a.value && typeof a.value === "object")) {
-        a.value = stringifySelector(a.value);
-      } else if (a.value !== undefined && a.value !== null) {
-        a.value = String(a.value);
+  const normalized = [];
+
+  acts.forEach(o => {
+    if (!o || typeof o !== "object") return;
+
+    const action = { ...o };
+    if (action.action) action.action = String(action.action).toLowerCase();
+
+    let fallbackSource = null;
+
+    if ("selector" in o) {
+      const normalizedSelector = normalizeStructuredSelector(o.selector);
+      if (normalizedSelector !== undefined) {
+        action.selector = normalizedSelector;
+        fallbackSource = fallbackSource ?? normalizedSelector;
       } else {
-        a.value = "";
+        delete action.selector;
       }
     }
-    if ("text" in a && typeof a.text !== "string") a.text = stringifySelector(a.text);
-    return a;
+
+    if ("selectors" in o) {
+      const normalizedSelectors = normalizeStructuredSelector(o.selectors);
+      if (normalizedSelectors !== undefined) {
+        action.selectors = normalizedSelectors;
+        if (fallbackSource === null) {
+          fallbackSource = normalizedSelectors;
+        }
+      } else {
+        delete action.selectors;
+      }
+    }
+
+    let hasMeaningfulTarget = false;
+
+    if ("target" in o) {
+      const targetValue = o.target;
+      if (targetValue !== null && typeof targetValue === "object") {
+        const normalizedTarget = normalizeStructuredSelector(targetValue);
+        if (normalizedTarget !== undefined && action.selector === undefined) {
+          action.selector = normalizedTarget;
+        }
+        if (fallbackSource === null) {
+          fallbackSource = normalizedTarget !== undefined ? normalizedTarget : targetValue;
+        }
+        const fallback = stringifySelector(targetValue);
+        if (fallback) {
+          action.target = fallback;
+          hasMeaningfulTarget = true;
+        } else {
+          delete action.target;
+        }
+      } else {
+        const fallback = stringifySelector(targetValue);
+        if (fallback) {
+          action.target = fallback;
+          hasMeaningfulTarget = true;
+        } else {
+          delete action.target;
+        }
+      }
+    }
+
+    if (!hasMeaningfulTarget) {
+      if (action.action === "click_text" && typeof o.text === "string" && o.text.trim()) {
+        action.target = o.text;
+        hasMeaningfulTarget = true;
+      }
+    }
+
+    if (!hasMeaningfulTarget) {
+      const sourceForFallback = action.selector !== undefined ? action.selector : fallbackSource;
+      if (sourceForFallback !== null && sourceForFallback !== undefined) {
+        const fallback = stringifySelector(sourceForFallback);
+        if (fallback) {
+          action.target = fallback;
+          hasMeaningfulTarget = true;
+        }
+      }
+    }
+
+    if ("value" in o) {
+      const rawValue = o.value;
+      if (typeof rawValue === "string") {
+        action.value = rawValue;
+      } else if (Array.isArray(rawValue) || (rawValue && typeof rawValue === "object")) {
+        action.value = stringifySelector(rawValue);
+      } else if (rawValue !== undefined && rawValue !== null) {
+        action.value = String(rawValue);
+      } else {
+        action.value = "";
+      }
+    }
+
+    if ("text" in o && typeof o.text !== "string") {
+      const fallbackText = stringifySelector(o.text);
+      if (fallbackText) {
+        action.text = fallbackText;
+      } else {
+        delete action.text;
+      }
+    }
+
+    normalized.push(action);
   });
+
+  return normalized;
 }
 
 /* ======================================

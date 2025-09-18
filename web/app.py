@@ -230,6 +230,47 @@ def _stringify_selector(selector: Any) -> str:
         return ""
 
 
+def _normalize_structured_selector(selector: Any) -> Any:
+    """Normalize selector-like payloads while preserving disambiguation cues."""
+
+    if isinstance(selector, list):
+        normalized_list = []
+        for item in selector:
+            normalized_item = _normalize_structured_selector(item)
+            if normalized_item is not None:
+                normalized_list.append(normalized_item)
+        return normalized_list
+
+    if isinstance(selector, dict):
+        normalized: Dict[str, Any] = {}
+        for key, value in selector.items():
+            if value is None:
+                continue
+            if key in {"selector", "selectors", "frame", "container", "fallbacks"}:
+                normalized[key] = _normalize_structured_selector(value)
+                continue
+            if key == "priority":
+                if isinstance(value, str):
+                    normalized[key] = [value]
+                    continue
+                if isinstance(value, list):
+                    ordered: list[str] = []
+                    for item in value:
+                        if not isinstance(item, str):
+                            continue
+                        stripped = item.strip()
+                        if not stripped or stripped in ordered:
+                            continue
+                        ordered.append(stripped)
+                    if ordered:
+                        normalized[key] = ordered
+                    continue
+            normalized[key] = value
+        return normalized
+
+    return selector
+
+
 def normalize_actions(llm_response):
     """Extract and normalize actions from LLM response (optimized for speed)."""
     if not llm_response:
@@ -252,17 +293,44 @@ def normalize_actions(llm_response):
         if "action" in normalized_action:
             normalized_action["action"] = str(normalized_action["action"]).lower()
         
+        structured_source: Any | None = None
+
         # Handle selector -> target mapping (optimized)
         if "selector" in action and "target" not in action:
-            normalized_action["target"] = action["selector"]
-            
+            structured_source = action["selector"]
+            normalized_action["selector"] = _normalize_structured_selector(structured_source)
+        elif "selector" in action:
+            structured_source = action["selector"]
+            normalized_action["selector"] = _normalize_structured_selector(structured_source)
+
         # Handle click_text action (optimized)
         elif (normalized_action.get("action") == "click_text" and
               "text" in action and "target" not in action):
             normalized_action["target"] = action["text"]
 
-        if "target" in normalized_action:
-            normalized_action["target"] = _stringify_selector(normalized_action["target"])
+        # Normalize structured targets while preserving legacy fallback
+        target_value = normalized_action.get("target")
+        if isinstance(target_value, (dict, list)):
+            structured_source = structured_source or target_value
+            normalized_action["selector"] = _normalize_structured_selector(target_value)
+
+        if structured_source is None and "selectors" in action:
+            structured_source = action["selectors"]
+            normalized_action["selectors"] = _normalize_structured_selector(structured_source)
+        elif "selectors" in action:
+            normalized_action["selectors"] = _normalize_structured_selector(action["selectors"])
+
+        if structured_source is not None:
+            fallback = _stringify_selector(structured_source)
+            if fallback:
+                normalized_action["target"] = fallback
+        elif "target" in normalized_action and not isinstance(target_value, str):
+            normalized_action["target"] = _stringify_selector(target_value)
+
+        if "selector" in normalized_action and "target" not in normalized_action:
+            fallback = _stringify_selector(normalized_action["selector"])
+            if fallback:
+                normalized_action["target"] = fallback
 
         if "value" in normalized_action and not isinstance(normalized_action["value"], str):
             normalized_action["value"] = str(normalized_action["value"])

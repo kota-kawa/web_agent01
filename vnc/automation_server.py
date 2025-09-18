@@ -12,6 +12,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -22,8 +23,11 @@ import httpx
 from flask import Flask, Response, jsonify, request
 from jsonschema import Draft7Validator, ValidationError
 from playwright.async_api import Error as PwError, Locator, async_playwright
+from pydantic import ValidationError as PydanticValidationError
 
+from automation.dsl.models import Selector
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
+from vnc.selector_resolver import SelectorResolver, StableNodeStore
 from vnc.executor import RunExecutor
 from vnc.config import load_config
 from vnc.safe_interactions import (
@@ -102,6 +106,8 @@ CATALOG_CACHE_DIR = Path(
 )
 CATALOG_CACHE_LIMIT = int(os.getenv("CATALOG_CACHE_LIMIT", "10"))
 _CATALOG_ARCHIVE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+_STABLE_SELECTOR_STORE = StableNodeStore()
 
 
 # Security and navigation configuration
@@ -636,6 +642,324 @@ def _dedupe_selectors(selectors: Iterable[str]) -> List[str]:
         seen.add(normalized)
         ordered.append(normalized)
     return ordered
+
+
+_SELECTOR_METADATA_KEYS = {"frame", "container", "selectors", "fallbacks"}
+_SELECTOR_VALUE_KEYS = {
+    "css",
+    "xpath",
+    "text",
+    "role",
+    "priority",
+    "near_text",
+    "near-text",
+    "aria_label",
+    "aria-label",
+    "stable_id",
+    "stable-id",
+    "index",
+}
+
+
+@dataclass
+class StructuredSelectorCandidate:
+    selector: Any
+    frame: Any = None
+    container: Any = None
+    origin: Any = None
+
+
+def _merge_selector_payload(selector_data: Any, extras: Dict[str, Any]) -> Any:
+    if not extras:
+        return selector_data
+
+    if isinstance(selector_data, list):
+        merged: List[Any] = []
+        for item in selector_data:
+            if isinstance(item, dict):
+                enriched = dict(item)
+                for key, value in extras.items():
+                    enriched.setdefault(key, value)
+                merged.append(enriched)
+            else:
+                merged.append(item)
+        return merged
+
+    if isinstance(selector_data, dict):
+        enriched = dict(selector_data)
+        for key, value in extras.items():
+            enriched.setdefault(key, value)
+        return enriched
+
+    if isinstance(selector_data, str):
+        enriched = dict(extras)
+        if selector_data.startswith("xpath="):
+            enriched.setdefault("xpath", selector_data[len("xpath="):])
+        elif selector_data.startswith("text="):
+            enriched.setdefault("text", selector_data[len("text="):])
+        elif selector_data.startswith("role="):
+            enriched.setdefault("role", selector_data[len("role="):])
+        else:
+            enriched.setdefault("css", selector_data)
+        return enriched
+
+    return selector_data
+
+
+def _looks_like_selector_data(value: Any) -> bool:
+    if isinstance(value, dict):
+        if any(key in value for key in _SELECTOR_VALUE_KEYS):
+            return True
+        if "selector" in value:
+            return True
+    return False
+
+
+def _collect_structured_candidates(action: Dict[str, Any]) -> List[StructuredSelectorCandidate]:
+    candidates: List[StructuredSelectorCandidate] = []
+
+    def _walk(node: Any, *, frame: Any = None, container: Any = None) -> None:
+        if node is None:
+            return
+        if isinstance(node, list):
+            for item in node:
+                _walk(item, frame=frame, container=container)
+            return
+        if isinstance(node, dict):
+            next_frame = node.get("frame", frame)
+            next_container = node.get("container", container)
+
+            if "selectors" in node:
+                _walk(node.get("selectors"), frame=next_frame, container=next_container)
+
+            if "fallbacks" in node:
+                _walk(node.get("fallbacks"), frame=next_frame, container=next_container)
+
+            if "selector" in node:
+                extras = {
+                    key: value
+                    for key, value in node.items()
+                    if key not in _SELECTOR_METADATA_KEYS.union({"selector"})
+                }
+                merged = _merge_selector_payload(node.get("selector"), extras)
+                _walk(merged, frame=next_frame, container=next_container)
+                return
+
+            payload = {
+                key: value
+                for key, value in node.items()
+                if key not in _SELECTOR_METADATA_KEYS
+            }
+            if payload:
+                candidates.append(
+                    StructuredSelectorCandidate(
+                        selector=payload,
+                        frame=next_frame,
+                        container=next_container,
+                        origin=node,
+                    )
+                )
+            return
+
+        candidates.append(
+            StructuredSelectorCandidate(
+                selector=node,
+                frame=frame,
+                container=container,
+                origin=node,
+            )
+        )
+
+    sources: List[Any] = []
+    if "selector" in action:
+        sources.append(action.get("selector"))
+    if "selectors" in action:
+        sources.append(action.get("selectors"))
+    target_value = action.get("target")
+    if isinstance(target_value, (dict, list)):
+        sources.append(target_value)
+
+    for source in sources:
+        _walk(source)
+
+    seen: set[str] = set()
+    unique: List[StructuredSelectorCandidate] = []
+    for candidate in candidates:
+        try:
+            key = json.dumps(
+                {
+                    "selector": candidate.selector,
+                    "frame": candidate.frame,
+                    "container": candidate.container,
+                },
+                sort_keys=True,
+                default=str,
+                ensure_ascii=False,
+            )
+        except TypeError:
+            key = repr((candidate.selector, candidate.frame, candidate.container))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+
+    return unique
+
+
+def _format_selector_display(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+async def _resolve_selector_in_context(context: Any, selector_data: Any):
+    try:
+        selector_model = Selector.model_validate(selector_data)
+    except PydanticValidationError as exc:
+        log.debug("Structured selector validation failed: %s", exc)
+        return None
+
+    resolver = SelectorResolver(context, store=_STABLE_SELECTOR_STORE)
+    try:
+        return await resolver.resolve(selector_model)
+    except Exception as exc:
+        log.debug("Structured selector resolution failed: %s", exc)
+        return None
+
+
+async def _resolve_frame_reference(frame_spec: Any):
+    if PAGE is None:
+        return None
+
+    if frame_spec is None:
+        return PAGE
+
+    if isinstance(frame_spec, (int, float)) and not isinstance(frame_spec, bool):
+        try:
+            idx = int(frame_spec)
+        except (TypeError, ValueError):
+            idx = 0
+        frames = PAGE.frames if PAGE else []
+        if 0 <= idx < len(frames):
+            return frames[idx]
+        return PAGE
+
+    if isinstance(frame_spec, str):
+        frames = PAGE.frames if PAGE else []
+        for frame in frames:
+            try:
+                if frame.name == frame_spec:
+                    return frame
+            except Exception:
+                pass
+            try:
+                if frame_spec and frame_spec in (frame.url or ""):
+                    return frame
+            except Exception:
+                continue
+        return PAGE
+
+    if isinstance(frame_spec, list):
+        for item in frame_spec:
+            frame = await _resolve_frame_reference(item)
+            if frame is not None:
+                return frame
+        return PAGE
+
+    if isinstance(frame_spec, dict):
+        strategy = frame_spec.get("strategy")
+        value = frame_spec.get("value")
+        frames = PAGE.frames if PAGE else []
+
+        if strategy == "index":
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                idx = 0
+            if 0 <= idx < len(frames):
+                return frames[idx]
+            return PAGE
+
+        if strategy == "name":
+            name_value = str(value or "")
+            for frame in frames:
+                try:
+                    if frame.name == name_value:
+                        return frame
+                except Exception:
+                    continue
+            return PAGE
+
+        if strategy == "url":
+            url_value = str(value or "")
+            for frame in frames:
+                try:
+                    if url_value and url_value in (frame.url or ""):
+                        return frame
+                except Exception:
+                    continue
+            return PAGE
+
+        if strategy == "parent":
+            main = PAGE.main_frame if PAGE else None
+            return (main.parent_frame if main else None) or PAGE
+
+        if strategy == "root":
+            return PAGE
+
+        if strategy == "element" and value is not None:
+            resolved = await _resolve_selector_in_context(PAGE, value)
+            if resolved and resolved.element is not None:
+                try:
+                    frame = await resolved.element.content_frame()
+                    if frame:
+                        return frame
+                except Exception:
+                    return PAGE
+            return PAGE
+
+        if strategy is None and _looks_like_selector_data(frame_spec):
+            selector_payload = frame_spec.get("selector") or {
+                key: frame_spec[key]
+                for key in frame_spec
+                if key != "selector"
+            }
+            resolved = await _resolve_selector_in_context(PAGE, selector_payload)
+            if resolved and resolved.element is not None:
+                try:
+                    frame = await resolved.element.content_frame()
+                    if frame:
+                        return frame
+                except Exception:
+                    return PAGE
+            return PAGE
+
+    return PAGE
+
+
+async def _resolve_structured_candidate(
+    candidate: StructuredSelectorCandidate,
+):
+    frame_context = await _resolve_frame_reference(candidate.frame)
+    if frame_context is None:
+        return None, None
+
+    scope = frame_context
+    container_resolved = None
+    if candidate.container is not None:
+        container_resolved = await _resolve_selector_in_context(scope, candidate.container)
+        if container_resolved is None or container_resolved.locator is None:
+            return None, None
+        scope = container_resolved.locator
+
+    resolved = await _resolve_selector_in_context(scope, candidate.selector)
+    if resolved is None or resolved.locator is None:
+        return None, container_resolved
+
+    return resolved, container_resolved
 
 
 def _compose_text_signature(entry: Dict[str, Any]) -> str:
@@ -1211,9 +1535,25 @@ def _validate_url(url: str) -> bool:
         return False
 
 
-def _validate_selector(selector: str) -> bool:
+def _validate_selector(selector: Any) -> bool:
     """Validate that selector is non-empty."""
-    return bool(selector and selector.strip())
+    if isinstance(selector, str):
+        return bool(selector.strip())
+    if isinstance(selector, (int, float)) and not isinstance(selector, bool):
+        return True
+    if isinstance(selector, list):
+        return any(_validate_selector(item) for item in selector)
+    if isinstance(selector, dict):
+        if not selector:
+            return False
+        if any(key in selector for key in _SELECTOR_VALUE_KEYS):
+            return True
+        return any(
+            _validate_selector(value)
+            for value in selector.values()
+            if isinstance(value, (str, dict, list, int, float)) and not isinstance(value, bool)
+        )
+    return bool(selector)
 
 
 def _validate_action_params(act: Dict) -> List[str]:
@@ -1227,14 +1567,18 @@ def _validate_action_params(act: Dict) -> List[str]:
             warnings.append(f"ERROR:auto:Invalid navigate URL '{url}' - URL must be non-empty and properly formatted")
     
     elif action == "wait_for_selector":
-        selector = act.get("target", "")
+        selector = act.get("selector", act.get("target", ""))
         if not _validate_selector(selector):
-            warnings.append(f"ERROR:auto:Invalid selector '{selector}' - Selector must be non-empty")
-    
+            display = _format_selector_display(selector)
+            warnings.append(f"ERROR:auto:Invalid selector '{display}' - Selector must be non-empty")
+
     elif action in ["click", "click_text", "type", "hover", "select_option", "press_key", "extract_text"]:
-        selector = act.get("target", "")
+        selector = act.get("selector", act.get("target", ""))
         if not _validate_selector(selector):
-            warnings.append(f"ERROR:auto:Invalid selector '{selector}' for action '{action}' - Selector must be non-empty")
+            display = _format_selector_display(selector)
+            warnings.append(
+                f"ERROR:auto:Invalid selector '{display}' for action '{action}' - Selector must be non-empty"
+            )
 
     elif action == "stop":
         reason = act.get("reason", "")
@@ -2011,6 +2355,7 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             resolved_entry: Optional[Dict[str, Any]] = None
             chosen_selector: Optional[str] = None
             index_value = _parse_index_target(tgt)
+            structured_candidates = _collect_structured_candidates(act) if index_value is None else []
             binding_match_index_raw = binding_info.get("match_index")
             match_index_override: Optional[int] = None
             try:
@@ -2076,10 +2421,13 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     action_warnings.append(auto_refresh_message)
             else:
                 if not selectors_to_try:
-                    if not _validate_selector(tgt):
+                    if _validate_selector(tgt):
+                        selectors_to_try.append(tgt)
+                    elif structured_candidates:
+                        pass
+                    else:
                         action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
                         return action_warnings
-                    selectors_to_try.append(tgt)
 
             selectors_to_try = _dedupe_selectors(selectors_to_try)
 
@@ -2092,7 +2440,21 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
 
             loc: Optional = None
             last_error: Optional[str] = None
+            if structured_candidates and PAGE is not None:
+                for candidate in structured_candidates:
+                    try:
+                        resolved_structured, _ = await _resolve_structured_candidate(candidate)
+                    except Exception as exc:
+                        last_error = str(exc)
+                        continue
+                    if resolved_structured and resolved_structured.locator is not None:
+                        loc = resolved_structured.locator
+                        chosen_selector = _format_selector_display(resolved_structured.selector.as_legacy())
+                        break
+
             for selector in selectors_to_try:
+                if loc is not None:
+                    break
                 candidate = selector
                 for attempt in range(LOCATOR_RETRIES):
                     try:
