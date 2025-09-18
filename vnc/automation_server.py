@@ -185,7 +185,7 @@ _INDEX_ADOPTION_HISTORY: List[Tuple[str, int, str, str]] = []
 _MAX_ADOPTION_HISTORY = 50
 
 
-CATALOG_COLLECTION_SCRIPT = """
+CATALOG_COLLECTION_SCRIPT = r"""
 (() => {
   const results = [];
   const interactiveSelectors = [
@@ -1709,7 +1709,9 @@ async def _create_clean_context():
 
 async def _save_debug_artifacts(correlation_id: str, error_context: str = "") -> str:
     """Save screenshot and HTML for debugging purposes."""
-    if not SAVE_DEBUG_ARTIFACTS or not PAGE:
+    global _BROWSER_ADAPTER
+    
+    if not SAVE_DEBUG_ARTIFACTS or not _BROWSER_ADAPTER:
         return ""
     
     try:
@@ -1718,7 +1720,7 @@ async def _save_debug_artifacts(correlation_id: str, error_context: str = "") ->
         # Save screenshot
         screenshot_path = os.path.join(DEBUG_DIR, f"{correlation_id}_screenshot.png")
         try:
-            screenshot = await PAGE.screenshot(type="png")
+            screenshot = await _BROWSER_ADAPTER.screenshot()
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
         except Exception as e:
@@ -1900,8 +1902,8 @@ async def _init_browser():
     
     # Check if browser-use adapter is already healthy
     if _BROWSER_ADAPTER and await _BROWSER_ADAPTER.is_healthy():
-        # Set PAGE to a placeholder for compatibility with legacy code
-        PAGE = "browser-use-active"
+        # Set PAGE to the actual Page object from the adapter
+        PAGE = _BROWSER_ADAPTER.page
         return
         
     # Initialize browser-use adapter
@@ -1910,7 +1912,7 @@ async def _init_browser():
     # Set compatibility variables for legacy code
     PW = "browser-use-pw"
     BROWSER = "browser-use-browser" 
-    PAGE = "browser-use-page"
+    PAGE = _BROWSER_ADAPTER.page
 
     # Only navigate to DEFAULT_URL on the very first initialization
     if _BROWSER_FIRST_INIT:
@@ -2080,9 +2082,20 @@ async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> s
 
 
 async def _stabilize_page():
+    global _BROWSER_ADAPTER
+    
+    # If PAGE is None, try to get it from the browser adapter
     if PAGE is None:
-        return
-    await stabilize_page(PAGE, timeout=SPA_STABILIZE_TIMEOUT)
+        if _BROWSER_ADAPTER and hasattr(_BROWSER_ADAPTER, 'page') and _BROWSER_ADAPTER.page:
+            page_to_use = _BROWSER_ADAPTER.page
+        else:
+            return
+    else:
+        page_to_use = PAGE
+    
+    # Only call stabilize_page if we have a valid Page object
+    if page_to_use and hasattr(page_to_use, 'wait_for_load_state'):
+        await stabilize_page(page_to_use, timeout=SPA_STABILIZE_TIMEOUT)
 
 
 async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
