@@ -1261,9 +1261,26 @@ async def _compute_dom_signature() -> Dict[str, Any]:
         return {}
     try:
         url = await _get_page_url_value()
-        title = await PAGE.title()
-        content = await PAGE.content()
-        viewport = PAGE.viewport_size or {}
+        
+        # Handle browser-use adapter case where PAGE is a string placeholder
+        if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+            # Get title and content through browser adapter
+            actual_page = _BROWSER_ADAPTER.page
+            if actual_page is not None:
+                title = await actual_page.title()
+                content = await actual_page.content()
+                viewport = actual_page.viewport_size or {}
+            else:
+                # Fallback if no actual page available
+                title = ""
+                content = await _BROWSER_ADAPTER.get_page_content()
+                viewport = {}
+        else:
+            # Handle traditional Playwright page object
+            title = await PAGE.title()
+            content = await PAGE.content()
+            viewport = PAGE.viewport_size or {}
+            
         dom_hash = hashlib.sha1(content.encode("utf-8", "ignore")).hexdigest()
         viewport_hash = hashlib.sha1(
             json.dumps(viewport or {}, sort_keys=True).encode("utf-8")
@@ -1300,7 +1317,16 @@ async def _generate_element_catalog(force: bool = False) -> Dict[str, Any]:
         if not force and _CURRENT_CATALOG and current_version == signature.get("catalog_version"):
             return _CURRENT_CATALOG
 
-        raw_data = await PAGE.evaluate(CATALOG_COLLECTION_SCRIPT)
+        # Handle browser-use adapter case where PAGE is a string placeholder
+        if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+            actual_page = _BROWSER_ADAPTER.page
+            if actual_page is not None:
+                raw_data = await actual_page.evaluate(CATALOG_COLLECTION_SCRIPT)
+            else:
+                raw_data = await _BROWSER_ADAPTER.evaluate(CATALOG_COLLECTION_SCRIPT)
+        else:
+            # Handle traditional Playwright page object
+            raw_data = await PAGE.evaluate(CATALOG_COLLECTION_SCRIPT)
         catalog = _build_catalog_entries(raw_data, signature)
         catalog.update(signature)
         catalog["generated_at"] = time.time()
@@ -1718,7 +1744,11 @@ async def _save_debug_artifacts(correlation_id: str, error_context: str = "") ->
         # Save screenshot
         screenshot_path = os.path.join(DEBUG_DIR, f"{correlation_id}_screenshot.png")
         try:
-            screenshot = await PAGE.screenshot(type="png")
+            # Handle browser-use adapter case where PAGE is a string placeholder
+            if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                screenshot = await _BROWSER_ADAPTER.screenshot()
+            else:
+                screenshot = await PAGE.screenshot(type="png")
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
         except Exception as e:
@@ -2082,7 +2112,16 @@ async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> s
 async def _stabilize_page():
     if PAGE is None:
         return
-    await stabilize_page(PAGE, timeout=SPA_STABILIZE_TIMEOUT)
+    
+    # Handle browser-use adapter case where PAGE is a string placeholder
+    if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+        # Get the actual page object from the browser adapter
+        actual_page = _BROWSER_ADAPTER.page
+        if actual_page is not None:
+            await stabilize_page(actual_page, timeout=SPA_STABILIZE_TIMEOUT)
+    else:
+        # Handle traditional Playwright page object
+        await stabilize_page(PAGE, timeout=SPA_STABILIZE_TIMEOUT)
 
 
 async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
@@ -2181,7 +2220,14 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 
             timeout = NAVIGATION_TIMEOUT if ms == 0 else ms
             try:
-                await PAGE.goto(tgt, wait_until="load", timeout=timeout)
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    result = await _BROWSER_ADAPTER.navigate(tgt, wait_until="load", timeout=timeout)
+                    if not result.get("success"):
+                        raise Exception(result.get("error", "Navigation failed"))
+                else:
+                    # Handle traditional Playwright page object
+                    await PAGE.goto(tgt, wait_until="load", timeout=timeout)
                 # Enhanced post-navigation stabilization with automatic wait
                 await _stabilize_page()
                 wait_warnings = await _wait_for_page_ready()
@@ -2201,14 +2247,34 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             return action_warnings
             
         if a == "go_back":
-            await PAGE.go_back(wait_until="load", timeout=NAVIGATION_TIMEOUT)
+            # Handle browser-use adapter case where PAGE is a string placeholder
+            if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                actual_page = _BROWSER_ADAPTER.page
+                if actual_page is not None:
+                    await actual_page.go_back(wait_until="load", timeout=NAVIGATION_TIMEOUT)
+                else:
+                    action_warnings.append("WARNING:auto:Cannot go back - no actual page available")
+                    return action_warnings
+            else:
+                # Handle traditional Playwright page object
+                await PAGE.go_back(wait_until="load", timeout=NAVIGATION_TIMEOUT)
             await _stabilize_page()
             wait_warnings = await _wait_for_page_ready()
             action_warnings.extend(wait_warnings)
             return action_warnings
             
         if a == "go_forward":
-            await PAGE.go_forward(wait_until="load", timeout=NAVIGATION_TIMEOUT)
+            # Handle browser-use adapter case where PAGE is a string placeholder
+            if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                actual_page = _BROWSER_ADAPTER.page
+                if actual_page is not None:
+                    await actual_page.go_forward(wait_until="load", timeout=NAVIGATION_TIMEOUT)
+                else:
+                    action_warnings.append("WARNING:auto:Cannot go forward - no actual page available")
+                    return action_warnings
+            else:
+                # Handle traditional Playwright page object
+                await PAGE.go_forward(wait_until="load", timeout=NAVIGATION_TIMEOUT)
             await _stabilize_page()
             wait_warnings = await _wait_for_page_ready()
             action_warnings.extend(wait_warnings)
@@ -2228,7 +2294,16 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             if wait_until == "network_idle":
                 timeout = _coerce_timeout(act.get("value"), max(default_ms, 3000))
                 try:
-                    await PAGE.wait_for_load_state("networkidle", timeout=timeout)
+                    # Handle browser-use adapter case where PAGE is a string placeholder
+                    if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                        actual_page = _BROWSER_ADAPTER.page
+                        if actual_page is not None:
+                            await actual_page.wait_for_load_state("networkidle", timeout=timeout)
+                        else:
+                            action_warnings.append("WARNING:auto:Cannot wait for network idle - no actual page available")
+                    else:
+                        # Handle traditional Playwright page object
+                        await PAGE.wait_for_load_state("networkidle", timeout=timeout)
                 except Exception as exc:
                     if is_final_retry:
                         action_warnings.append(f"WARNING:auto:wait network_idle failed - {str(exc)}")
@@ -2248,7 +2323,17 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                         raise
             else:
                 timeout = _coerce_timeout(act.get("value"), default_ms)
-                await PAGE.wait_for_timeout(timeout)
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    actual_page = _BROWSER_ADAPTER.page
+                    if actual_page is not None:
+                        await actual_page.wait_for_timeout(timeout)
+                    else:
+                        # Fallback to asyncio.sleep if no actual page available
+                        await asyncio.sleep(timeout / 1000)
+                else:
+                    # Handle traditional Playwright page object
+                    await PAGE.wait_for_timeout(timeout)
             return action_warnings
             
         if a == "wait_for_selector":
@@ -2257,7 +2342,14 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 return action_warnings
             timeout = ms if ms > 0 else WAIT_FOR_SELECTOR_TIMEOUT
             try:
-                await PAGE.wait_for_selector(tgt, state="visible", timeout=timeout)
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    result = await _BROWSER_ADAPTER.wait_for_selector(tgt, timeout=timeout)
+                    if not result.get("success"):
+                        raise Exception(result.get("error", f"Selector '{tgt}' not found"))
+                else:
+                    # Handle traditional Playwright page object
+                    await PAGE.wait_for_selector(tgt, state="visible", timeout=timeout)
             except Exception as e:
                 error_msg = f"wait_for_selector failed for '{tgt}' - {str(e)}"
                 if is_final_retry:
@@ -2271,11 +2363,27 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             offset = amt if dir_ == "down" else -amt
             if tgt:
                 try:
-                    await PAGE.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", offset)
+                    # Handle browser-use adapter case where PAGE is a string placeholder
+                    if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                        actual_page = _BROWSER_ADAPTER.page
+                        if actual_page is not None:
+                            await actual_page.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", offset)
+                        else:
+                            action_warnings.append(f"WARNING:auto:Cannot scroll to '{tgt}' - no actual page available")
+                    else:
+                        # Handle traditional Playwright page object
+                        await PAGE.locator(tgt).evaluate("(el,y)=>el.scrollBy(0,y)", offset)
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:scroll failed for '{tgt}' - {str(e)}")
             else:
-                await PAGE.evaluate("(y)=>window.scrollBy(0,y)", offset)
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    result = await _BROWSER_ADAPTER.scroll(x=0, y=offset)
+                    if not result.get("success"):
+                        action_warnings.append(f"WARNING:auto:scroll failed - {result.get('error', 'Unknown error')}")
+                else:
+                    # Handle traditional Playwright page object
+                    await PAGE.evaluate("(y)=>window.scrollBy(0,y)", offset)
             return action_warnings
 
         if a == "scroll_to_text":
@@ -2503,7 +2611,14 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                         await _safe_press(loc, key, timeout=action_timeout)
                     else:
                         if key:
-                            await PAGE.keyboard.press(key)
+                            # Handle browser-use adapter case where PAGE is a string placeholder
+                            if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                                result = await _BROWSER_ADAPTER.press_key(key)
+                                if not result.get("success"):
+                                    action_warnings.append(f"WARNING:auto:press_key failed - {result.get('error', 'Unknown error')}")
+                            else:
+                                # Handle traditional Playwright page object
+                                await PAGE.keyboard.press(key)
                         else:
                             action_warnings.append("WARNING:auto:No key specified for press_key action")
                 elif a == "extract_text":
