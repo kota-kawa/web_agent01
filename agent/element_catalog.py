@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from agent.browser import vnc
 
@@ -11,6 +11,9 @@ log = logging.getLogger(__name__)
 INDEX_MODE_ENABLED = os.getenv("INDEX_MODE", "true").lower() == "true"
 
 _cached_catalog: Optional[Dict[str, Any]] = None
+_catalog_dirty: bool = False
+_last_prompt_version: Optional[str] = None
+_pending_prompt_messages: List[str] = []
 
 
 def _normalize_catalog(raw: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -34,13 +37,14 @@ def is_enabled() -> bool:
 
 
 def reset_cache() -> None:
-    global _cached_catalog
+    global _cached_catalog, _catalog_dirty
     _cached_catalog = None
+    _catalog_dirty = True
 
 
 def get_catalog(refresh: bool = False) -> Dict[str, Any]:
     """Return the element catalog, optionally forcing a refresh from the browser."""
-    global _cached_catalog
+    global _cached_catalog, _catalog_dirty
 
     if not INDEX_MODE_ENABLED:
         return {
@@ -52,9 +56,10 @@ def get_catalog(refresh: bool = False) -> Dict[str, Any]:
             "error": None,
         }
 
-    if refresh or _cached_catalog is None:
+    if refresh or _cached_catalog is None or _catalog_dirty:
         try:
-            raw = vnc.get_element_catalog(refresh=refresh)
+            force_refresh = refresh or _catalog_dirty
+            raw = vnc.get_element_catalog(refresh=force_refresh)
         except Exception as exc:  # pragma: no cover - network failure
             log.error("Failed to fetch element catalog: %s", exc)
             return {
@@ -66,6 +71,7 @@ def get_catalog(refresh: bool = False) -> Dict[str, Any]:
                 "error": {"message": str(exc)},
             }
         _cached_catalog = _normalize_catalog(raw)
+        _catalog_dirty = False
     return _cached_catalog or {
         "abbreviated": [],
         "full": [],
@@ -81,6 +87,123 @@ def get_expected_version() -> Optional[str]:
     catalog = get_catalog(refresh=False)
     return catalog.get("catalog_version")
 
+
+def mark_catalog_dirty(reason: Optional[str] = None) -> None:
+    """Invalidate the cached catalog so the next prompt fetches a fresh copy."""
+
+    if not INDEX_MODE_ENABLED:
+        return
+
+    global _catalog_dirty, _cached_catalog
+    if reason:
+        log.debug("Marking catalog dirty: %s", reason)
+    _catalog_dirty = True
+    _cached_catalog = None
+
+
+def should_refresh_for_prompt() -> bool:
+    """Return True when the prompt should force a catalog refresh."""
+
+    return INDEX_MODE_ENABLED and _catalog_dirty
+
+
+def record_prompt_version(version: Optional[str]) -> None:
+    """Remember the catalog version that the latest prompt was based on."""
+
+    global _last_prompt_version
+    _last_prompt_version = version
+
+
+def get_last_prompt_version() -> Optional[str]:
+    """Return the catalog version that was last provided to the LLM prompt."""
+
+    return _last_prompt_version
+
+
+def _queue_prompt_message(message: str) -> None:
+    if not message:
+        return
+    if message in _pending_prompt_messages:
+        return
+    _pending_prompt_messages.append(message)
+
+
+def consume_pending_prompt_messages() -> List[str]:
+    """Return and clear any system messages that should reach the planner."""
+
+    global _pending_prompt_messages
+    messages = list(_pending_prompt_messages)
+    _pending_prompt_messages = []
+    return messages
+
+
+def actions_use_catalog_indices(actions: Iterable[Dict[str, Any]]) -> bool:
+    for action in actions or []:
+        if not isinstance(action, dict):
+            continue
+        target = action.get("target")
+        if isinstance(target, str) and target.strip().lower().startswith("index="):
+            return True
+        if isinstance(target, list):
+            for item in target:
+                if isinstance(item, str) and item.strip().lower().startswith("index="):
+                    return True
+        value = action.get("value")
+        if isinstance(value, str) and value.strip().lower().startswith("index="):
+            return True
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip().lower().startswith("index="):
+                    return True
+    return False
+
+
+def handle_execution_feedback(actions: Iterable[Dict[str, Any]], result: Dict[str, Any]) -> None:
+    """Update catalog bookkeeping based on the last execution result."""
+
+    if not INDEX_MODE_ENABLED:
+        return
+
+    warnings = [w for w in (result or {}).get("warnings") or [] if isinstance(w, str)]
+    observation = (result or {}).get("observation") or {}
+
+    nav_detected = bool(observation.get("nav_detected"))
+    catalog_version = observation.get("catalog_version")
+
+    if nav_detected:
+        mark_catalog_dirty("navigation detected by executor")
+
+    uses_refresh_action = any(
+        isinstance(action, dict) and action.get("action") == "refresh_catalog" for action in actions or []
+    )
+    if uses_refresh_action:
+        mark_catalog_dirty("refresh_catalog action executed")
+
+    auto_refresh = next((w for w in warnings if "Element catalog auto-refreshed" in w), None)
+    if auto_refresh:
+        mark_catalog_dirty("executor auto-refreshed catalog")
+
+    mismatch_warning = next((w for w in warnings if "Catalog version still differs" in w), None)
+    proceed_warning = next((w for w in warnings if "Proceeding without a refreshed catalog" in w), None)
+
+    if mismatch_warning or proceed_warning:
+        mark_catalog_dirty("executor reported catalog mismatch")
+        _queue_prompt_message(
+            "CATALOG_OUTDATED: Executor detected catalog version drift. Fetch a fresh catalog and rebuild the plan before using index-based targets."
+        )
+
+    # If the executor produced a new catalog version, remember it for diagnostics.
+    if catalog_version and catalog_version != _last_prompt_version:
+        log.debug(
+            "Executor observed catalog version %s (planner used %s)",
+            catalog_version,
+            _last_prompt_version,
+        )
+
+    if nav_detected and not mismatch_warning:
+        _queue_prompt_message(
+            "CATALOG_OUTDATED: Navigation detected after the last execution. Refresh the element catalog before relying on index selectors."
+        )
 
 def format_catalog_for_prompt(catalog: Dict[str, Any]) -> str:
     """Return a human-friendly string representation of the abbreviated catalog."""

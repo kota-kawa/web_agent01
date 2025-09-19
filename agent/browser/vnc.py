@@ -166,6 +166,16 @@ def execute_dsl(payload, timeout=120):
             r.raise_for_status()
             result = r.json()
 
+            try:  # Best-effort catalog bookkeeping
+                from agent.element_catalog import handle_execution_feedback
+
+                actions_for_feedback = []
+                if isinstance(payload, dict):
+                    actions_for_feedback = payload.get("actions") or []
+                handle_execution_feedback(actions_for_feedback, result)
+            except Exception as catalog_exc:  # pragma: no cover - diagnostics only
+                log.debug("Catalog feedback handling failed: %s", catalog_exc)
+
             # Success - log if this was a retry
             if attempt > 1:
                 log.info(
