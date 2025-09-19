@@ -1,0 +1,20 @@
+services:
+  web:
+    build: ./web
+    working_dir: /app/web
+    command: python -u app.py
+    environment:
+      - PYTHONPATH=/app
+      # Default to a blank page to prevent unintended navigation to external sites
+      - START_URL=about:blank
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    networks: [small_browser_net]
+
+networks:
+  small_browser_net:
+    driver: bridge

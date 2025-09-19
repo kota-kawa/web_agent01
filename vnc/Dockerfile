@@ -12,13 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # ---- Python ライブラリ -------------------------------------------------
-RUN pip install --no-cache-dir \
+RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org --no-cache-dir \
       "playwright[all]==1.44.0" \
       flask \
       httpx \
       "jsonschema>=4.0" \
       "pydantic>=2.5" \
-  && playwright install --with-deps chromium
+  && NODE_TLS_REJECT_UNAUTHORIZED=0 playwright install chromium
   
 
 
