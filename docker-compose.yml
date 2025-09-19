@@ -34,8 +34,7 @@ services:
     volumes:
       - .:/app
     depends_on:
-      vnc:
-        condition: service_healthy
+      - vnc  # Start after VNC but don't wait for health check
     networks: [small_browser_net]
 
 networks:
