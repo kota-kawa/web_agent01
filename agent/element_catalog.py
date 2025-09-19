@@ -77,7 +77,7 @@ def update_cache_from_signature(signature: Optional[Dict[str, Any]]) -> None:
 
 def get_catalog(refresh: bool = False) -> Dict[str, Any]:
     """Return the element catalog, optionally forcing a refresh from the browser."""
-    global _cached_catalog
+    global _cached_catalog, _last_observed_version
 
     if not INDEX_MODE_ENABLED:
         return {

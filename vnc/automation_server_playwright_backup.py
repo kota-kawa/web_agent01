@@ -182,7 +182,7 @@ _INDEX_ADOPTION_HISTORY: List[Tuple[str, int, str, str]] = []
 _MAX_ADOPTION_HISTORY = 50
 
 
-CATALOG_COLLECTION_SCRIPT = """
+CATALOG_COLLECTION_SCRIPT = r"""
 (() => {
   const results = [];
   const interactiveSelectors = [
