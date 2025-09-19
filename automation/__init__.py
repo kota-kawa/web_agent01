@@ -1,5 +1,6 @@
 """Shared automation utilities."""
 
-from .dsl import registry, models
+from .dsl import models, registry
+from .service import AutomationService
 
-__all__ = ["registry", "models"]
+__all__ = ["registry", "models", "AutomationService"]
