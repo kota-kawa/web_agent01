@@ -1709,7 +1709,7 @@ async def _create_clean_context():
 
 async def _save_debug_artifacts(correlation_id: str, error_context: str = "") -> str:
     """Save screenshot and HTML for debugging purposes."""
-    if not SAVE_DEBUG_ARTIFACTS or not PAGE:
+    if not SAVE_DEBUG_ARTIFACTS or not _BROWSER_ADAPTER or not _BROWSER_ADAPTER.page:
         return ""
     
     try:
@@ -1718,7 +1718,7 @@ async def _save_debug_artifacts(correlation_id: str, error_context: str = "") ->
         # Save screenshot
         screenshot_path = os.path.join(DEBUG_DIR, f"{correlation_id}_screenshot.png")
         try:
-            screenshot = await PAGE.screenshot(type="png")
+            screenshot = await _BROWSER_ADAPTER.page.screenshot(type="png")
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
         except Exception as e:
@@ -1900,8 +1900,8 @@ async def _init_browser():
     
     # Check if browser-use adapter is already healthy
     if _BROWSER_ADAPTER and await _BROWSER_ADAPTER.is_healthy():
-        # Set PAGE to a placeholder for compatibility with legacy code
-        PAGE = "browser-use-active"
+        # Set PAGE to the actual page object for compatibility with legacy code
+        PAGE = _BROWSER_ADAPTER.page
         return
         
     # Initialize browser-use adapter
@@ -1910,7 +1910,7 @@ async def _init_browser():
     # Set compatibility variables for legacy code
     PW = "browser-use-pw"
     BROWSER = "browser-use-browser" 
-    PAGE = "browser-use-page"
+    PAGE = _BROWSER_ADAPTER.page  # Use actual page object instead of string
 
     # Only navigate to DEFAULT_URL on the very first initialization
     if _BROWSER_FIRST_INIT:
@@ -2049,21 +2049,21 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
 
 
 async def _wait_for_page_ready(timeout: int = 3000) -> List[str]:
-    if PAGE is None:
+    if _BROWSER_ADAPTER is None or _BROWSER_ADAPTER.page is None:
         return []
-    return await wait_for_page_ready(PAGE, timeout=timeout)
+    return await wait_for_page_ready(_BROWSER_ADAPTER.page, timeout=timeout)
 
 
 async def _wait_dom_idle(timeout_ms: int = SPA_STABILIZE_TIMEOUT):
-    if PAGE is None:
+    if _BROWSER_ADAPTER is None or _BROWSER_ADAPTER.page is None:
         return
-    await wait_dom_idle(PAGE, timeout_ms=timeout_ms)
+    await wait_dom_idle(_BROWSER_ADAPTER.page, timeout_ms=timeout_ms)
 
 
 async def _wait_for_loading_indicators_to_disappear(timeout: int = 3000):
-    if PAGE is None:
+    if _BROWSER_ADAPTER is None or _BROWSER_ADAPTER.page is None:
         return
-    await wait_for_loading_indicators(PAGE, timeout=timeout)
+    await wait_for_loading_indicators(_BROWSER_ADAPTER.page, timeout=timeout)
 
 
 async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> str:
@@ -2080,9 +2080,9 @@ async def _safe_get_page_content(max_retries: int = 3, delay_ms: int = 500) -> s
 
 
 async def _stabilize_page():
-    if PAGE is None:
+    if _BROWSER_ADAPTER is None or _BROWSER_ADAPTER.page is None:
         return
-    await stabilize_page(PAGE, timeout=SPA_STABILIZE_TIMEOUT)
+    await stabilize_page(_BROWSER_ADAPTER.page, timeout=SPA_STABILIZE_TIMEOUT)
 
 
 async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
