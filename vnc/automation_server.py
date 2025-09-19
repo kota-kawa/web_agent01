@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -672,6 +672,17 @@ class StructuredSelectorCandidate:
     origin: Any = None
 
 
+@dataclass
+class IndexRecoveryResult:
+    locator: Optional[Locator] = None
+    selector: Optional[str] = None
+    selectors: List[str] = field(default_factory=list)
+    catalog_entry: Optional[Dict[str, Any]] = None
+    rebound_index: Optional[int] = None
+    last_error: Optional[str] = None
+    recovery_performed: bool = False
+
+
 def _merge_selector_payload(selector_data: Any, extras: Dict[str, Any]) -> Any:
     if not extras:
         return selector_data
@@ -1000,6 +1011,314 @@ def _build_selector_fallbacks(entry: Dict[str, Any]) -> List[str]:
         candidates.append(f'css=[href="{quoted_href}"]')
 
     return _dedupe_selectors(candidates)
+
+
+_TEXT_ATTR_NAMES = {
+    "aria-label",
+    "aria_label",
+    "title",
+    "alt",
+    "data-testid",
+    "data-test",
+    "data-qa",
+    "data-label",
+}
+_ROLE_NAME_PATTERN = re.compile(r"role=([a-z0-9_-]+)(?:\[[^\]]*name=(['\"])(.+?)\2[^\]]*\])?", re.IGNORECASE)
+_ATTR_VALUE_PATTERN = re.compile(r"\[([a-zA-Z0-9_-]+)\s*=\s*(['\"])(.+?)\2\]")
+_HAS_TEXT_PATTERN = re.compile(r":has-text\((['\"])(.+?)\1\)")
+_XPATH_TEXT_PATTERN = re.compile(r"text\(\)\s*=\s*['\"](.+?)['\"]", re.IGNORECASE)
+_XPATH_CONTAINS_PATTERN = re.compile(
+    r"contains\(normalize-space\(text\(\)\),\s*['\"](.+?)['\"]",
+    re.IGNORECASE,
+)
+
+
+def _extract_textual_hints_from_selectors(selectors: Iterable[str]) -> List[str]:
+    """Extract textual hints from selector strings for heuristic catalog matching."""
+
+    hints: List[str] = []
+    seen: set[str] = set()
+
+    for selector in selectors or []:
+        if not selector or not isinstance(selector, str):
+            continue
+        parts = [part.strip() for part in selector.split("||")] if "||" in selector else [selector.strip()]
+        for part in parts:
+            if not part:
+                continue
+            extracted: List[str] = []
+            lowered = part.lower()
+            if lowered.startswith("text="):
+                extracted.append(part[5:])
+            elif lowered.startswith("role="):
+                match = _ROLE_NAME_PATTERN.search(part)
+                if match and match.group(3):
+                    extracted.append(match.group(3))
+            elif lowered.startswith("css="):
+                body = part[4:]
+                for attr_match in _ATTR_VALUE_PATTERN.finditer(body):
+                    attr_name = attr_match.group(1).lower()
+                    if attr_name in _TEXT_ATTR_NAMES:
+                        extracted.append(attr_match.group(3))
+                for has_match in _HAS_TEXT_PATTERN.finditer(body):
+                    extracted.append(has_match.group(2))
+            elif lowered.startswith("xpath="):
+                path = part[6:]
+                extracted.extend(_XPATH_TEXT_PATTERN.findall(path))
+                extracted.extend(_XPATH_CONTAINS_PATTERN.findall(path))
+            else:
+                if not lowered.startswith(("css=", "role=", "xpath=")):
+                    extracted.append(part)
+
+            for value in extracted:
+                normalized = value.strip().strip("\"'`")
+                if not normalized:
+                    continue
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                hints.append(normalized)
+
+    return hints
+
+
+def _entry_text_fields(entry: Dict[str, Any]) -> List[str]:
+    """Collect text-like fields from a catalog entry for hint matching."""
+
+    fields: List[str] = []
+    for key in (
+        "primary_label",
+        "secondary_label",
+        "section_hint",
+        "state_hint",
+        "href_short",
+        "href_full",
+    ):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            fields.append(value.strip())
+    for text in entry.get("nearest_texts", []) or []:
+        if isinstance(text, str) and text.strip():
+            fields.append(text.strip())
+    role = entry.get("role")
+    if isinstance(role, str) and role.strip():
+        fields.append(role.strip())
+    tag = entry.get("tag")
+    if isinstance(tag, str) and tag.strip():
+        fields.append(tag.strip())
+    return fields
+
+
+def _score_catalog_entry_for_hints(entry: Dict[str, Any], hints: List[str]) -> Tuple[float, int]:
+    """Return a similarity score between a catalog entry and textual hints."""
+
+    if not hints:
+        return 0.0, 0
+
+    fields = _entry_text_fields(entry)
+    if not fields:
+        return 0.0, 0
+
+    matches: List[float] = []
+    for hint in hints:
+        normalized = hint.strip().lower()
+        if not normalized:
+            continue
+        best = 0.0
+        for field_value in fields:
+            field_lower = field_value.lower()
+            if normalized in field_lower and normalized:
+                best = 1.0
+                break
+            ratio = SequenceMatcher(None, normalized, field_lower).ratio()
+            if ratio > best:
+                best = ratio
+        if best >= 0.55:
+            matches.append(best)
+
+    if not matches:
+        return 0.0, 0
+
+    avg_score = sum(matches) / len(matches)
+    bonus = min(0.2, 0.05 * max(0, len(matches) - 1))
+    return min(1.0, avg_score + bonus), len(matches)
+
+
+def _find_best_catalog_entry_by_hints(
+    index_map: Dict[str, Dict[str, Any]], hints: List[str]
+) -> Tuple[Optional[int], Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Locate the catalog entry that best matches the provided textual hints."""
+
+    best_index: Optional[int] = None
+    best_entry: Optional[Dict[str, Any]] = None
+    best_score = 0.0
+    best_matches = 0
+
+    for idx_str, entry in (index_map or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            idx = int(idx_str)
+        except (TypeError, ValueError):
+            continue
+
+        score, match_count = _score_catalog_entry_for_hints(entry, hints)
+        if score <= 0:
+            continue
+        if score > best_score or (score == best_score and match_count > best_matches):
+            best_score = score
+            best_matches = match_count
+            best_index = idx
+            best_entry = entry
+
+    if best_entry is None:
+        return None, None, {"score": 0.0, "matched_hints": 0, "total_hints": len(hints)}
+
+    return best_index, best_entry, {
+        "score": best_score,
+        "matched_hints": best_matches,
+        "total_hints": len(hints),
+    }
+
+
+async def _attempt_catalog_locator_recovery(
+    action: Dict[str, Any],
+    action_name: str,
+    index_value: int,
+    selectors_already_tried: List[str],
+    binding_info: Dict[str, Any],
+    action_warnings: List[str],
+    *,
+    failure: Optional[ExecutionError] = None,
+) -> IndexRecoveryResult:
+    """Refresh the catalog and attempt to recover a locator for a failed index lookup."""
+
+    result = IndexRecoveryResult()
+    result.selectors = list(selectors_already_tried)
+
+    if not INDEX_MODE or PAGE is None:
+        return result
+
+    page_for_locator = PAGE
+    if isinstance(page_for_locator, str) and _BROWSER_ADAPTER is not None:
+        page_for_locator = _BROWSER_ADAPTER.page
+    if page_for_locator is None:
+        return result
+
+    result.recovery_performed = True
+    if failure is not None:
+        failure_msg = failure.details.get("message") if isinstance(failure.details, dict) else str(failure)
+    else:
+        failure_msg = ""
+    action_warnings.append(
+        (
+            f"INFO:auto:Attempting catalog recovery for index {index_value}"
+            f" (action={action_name}{f', cause={failure.code}' if isinstance(failure, ExecutionError) else ''})"
+        )
+    )
+
+    refreshed_catalog: Optional[Dict[str, Any]] = None
+    try:
+        refreshed_catalog = await _generate_element_catalog(force=True)
+        if refreshed_catalog:
+            version = (refreshed_catalog or {}).get("catalog_version")
+            if version:
+                action_warnings.append(
+                    f"INFO:auto:Element catalog refreshed during recovery (version={version})"
+                )
+    except ExecutionError as exc:
+        action_warnings.append(f"WARNING:auto:Catalog refresh during recovery failed - {exc}")
+    except Exception as exc:
+        action_warnings.append(
+            f"WARNING:auto:Catalog refresh during recovery failed - {str(exc)}"
+        )
+
+    catalog_snapshot = refreshed_catalog or _CURRENT_CATALOG or {}
+    index_map = catalog_snapshot.get("index_map") or {}
+
+    rebound_index = index_value
+    entry = index_map.get(str(index_value)) if index_map else None
+
+    if entry is None and binding_info:
+        expected_index = binding_info.get("expected_index")
+        try:
+            if expected_index is not None and str(int(expected_index)) in index_map:
+                rebound_index = int(expected_index)
+                entry = index_map.get(str(rebound_index))
+        except (TypeError, ValueError):
+            pass
+
+    combined_selectors = _dedupe_selectors(result.selectors + (binding_info.get("selectors", []) or []))
+    textual_hints = _extract_textual_hints_from_selectors(combined_selectors)
+    heuristic_reason: Optional[Dict[str, Any]] = None
+
+    if entry is None and textual_hints:
+        match_index, match_entry, reason = _find_best_catalog_entry_by_hints(index_map, textual_hints)
+        if match_entry is not None and reason.get("score", 0.0) >= 0.58:
+            entry = match_entry
+            heuristic_reason = reason
+            if match_index is not None:
+                rebound_index = match_index
+
+    if entry is None:
+        action_warnings.append(
+            f"WARNING:auto:Catalog recovery could not find a matching entry for index {index_value}"
+        )
+        result.selectors = combined_selectors or result.selectors
+        return result
+
+    selectors_from_entry = entry.get("robust_selectors", []) or []
+    fallback_selectors = _build_selector_fallbacks(entry)
+    combined = _dedupe_selectors(selectors_from_entry + fallback_selectors + combined_selectors)
+
+    result.catalog_entry = entry
+    result.selectors = combined
+    result.rebound_index = rebound_index
+
+    if rebound_index != index_value:
+        action_warnings.append(
+            f"INFO:auto:Catalog index {index_value} rebound to {rebound_index} during recovery"
+        )
+        action["target"] = f"index={rebound_index}"
+    else:
+        action["target"] = f"index={index_value}"
+
+    if heuristic_reason:
+        score = heuristic_reason.get("score", 0.0)
+        matched = heuristic_reason.get("matched_hints", 0)
+        total = heuristic_reason.get("total_hints", len(textual_hints))
+        action_warnings.append(
+            f"INFO:auto:Recovered index {rebound_index} using heuristic text match"
+            f" (score={score:.2f}, matches={matched}/{total})"
+        )
+
+    if binding_info is not None:
+        binding_info["selectors"] = list(result.selectors)
+        binding_info["match_index"] = rebound_index
+        binding_info["current_catalog_version"] = catalog_snapshot.get("catalog_version")
+        match_reason = dict(binding_info.get("match_reason") or {})
+        if heuristic_reason:
+            match_reason["heuristic_text"] = heuristic_reason.get("score", 0.0)
+            match_reason["matched_hints"] = heuristic_reason.get("matched_hints", 0)
+        if failure_msg:
+            match_reason.setdefault("previous_error", failure_msg)
+        binding_info["match_reason"] = match_reason
+        action["_catalog_binding"] = binding_info
+
+    last_error: Optional[str] = None
+    for candidate in result.selectors:
+        try:
+            locator = await SmartLocator(page_for_locator, candidate).locate()
+            if locator is not None:
+                result.locator = locator
+                result.selector = candidate
+                break
+            await _stabilize_page()
+        except Exception as exc:
+            last_error = str(exc)
+    result.last_error = last_error
+
+    return result
 
 
 def _store_catalog_snapshot(catalog: Dict[str, Any]) -> None:
@@ -2527,6 +2846,10 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 # Rebinding failed but fallback selectors are available. Skip stale index lookup.
                 index_value = None
 
+            index_recovery_attempted = False
+            loc: Optional = None
+            last_error: Optional[str] = None
+
             if index_value is not None:
                 auto_refresh_message: Optional[str] = None
                 if INDEX_MODE and (not _CURRENT_CATALOG or "index_map" not in _CURRENT_CATALOG):
@@ -2567,8 +2890,31 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                             "Element catalog is not available. Please execute refresh_catalog.",
                             {"index": index_value},
                         ) from exc
-                selectors_from_index, resolved_entry = _resolve_index_entry(index_value)
-                selectors_to_try.extend(selectors_from_index)
+                try:
+                    selectors_from_index, resolved_entry = _resolve_index_entry(index_value)
+                    selectors_to_try.extend(selectors_from_index)
+                except ExecutionError as exc:
+                    recovery_result = await _attempt_catalog_locator_recovery(
+                        act,
+                        a,
+                        index_value,
+                        selectors_to_try,
+                        binding_info,
+                        action_warnings,
+                        failure=exc,
+                    )
+                    index_recovery_attempted = True
+                    selectors_to_try = list(recovery_result.selectors or selectors_to_try)
+                    if recovery_result.rebound_index is not None:
+                        index_value = recovery_result.rebound_index
+                        tgt = act.get("target", tgt)
+                    if recovery_result.catalog_entry is not None:
+                        resolved_entry = recovery_result.catalog_entry
+                    if recovery_result.locator is not None:
+                        loc = recovery_result.locator
+                        chosen_selector = recovery_result.selector
+                    if recovery_result.last_error:
+                        last_error = recovery_result.last_error
                 if auto_refresh_message:
                     action_warnings.append(auto_refresh_message)
             else:
@@ -2582,6 +2928,8 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                         return action_warnings
 
             selectors_to_try = _dedupe_selectors(selectors_to_try)
+            if binding_info is not None and selectors_to_try:
+                binding_info["selectors"] = list(selectors_to_try)
 
             if PAGE is None:
                 error_msg = f"Browser not initialized - cannot execute {a} action"
@@ -2590,8 +2938,6 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     return action_warnings
                 raise Exception(error_msg)
 
-            loc: Optional = None
-            last_error: Optional[str] = None
             if structured_candidates and PAGE is not None:
                 for candidate in structured_candidates:
                     try:
@@ -2604,38 +2950,79 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                         chosen_selector = _format_selector_display(resolved_structured.selector.as_legacy())
                         break
 
-            for selector in selectors_to_try:
-                if loc is not None:
-                    break
-                candidate = selector
-                for attempt in range(LOCATOR_RETRIES):
-                    try:
-                        if a == "click_text" and index_value is None:
-                            if "||" in candidate or candidate.strip().startswith(("css=", "text=", "role=", "xpath=")):
-                                loc = await SmartLocator(PAGE, candidate).locate()
+            locator_attempt_round = 0
+            while loc is None and locator_attempt_round < 2:
+                locator_attempt_round += 1
+                for selector in selectors_to_try:
+                    if loc is not None:
+                        break
+                    candidate = selector
+                    for attempt in range(LOCATOR_RETRIES):
+                        try:
+                            if a == "click_text" and index_value is None:
+                                if "||" in candidate or candidate.strip().startswith(("css=", "text=", "role=", "xpath=")):
+                                    loc = await SmartLocator(PAGE, candidate).locate()
+                                else:
+                                    loc = await SmartLocator(PAGE, f"text={candidate}").locate()
                             else:
-                                loc = await SmartLocator(PAGE, f"text={candidate}").locate()
-                        else:
-                            loc = await SmartLocator(PAGE, candidate).locate()
-                        if loc is not None:
-                            chosen_selector = candidate
-                            break
-                        await _stabilize_page()
-                    except Exception as exc:
-                        last_error = str(exc)
-                        if attempt == LOCATOR_RETRIES - 1:
-                            action_warnings.append(
-                                f"WARNING:auto:Locator search failed for '{candidate}' - {last_error}"
-                            )
+                                loc = await SmartLocator(PAGE, candidate).locate()
+                            if loc is not None:
+                                chosen_selector = candidate
+                                break
+                            await _stabilize_page()
+                        except Exception as exc:
+                            last_error = str(exc)
+                            if attempt == LOCATOR_RETRIES - 1:
+                                action_warnings.append(
+                                    f"WARNING:auto:Locator search failed for '{candidate}' - {last_error}"
+                                )
+                    if loc is not None:
+                        break
+
                 if loc is not None:
                     break
 
+                if index_value is None or index_recovery_attempted:
+                    break
+
+                recovery_result = await _attempt_catalog_locator_recovery(
+                    act,
+                    a,
+                    index_value,
+                    selectors_to_try,
+                    binding_info,
+                    action_warnings,
+                )
+                index_recovery_attempted = True
+                selectors_to_try = _dedupe_selectors(recovery_result.selectors or selectors_to_try)
+                if recovery_result.rebound_index is not None:
+                    index_value = recovery_result.rebound_index
+                    tgt = act.get("target", tgt)
+                if recovery_result.catalog_entry is not None:
+                    resolved_entry = recovery_result.catalog_entry
+                if recovery_result.locator is not None:
+                    loc = recovery_result.locator
+                    chosen_selector = recovery_result.selector
+                    if recovery_result.last_error:
+                        last_error = recovery_result.last_error
+                    break
+                if recovery_result.last_error:
+                    last_error = recovery_result.last_error
+
             if loc is None:
                 if index_value is not None:
+                    error_details = {
+                        "index": index_value,
+                        "selectors": selectors_to_try,
+                        "catalog_version": (_CURRENT_CATALOG_SIGNATURE or {}).get("catalog_version"),
+                        "recovery_attempted": bool(index_recovery_attempted),
+                    }
+                    if last_error:
+                        error_details["last_error"] = last_error
                     raise ExecutionError(
                         "ELEMENT_NOT_FOUND",
                         f"Catalog index {index_value} could not be resolved to a live element",
-                        {"index": index_value, "selectors": selectors_to_try},
+                        error_details,
                     )
                 error_msg = (
                     f"Element not found: {tgt}. Consider using alternative selectors or text matching."
