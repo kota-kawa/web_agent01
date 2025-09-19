@@ -170,8 +170,8 @@ class BrowserUseAdapter:
                 "selector": selector
             }
     
-    async def screenshot(self, full_page: bool = False) -> bytes:
-        """Take screenshot"""
+    async def screenshot(self, full_page: bool = False, timeout: int = 15000) -> bytes:
+        """Take screenshot with improved timeout handling"""
         if not PLAYWRIGHT_AVAILABLE or not self.page:
             # Return a minimal 1x1 PNG for compatibility
             return base64.b64decode(
@@ -179,10 +179,25 @@ class BrowserUseAdapter:
             )
             
         try:
-            return await self.page.screenshot(type="png", full_page=full_page)
+            # Wait for fonts to load before screenshot
+            await self.page.evaluate("""
+                () => {
+                    return document.fonts.ready;
+                }
+            """)
+            
+            # Use shorter timeout for screenshot to avoid long waits
+            return await self.page.screenshot(
+                type="png", 
+                full_page=full_page, 
+                timeout=timeout
+            )
         except Exception as e:
             log.error(f"Screenshot failed: {e}")
-            return b''
+            # Return a minimal error image instead of empty bytes
+            return base64.b64decode(
+                b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+            )
     
     async def get_page_content(self) -> str:
         """Get page HTML content"""
@@ -230,13 +245,21 @@ class BrowserUseAdapter:
                 "selector": selector
             }
     
-    async def evaluate(self, script: str) -> Any:
-        """Evaluate JavaScript"""
+    async def evaluate(self, script: str, timeout: int = 5000) -> Any:
+        """Evaluate JavaScript with improved error handling"""
         if not PLAYWRIGHT_AVAILABLE or not self.page:
+            log.warning("Evaluate called but no page available")
             return None
             
         try:
-            return await self.page.evaluate(script)
+            # Add timeout to evaluation to prevent hanging
+            return await asyncio.wait_for(
+                self.page.evaluate(script), 
+                timeout=timeout/1000
+            )
+        except asyncio.TimeoutError:
+            log.error(f"Evaluate timed out after {timeout}ms")
+            return None
         except Exception as e:
             log.error(f"Evaluate failed: {e}")
             return None
@@ -276,8 +299,11 @@ class BrowserUseAdapter:
             
         try:
             # Try to evaluate a simple script to check health
-            await self.page.evaluate("() => document.readyState")
-            return True
+            result = await asyncio.wait_for(
+                self.page.evaluate("() => document.readyState"), 
+                timeout=2.0
+            )
+            return result in ["complete", "interactive", "loading"]
         except Exception as e:
             log.error(f"Health check failed: {e}")
             return False

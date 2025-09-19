@@ -2038,43 +2038,61 @@ async def _list_elements(limit: int = 50) -> List[Dict]:
         ]
     
     try:
-        els = []
-        # Use browser-use adapter to get elements
-        result = await _BROWSER_ADAPTER.evaluate("""
-            () => {
+        # First check if page is ready
+        await _BROWSER_ADAPTER.page.wait_for_load_state("domcontentloaded", timeout=5000)
+        
+        # Use browser-use adapter to get elements with improved error handling
+        result = await _BROWSER_ADAPTER.evaluate(f"""
+            () => {{
                 const elements = Array.from(document.querySelectorAll('a,button,input,textarea,select'));
-                return elements.slice(0, arguments[0]).map((el, i) => {
+                return elements.slice(0, {limit}).map((el, i) => {{
+                    // Check if element is visible and interactable
                     if (!el.offsetParent && el.style.display === 'none') return null;
                     
-                    function getXPath(el) {
+                    function getXPath(el) {{
                         if (el === document.body) return '/html/body';
                         let ix = 0, s = el.previousSibling;
-                        while (s) { 
+                        while (s) {{ 
                             if (s.nodeType === 1 && s.tagName === el.tagName) ix++; 
                             s = s.previousSibling; 
-                        }
+                        }}
                         return getXPath(el.parentNode) + '/' + el.tagName.toLowerCase() + '[' + (ix + 1) + ']';
-                    }
+                    }}
                     
-                    return {
-                        index: i,
-                        tag: el.tagName.toLowerCase(),
-                        text: (el.innerText || el.textContent || '').trim().substring(0, 50),
-                        id: el.id || null,
-                        class: el.className || null,
-                        xpath: getXPath(el)
-                    };
-                }).filter(Boolean);
-            }
-        """)
+                    try {{
+                        return {{
+                            index: i,
+                            tag: el.tagName.toLowerCase(),
+                            text: (el.innerText || el.textContent || '').trim().substring(0, 50),
+                            id: el.id || null,
+                            class: el.className || null,
+                            xpath: getXPath(el)
+                        }};
+                    }} catch (e) {{
+                        // Skip elements that cause errors
+                        return null;
+                    }}
+                }}).filter(Boolean);
+            }}
+        """, timeout=10000)  # Increased timeout for complex pages
         
-        if result:
+        if result and isinstance(result, list):
             return result[:limit]
             
     except Exception as e:
         log.error(f"Failed to list elements: {e}")
     
-    return []
+    # Return minimal fallback elements
+    return [
+        {
+            "index": 0,
+            "tag": "body",
+            "text": "Fallback element - page content",
+            "id": None,
+            "class": None,
+            "xpath": "/html/body"
+        }
+    ]
 
 
 
@@ -2392,7 +2410,17 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                 action_warnings.append("WARNING:auto:scroll_to_text missing target text")
                 return action_warnings
             try:
-                result = await perform_scroll_to_text(PAGE, str(text))
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    actual_page = _BROWSER_ADAPTER.page
+                    if actual_page is not None:
+                        result = await perform_scroll_to_text(actual_page, str(text))
+                    else:
+                        action_warnings.append("WARNING:auto:scroll_to_text failed - no actual page available")
+                        return action_warnings
+                else:
+                    # Handle traditional Playwright page object
+                    result = await perform_scroll_to_text(PAGE, str(text))
             except Exception as exc:
                 raise ExecutionError("ELEMENT_NOT_FOUND", f"scroll_to_text failed - {str(exc)}", {"text": text})
             if not result.get("success"):
@@ -2403,15 +2431,38 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             script = act.get("script") or val
             if script:
                 try:
-                    result = await run_eval_js(PAGE, script)
-                    EVAL_RESULTS.append(result)
+                    # Handle browser-use adapter case where PAGE is a string placeholder
+                    if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                        actual_page = _BROWSER_ADAPTER.page
+                        if actual_page is not None:
+                            result = await run_eval_js(actual_page, script)
+                        else:
+                            action_warnings.append("WARNING:auto:eval_js failed - no actual page available")
+                            result = None
+                    else:
+                        # Handle traditional Playwright page object
+                        result = await run_eval_js(PAGE, script)
+                    
+                    if result is not None:
+                        EVAL_RESULTS.append(result)
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:eval_js failed - {str(e)}")
             return action_warnings
 
         if a == "click_blank_area":
             try:
-                result = await perform_click_blank_area(PAGE)
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    actual_page = _BROWSER_ADAPTER.page
+                    if actual_page is not None:
+                        result = await perform_click_blank_area(actual_page)
+                    else:
+                        action_warnings.append("WARNING:auto:click_blank_area failed - no actual page available")
+                        result = {"success": False}
+                else:
+                    # Handle traditional Playwright page object
+                    result = await perform_click_blank_area(PAGE)
+                    
                 EVAL_RESULTS.append(result)
                 if result.get("fallback"):
                     action_warnings.append("INFO:auto:Used fallback coordinates for blank area click")
@@ -2423,7 +2474,18 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
 
         if a == "close_popup":
             try:
-                result = await perform_close_popup(PAGE)
+                # Handle browser-use adapter case where PAGE is a string placeholder
+                if isinstance(PAGE, str) and _BROWSER_ADAPTER is not None:
+                    actual_page = _BROWSER_ADAPTER.page
+                    if actual_page is not None:
+                        result = await perform_close_popup(actual_page)
+                    else:
+                        action_warnings.append("WARNING:auto:close_popup failed - no actual page available")
+                        result = {"found": False, "clicked": False}
+                else:
+                    # Handle traditional Playwright page object
+                    result = await perform_close_popup(PAGE)
+                    
                 EVAL_RESULTS.append(result)
                 if result.get("found") and result.get("clicked"):
                     action_warnings.append(
