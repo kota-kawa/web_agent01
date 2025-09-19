@@ -113,6 +113,39 @@ _CATALOG_ARCHIVE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _STABLE_SELECTOR_STORE = StableNodeStore()
 
 
+def _get_adapter_page() -> Optional[Any]:
+    """Return the active Playwright page provided by the browser-use adapter."""
+
+    if _BROWSER_ADAPTER is None:
+        return None
+
+    page = getattr(_BROWSER_ADAPTER, "page", None)
+    if page is None:
+        return None
+
+    try:
+        is_closed = getattr(page, "is_closed", None)
+        if callable(is_closed) and is_closed():
+            return None
+    except Exception:
+        # If the page can't report its state, fall back to assuming it's usable
+        pass
+
+    return page
+
+
+def _normalize_context(context: Any) -> Optional[Any]:
+    """Coerce legacy placeholder contexts into real Playwright objects."""
+
+    if context is None:
+        return None
+
+    if isinstance(context, str):
+        return _get_adapter_page()
+
+    return context
+
+
 # Security and navigation configuration
 ALLOWED_DOMAINS = os.getenv("ALLOWED_DOMAINS", "").split(",") if os.getenv("ALLOWED_DOMAINS") else []
 BLOCKED_DOMAINS = os.getenv("BLOCKED_DOMAINS", "").split(",") if os.getenv("BLOCKED_DOMAINS") else []
@@ -830,6 +863,11 @@ def _format_selector_display(value: Any) -> str:
 
 
 async def _resolve_selector_in_context(context: Any, selector_data: Any):
+    context = _normalize_context(context)
+    if context is None:
+        log.debug("Structured selector resolution skipped - no active page context")
+        return None
+
     try:
         selector_model = Selector.model_validate(selector_data)
     except PydanticValidationError as exc:
@@ -845,24 +883,28 @@ async def _resolve_selector_in_context(context: Any, selector_data: Any):
 
 
 async def _resolve_frame_reference(frame_spec: Any):
-    if PAGE is None:
+    page = _normalize_context(PAGE)
+    if page is None:
         return None
 
     if frame_spec is None:
-        return PAGE
+        return page
+
+    try:
+        frames = list(page.frames) if hasattr(page, "frames") else []
+    except Exception:
+        frames = []
 
     if isinstance(frame_spec, (int, float)) and not isinstance(frame_spec, bool):
         try:
             idx = int(frame_spec)
         except (TypeError, ValueError):
             idx = 0
-        frames = PAGE.frames if PAGE else []
         if 0 <= idx < len(frames):
             return frames[idx]
-        return PAGE
+        return page
 
     if isinstance(frame_spec, str):
-        frames = PAGE.frames if PAGE else []
         for frame in frames:
             try:
                 if frame.name == frame_spec:
@@ -874,19 +916,22 @@ async def _resolve_frame_reference(frame_spec: Any):
                     return frame
             except Exception:
                 continue
-        return PAGE
+        return page
 
     if isinstance(frame_spec, list):
         for item in frame_spec:
             frame = await _resolve_frame_reference(item)
             if frame is not None:
                 return frame
-        return PAGE
+        return page
 
     if isinstance(frame_spec, dict):
         strategy = frame_spec.get("strategy")
         value = frame_spec.get("value")
-        frames = PAGE.frames if PAGE else []
+        try:
+            frames = list(page.frames) if hasattr(page, "frames") else []
+        except Exception:
+            frames = []
 
         if strategy == "index":
             try:
@@ -895,7 +940,7 @@ async def _resolve_frame_reference(frame_spec: Any):
                 idx = 0
             if 0 <= idx < len(frames):
                 return frames[idx]
-            return PAGE
+            return page
 
         if strategy == "name":
             name_value = str(value or "")
@@ -905,7 +950,7 @@ async def _resolve_frame_reference(frame_spec: Any):
                         return frame
                 except Exception:
                     continue
-            return PAGE
+            return page
 
         if strategy == "url":
             url_value = str(value or "")
@@ -915,25 +960,25 @@ async def _resolve_frame_reference(frame_spec: Any):
                         return frame
                 except Exception:
                     continue
-            return PAGE
+            return page
 
         if strategy == "parent":
-            main = PAGE.main_frame if PAGE else None
-            return (main.parent_frame if main else None) or PAGE
+            main = page.main_frame if hasattr(page, "main_frame") else None
+            return (main.parent_frame if main else None) or page
 
         if strategy == "root":
-            return PAGE
+            return page
 
         if strategy == "element" and value is not None:
-            resolved = await _resolve_selector_in_context(PAGE, value)
+            resolved = await _resolve_selector_in_context(page, value)
             if resolved and resolved.element is not None:
                 try:
                     frame = await resolved.element.content_frame()
                     if frame:
                         return frame
                 except Exception:
-                    return PAGE
-            return PAGE
+                    return page
+            return page
 
         if strategy is None and _looks_like_selector_data(frame_spec):
             selector_payload = frame_spec.get("selector") or {
@@ -941,17 +986,17 @@ async def _resolve_frame_reference(frame_spec: Any):
                 for key in frame_spec
                 if key != "selector"
             }
-            resolved = await _resolve_selector_in_context(PAGE, selector_payload)
+            resolved = await _resolve_selector_in_context(page, selector_payload)
             if resolved and resolved.element is not None:
                 try:
                     frame = await resolved.element.content_frame()
                     if frame:
                         return frame
                 except Exception:
-                    return PAGE
-            return PAGE
+                    return page
+            return page
 
-    return PAGE
+    return page
 
 
 async def _resolve_structured_candidate(
@@ -1196,12 +1241,10 @@ async def _attempt_catalog_locator_recovery(
     result = IndexRecoveryResult()
     result.selectors = list(selectors_already_tried)
 
-    if not INDEX_MODE or PAGE is None:
+    if not INDEX_MODE:
         return result
 
-    page_for_locator = PAGE
-    if isinstance(page_for_locator, str) and _BROWSER_ADAPTER is not None:
-        page_for_locator = _BROWSER_ADAPTER.page
+    page_for_locator = _normalize_context(PAGE)
     if page_for_locator is None:
         return result
 
@@ -2652,7 +2695,10 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     action_warnings.append("WARNING:auto:wait selector condition missing selector")
                     return action_warnings
                 try:
-                    await SmartLocator(PAGE, selector).locate()
+                    actual_page = _normalize_context(PAGE)
+                    if actual_page is None:
+                        raise RuntimeError("No active page available for wait selector condition")
+                    await SmartLocator(actual_page, selector).locate()
                 except Exception as exc:
                     if is_final_retry:
                         action_warnings.append(f"WARNING:auto:wait selector failed - {str(exc)}")
@@ -2931,14 +2977,15 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
             if binding_info is not None and selectors_to_try:
                 binding_info["selectors"] = list(selectors_to_try)
 
-            if PAGE is None:
+            page_for_actions = _normalize_context(PAGE)
+            if page_for_actions is None:
                 error_msg = f"Browser not initialized - cannot execute {a} action"
                 if is_final_retry:
                     action_warnings.append(f"WARNING:auto:{error_msg}")
                     return action_warnings
                 raise Exception(error_msg)
 
-            if structured_candidates and PAGE is not None:
+            if structured_candidates and page_for_actions is not None:
                 for candidate in structured_candidates:
                     try:
                         resolved_structured, _ = await _resolve_structured_candidate(candidate)
@@ -2961,11 +3008,11 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                         try:
                             if a == "click_text" and index_value is None:
                                 if "||" in candidate or candidate.strip().startswith(("css=", "text=", "role=", "xpath=")):
-                                    loc = await SmartLocator(PAGE, candidate).locate()
+                                    loc = await SmartLocator(page_for_actions, candidate).locate()
                                 else:
-                                    loc = await SmartLocator(PAGE, f"text={candidate}").locate()
+                                    loc = await SmartLocator(page_for_actions, f"text={candidate}").locate()
                             else:
-                                loc = await SmartLocator(PAGE, candidate).locate()
+                                loc = await SmartLocator(page_for_actions, candidate).locate()
                             if loc is not None:
                                 chosen_selector = candidate
                                 break
