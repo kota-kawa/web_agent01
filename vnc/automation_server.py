@@ -45,11 +45,17 @@ from vnc.page_actions import (
     eval_js as run_eval_js,
     scroll_to_text as perform_scroll_to_text,
 )
+from vnc.dependency_check import ensure_component_dependencies
 
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("auto")
+
+# Validate that runtime dependencies match the declared requirements.  This
+# surfaces missing packages (e.g. jsonschema) as a clear error instead of
+# failing later during request handling.
+ensure_component_dependencies("vnc", logger=log)
 
 
 @app.errorhandler(500)
