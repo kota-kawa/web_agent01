@@ -21,6 +21,7 @@ from agent.browser.vnc import (
     get_elements as vnc_elements,
     get_dom_tree as vnc_dom_tree,
     get_url as vnc_url,
+    get_vnc_api_base,
 )
 from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
@@ -32,11 +33,16 @@ from agent.element_catalog import (
     get_expected_version as get_catalog_expected_version,
     is_enabled as is_catalog_enabled,
 )
+from vnc.dependency_check import ensure_component_dependencies
 
 # --------------- Flask & Logger ----------------------------------
 app = Flask(__name__)
 log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
+
+# Validate that the Flask service has access to its declared dependencies at
+# startup.  This makes missing packages surface as a clear actionable error.
+ensure_component_dependencies("web", logger=log)
 
 # Pre-initialize AsyncExecutor for immediate Playwright execution
 _async_executor_instance = None
@@ -89,7 +95,6 @@ def handle_exception(error):
     }), 200  # Return 200 instead of 500
 
 # --------------- VNC / Playwright API ----------------------------
-VNC_API = "http://vnc:7000"  # Playwright 側の API
 # Default to a blank page to prevent unintended navigation to external sites
 START_URL = os.getenv("START_URL", "about:blank")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
@@ -98,6 +103,15 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
 LOG_DIR = os.getenv("LOG_DIR", "./")
 os.makedirs(LOG_DIR, exist_ok=True)
 HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
+
+
+def _vnc_api_url(path: str) -> str:
+    """Build a URL for the automation server using the resolved base URL."""
+
+    base = get_vnc_api_base()
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
 
 
 def _format_index_value(value: Any) -> str | None:
@@ -600,7 +614,7 @@ def forward_dsl():
 def get_stop_request():
     """Get current stop request from automation server."""
     try:
-        res = requests.get(f"{VNC_API}/stop-request", timeout=10)
+        res = requests.get(_vnc_api_url("/stop-request"), timeout=10)
         if res.ok:
             return jsonify(res.json())
         else:
@@ -615,7 +629,7 @@ def post_stop_response():
     """Forward user response to automation server."""
     try:
         data = request.get_json(force=True)
-        res = requests.post(f"{VNC_API}/stop-response", json=data, timeout=10)
+        res = requests.post(_vnc_api_url("/stop-response"), json=data, timeout=10)
         if res.ok:
             return jsonify(res.json())
         else:
@@ -634,7 +648,7 @@ def vhtml():
 def get_screenshot():
     """VNCサーバーからスクリーンショットを取得してブラウザに返す"""
     try:
-        res = requests.get(f"{VNC_API}/screenshot", timeout=300)
+        res = requests.get(_vnc_api_url("/screenshot"), timeout=300)
         res.raise_for_status()
         return Response(res.text, mimetype="text/plain")
     except Exception as e:

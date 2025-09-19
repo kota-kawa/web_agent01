@@ -1,26 +1,111 @@
-import requests
 import logging
+import os
+import threading
 import time
+
+import requests
+
 from .dom import DOMElementNode, DOM_SNAPSHOT_SCRIPT
 
-VNC_API = "http://vnc:7000"
+_DEFAULT_ENDPOINTS = ("http://vnc:7000", "http://localhost:7000")
+_VNC_ENDPOINT: str | None = None
+_VNC_LOCK = threading.Lock()
+
 log = logging.getLogger(__name__)
 
 
-def _check_health(timeout=5):
-    """Check if the VNC automation server is healthy."""
+def _normalize_endpoint(value: str) -> str:
+    return value.rstrip("/")
+
+
+def _candidate_endpoints() -> list[str]:
+    candidates: list[str] = []
+    env_value = os.getenv("VNC_API")
+    if env_value:
+        candidates.append(_normalize_endpoint(env_value))
+    for default in _DEFAULT_ENDPOINTS:
+        normalized = _normalize_endpoint(default)
+        if normalized not in candidates:
+            candidates.append(normalized)
+    return candidates
+
+
+def _probe_endpoint(endpoint: str, timeout: float = 1.0) -> bool:
     try:
-        response = requests.get(f"{VNC_API}/healthz", timeout=timeout)
+        response = requests.get(f"{endpoint}/healthz", timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def get_vnc_api_base(refresh: bool = False) -> str:
+    """Return the active automation server endpoint.
+
+    The endpoint is resolved lazily.  If ``VNC_API`` is provided via the
+    environment it takes precedence; otherwise the helper probes a list of
+    sensible defaults (Docker service name first, localhost as fallback).
+    """
+
+    global _VNC_ENDPOINT
+    with _VNC_LOCK:
+        previous = _VNC_ENDPOINT
+        if refresh:
+            _VNC_ENDPOINT = None
+        if _VNC_ENDPOINT:
+            return _VNC_ENDPOINT
+
+        candidates = _candidate_endpoints()
+        for endpoint in candidates:
+            if _probe_endpoint(endpoint):
+                _VNC_ENDPOINT = endpoint
+                if previous != _VNC_ENDPOINT:
+                    log.info("Resolved automation server endpoint to %s", _VNC_ENDPOINT)
+                break
+        else:
+            fallback = candidates[0]
+            if previous != fallback:
+                log.warning(
+                    "Could not verify automation server connectivity; defaulting to %s",
+                    fallback,
+                )
+            _VNC_ENDPOINT = fallback
+
+        return _VNC_ENDPOINT
+
+
+def set_vnc_api_base(base_url: str) -> None:
+    """Explicitly override the automation server endpoint."""
+
+    normalized = _normalize_endpoint(base_url)
+    global _VNC_ENDPOINT
+    with _VNC_LOCK:
+        _VNC_ENDPOINT = normalized
+    log.info("VNC automation server endpoint overridden to %s", normalized)
+
+
+def _vnc_url(path: str) -> str:
+    base = get_vnc_api_base()
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+def _check_health(timeout: float = 5) -> bool:
+    """Check if the VNC automation server is healthy."""
+
+    base = get_vnc_api_base()
+    try:
+        response = requests.get(f"{base}/healthz", timeout=timeout)
         return response.status_code == 200
     except Exception as e:
-        log.warning("Health check failed: %s", e)
+        log.warning("Health check failed for %s: %s", base, e)
         return False
 
 
 def get_html() -> str:
     """Fetch current page HTML from the VNC automation server."""
     try:
-        res = requests.get(f"{VNC_API}/source", timeout=(5, 30))
+        res = requests.get(_vnc_url("/source"), timeout=(5, 30))
         res.raise_for_status()
         return res.text
     except Exception as e:
@@ -31,7 +116,7 @@ def get_html() -> str:
 def get_url() -> str:
     """Fetch current page URL from the VNC automation server."""
     try:
-        res = requests.get(f"{VNC_API}/url", timeout=5)
+        res = requests.get(_vnc_url("/url"), timeout=5)
         res.raise_for_status()
         data = res.json()
         return data.get("url", "")
@@ -50,33 +135,50 @@ def execute_dsl(payload, timeout=120):
     """Forward DSL JSON to the automation server with retry logic."""
     if not payload.get("actions"):
         return {"html": "", "warnings": []}
-    
+
     max_retries = 2  # Allow 1 retry attempt
     all_errors = []  # Collect ALL errors from all attempts
-    
+    base_url = get_vnc_api_base()
+
     for attempt in range(1, max_retries + 1):
         # Check server health before retry attempts
         if attempt > 1:
-            log.info("DSL retry attempt %d/%d, checking server health...", attempt, max_retries)
+            log.info(
+                "DSL retry attempt %d/%d, checking server health (endpoint=%s)...",
+                attempt,
+                max_retries,
+                base_url,
+            )
             if not _check_health():
-                health_error = f"Server health check failed on retry attempt {attempt}"
+                health_error = (
+                    f"Server health check failed on retry attempt {attempt} "
+                    f"(endpoint={base_url})"
+                )
                 log.warning(health_error)
                 all_errors.append(health_error)
                 time.sleep(2)  # Wait for potential recovery
+                base_url = get_vnc_api_base(refresh=True)
             else:
-                log.info("Server health check passed on retry attempt %d", attempt)
-        
+                base_url = get_vnc_api_base()
+
         try:
-            r = requests.post(f"{VNC_API}/execute-dsl", json=payload, timeout=(5, timeout))
+            r = requests.post(f"{base_url}/execute-dsl", json=payload, timeout=(5, timeout))
             r.raise_for_status()
             result = r.json()
-            
+
             # Success - log if this was a retry
             if attempt > 1:
-                log.info("DSL execution succeeded on retry attempt %d", attempt)
+                log.info(
+                    "DSL execution succeeded on retry attempt %d using %s",
+                    attempt,
+                    base_url,
+                )
                 # If we succeeded on retry, still include previous attempt errors as warnings
                 if all_errors:
-                    retry_warnings = [f"ERROR:auto:Retry attempt {i+1} - {error}" for i, error in enumerate(all_errors)]
+                    retry_warnings = [
+                        f"ERROR:auto:Retry attempt {i+1} - {error}"
+                        for i, error in enumerate(all_errors)
+                    ]
                     # Include all warning messages without character limits
                     retry_warnings = [_truncate_warning(warning) for warning in retry_warnings]
                     # Add retry warnings to the successful result
@@ -84,7 +186,9 @@ def execute_dsl(payload, timeout=120):
                         result["warnings"] = []
                     result["warnings"].extend(retry_warnings)
                     # Also add success message
-                    result["warnings"].append(f"INFO:auto:Execution succeeded on retry attempt {attempt} after {len(all_errors)} failed attempts")
+                    result["warnings"].append(
+                        f"INFO:auto:Execution succeeded on retry attempt {attempt} after {len(all_errors)} failed attempts"
+                    )
             
             # Handle both old error format and new warnings format
             error_info = result.get("error")
@@ -174,11 +278,12 @@ def execute_dsl(payload, timeout=120):
         except requests.Timeout:
             current_error = "Request timeout - The operation took too long to complete"
             all_errors.append(current_error)
-            log.error("execute_dsl timeout on attempt %d", attempt)
+            log.error("execute_dsl timeout on attempt %d (endpoint=%s)", attempt, base_url)
             if attempt < max_retries:
                 wait_time = attempt * 1  # 1s, 2s exponential backoff
                 log.info("Retrying after %ds due to timeout...", wait_time)
                 time.sleep(wait_time)
+                base_url = get_vnc_api_base(refresh=True)
                 continue
         except requests.HTTPError as e:
             # Log HTTP error details and capture response content for additional error information
@@ -196,13 +301,19 @@ def execute_dsl(payload, timeout=120):
             
             current_error = f"HTTP {status_code} error - {error_details}"
             all_errors.append(current_error)
-            log.error("execute_dsl HTTP error on attempt %d: %s", attempt, current_error)
-            
+            log.error(
+                "execute_dsl HTTP error on attempt %d (endpoint=%s): %s",
+                attempt,
+                base_url,
+                current_error,
+            )
+
             # Retry on server errors (5xx) but not client errors (4xx)
             if attempt < max_retries and status_code >= 500:
                 wait_time = attempt * 1  # 1s, 2s exponential backoff
                 log.info("Retrying after %ds due to server error %d...", wait_time, status_code)
                 time.sleep(wait_time)
+                base_url = get_vnc_api_base(refresh=True)
                 continue
             elif status_code >= 500:
                 # Final attempt failed with server error
@@ -226,11 +337,17 @@ def execute_dsl(payload, timeout=120):
                 current_error = f"Connection error - Could not connect to automation server: {error_detail}"
             
             all_errors.append(current_error)
-            log.error("execute_dsl connection error on attempt %d: %s", attempt, current_error)
+            log.error(
+                "execute_dsl connection error on attempt %d (endpoint=%s): %s",
+                attempt,
+                base_url,
+                current_error,
+            )
             if attempt < max_retries:
                 wait_time = attempt * 2  # 2s, 4s for connection errors
                 log.info("Retrying after %ds due to connection error...", wait_time)
                 time.sleep(wait_time)
+                base_url = get_vnc_api_base(refresh=True)
                 continue
         except requests.RequestException as e:
             # Capture detailed information about other request-related errors
@@ -238,11 +355,17 @@ def execute_dsl(payload, timeout=120):
             error_type = type(e).__name__
             current_error = f"Request error ({error_type}) - {error_detail}"
             all_errors.append(current_error)
-            log.error("execute_dsl request error on attempt %d: %s", attempt, current_error)
+            log.error(
+                "execute_dsl request error on attempt %d (endpoint=%s): %s",
+                attempt,
+                base_url,
+                current_error,
+            )
             if attempt < max_retries:
                 wait_time = attempt * 1
                 log.info("Retrying after %ds due to request error...", wait_time)
                 time.sleep(wait_time)
+                base_url = get_vnc_api_base(refresh=True)
                 continue
         except Exception as e:
             # Capture comprehensive information about unexpected errors
@@ -252,29 +375,42 @@ def execute_dsl(payload, timeout=120):
             stack_trace = traceback.format_exc()
             current_error = f"Unexpected error ({error_type}) - {error_detail} | Stack: {stack_trace}"
             all_errors.append(current_error)
-            log.error("execute_dsl unexpected error on attempt %d: %s", attempt, current_error)
+            log.error(
+                "execute_dsl unexpected error on attempt %d (endpoint=%s): %s",
+                attempt,
+                base_url,
+                current_error,
+            )
             break  # Don't retry unexpected errors
-    
+
     # All retries exhausted or non-retryable error - return ALL accumulated errors
-    log.error("execute_dsl failed after %d attempts. All errors: %s", max_retries, all_errors)
-    
+    log.error(
+        "execute_dsl failed after %d attempts against %s. All errors: %s",
+        max_retries,
+        base_url,
+        all_errors,
+    )
+
     # Create detailed warnings from all collected errors
     warning_messages = []
     for i, error in enumerate(all_errors, 1):
         warning_msg = f"ERROR:auto:Attempt {i}/{max_retries} - {error}"
         warning_messages.append(_truncate_warning(warning_msg))
-    
+
     # Add summary warning
-    summary_warning = f"ERROR:auto:All {max_retries} execution attempts failed. Total errors: {len(all_errors)}"
+    summary_warning = (
+        "ERROR:auto:All {retries} execution attempts failed (endpoint={endpoint}). "
+        "Total errors: {error_count}"
+    ).format(retries=max_retries, endpoint=base_url, error_count=len(all_errors))
     warning_messages.append(_truncate_warning(summary_warning))
-    
+
     return {"html": "", "warnings": warning_messages}
 
 
 def get_elements() -> list:
     """Get clickable/input elements with index info."""
     try:
-        res = requests.get(f"{VNC_API}/elements", timeout=(5, 30))
+        res = requests.get(_vnc_url("/elements"), timeout=(5, 30))
         res.raise_for_status()
         return res.json()
     except Exception as e:
@@ -286,7 +422,7 @@ def get_element_catalog(refresh: bool = False) -> dict:
     """Retrieve the element catalog from the automation server."""
     params = {"refresh": "true"} if refresh else None
     try:
-        res = requests.get(f"{VNC_API}/catalog", params=params, timeout=(5, 30))
+        res = requests.get(_vnc_url("/catalog"), params=params, timeout=(5, 30))
         res.raise_for_status()
         return res.json()
     except Exception as e:
@@ -297,7 +433,7 @@ def get_element_catalog(refresh: bool = False) -> dict:
 def get_extracted() -> list:
     """Retrieve texts captured via extract_text action."""
     try:
-        res = requests.get(f"{VNC_API}/extracted", timeout=(5, 30))
+        res = requests.get(_vnc_url("/extracted"), timeout=(5, 30))
         res.raise_for_status()
         return res.json()
     except Exception as e:
@@ -308,7 +444,7 @@ def get_extracted() -> list:
 def get_eval_results() -> list:
     """Retrieve results of the most recent eval_js calls."""
     try:
-        res = requests.get(f"{VNC_API}/eval_results", timeout=(5, 30))
+        res = requests.get(_vnc_url("/eval_results"), timeout=(5, 30))
         res.raise_for_status()
         return res.json()
     except Exception as e:
