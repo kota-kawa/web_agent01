@@ -29,9 +29,13 @@ from agent.controller.async_executor import get_async_executor
 from agent.utils.history import load_hist, save_hist, append_history_entry
 from agent.utils.html import strip_html
 from agent.element_catalog import (
+    actions_use_catalog_indices,
+    consume_pending_prompt_messages,
     get_catalog_for_prompt,
     get_expected_version as get_catalog_expected_version,
     is_enabled as is_catalog_enabled,
+    record_prompt_version,
+    should_refresh_for_prompt,
 )
 from vnc.dependency_check import ensure_component_dependencies
 
@@ -414,16 +418,25 @@ def execute():
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
+    pending_catalog_messages = consume_pending_prompt_messages() if is_catalog_enabled() else []
+    if pending_catalog_messages:
+        combined = "\n".join(pending_catalog_messages)
+        log.debug("Catalog advisory added to prompt: %s", combined)
+        err_msg = "\n".join(filter(None, [err_msg, combined]))
 
     catalog_prompt_text = ""
     catalog_data: Dict[str, Any] = {"abbreviated": [], "metadata": {}, "catalog_version": None}
     expected_catalog_version = None
     if is_catalog_enabled():
         try:
-            catalog_info = get_catalog_for_prompt(refresh=False)
+            refresh_catalog = should_refresh_for_prompt()
+            if refresh_catalog:
+                log.debug("Forcing element catalog refresh before prompting")
+            catalog_info = get_catalog_for_prompt(refresh=refresh_catalog)
             catalog_prompt_text = catalog_info.get("prompt_text", "")
             catalog_data = catalog_info.get("catalog", {}) or {}
             expected_catalog_version = catalog_data.get("catalog_version") or get_catalog_expected_version()
+            record_prompt_version(expected_catalog_version)
         except Exception as catalog_error:
             log.error("Failed to fetch element catalog: %s", catalog_error)
 
@@ -446,7 +459,10 @@ def execute():
     
     # Extract and normalize actions from LLM response
     actions = normalize_actions(res)
-    
+    uses_catalog_indices = bool(actions) and is_catalog_enabled() and actions_use_catalog_indices(actions)
+    if uses_catalog_indices:
+        log.debug("Planned actions rely on catalog indices")
+
     # If there are actions, start async Playwright execution immediately (optimized)
     task_id = None
     if actions:
