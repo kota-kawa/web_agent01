@@ -66,11 +66,22 @@ def build_prompt(
 
     past_conv = "\n".join(_hist_item(h) for h in hist)
 
-    add_img = (
-        "現在の状況を把握するために、スクリーンショット画像も与えます。"
-        if screenshot
-        else ""
-    )
+    if screenshot:
+        browser_vision_block = (
+            "<browser_vision>\n"
+            "スクリーンショット(別入力)には、インタラクティブ要素ごとに赤い枠線と `index=N` のラベルが描かれています。"
+            "赤枠は要素カタログの `bbox` を投影したものです。\n"
+            "対応手順:\n"
+            "  1. 画像上で目的の位置と `index=N` を確認する。\n"
+            "  2. 下記カタログで同じ `index=N` を探し、`primary_label` や `robust_selectors` から要素の詳細と安定指定を把握する。\n"
+            "  3. DSL の `target` には原則 `index=N` を使用し、必要に応じてカタログのセレクタを補助に使う。\n"
+            "  4. 画像に写っていない領域の要素が必要な場合は `scroll_to_text` や `refresh_catalog` を実行してカタログを更新し、再度番号を確認する。\n"
+            "</browser_vision>"
+        )
+    else:
+        browser_vision_block = (
+            "<browser_vision>このターンではスクリーンショットは提供されません。カタログ情報のみで要素を特定してください。</browser_vision>"
+        )
     elem_lines = ""
     error_line = ""
     if (
@@ -277,7 +288,7 @@ def build_prompt(
         - これまでの履歴 (`## これまでの会話履歴` を参照) を踏まえ、今どの段階にいるのか？
 
         **2. 状況分析 (Observation & Analysis):**
-        - **画面情報:** `現在のページのDOMツリー` と `スクリーンショット` から、ページの構造、表示されている要素、インタラクティブな部品（ボタン、リンク、フォームなど）を完全に把握します。
+        - **画面情報:** `現在のページのDOMツリー` と **注釈付きスクリーンショット（<browser_vision> の指示を参照）** から、ページの構造、表示されている要素、インタラクティブな部品（ボタン、リンク、フォームなど）を完全に把握します。
         - **特別な状況の検出**: 以下の状況では `stop` アクションの使用を検討してください:
             - **CAPTCHA検出**: ページにreCAPTCHA、画像認証、文字認証などが表示されている
             - **重要な確認**: 価格、日付、重要な個人情報の入力前の最終確認
@@ -732,8 +743,8 @@ def build_prompt(
     ## ユーザー命令
     {cmd}
     --------------------------------
-    ## 現在のブラウザの状況の画像
-    {add_img}
+    ## ブラウザビジョン指示
+    {browser_vision_block}
     ## 現在のエラー状況
     {error_line}
 
@@ -743,7 +754,7 @@ def build_prompt(
         .replace("{dom_text}", dom_text)
         .replace("{past_conv}", past_conv)
         .replace("{cmd}", cmd)
-        .replace("{add_img}", add_img)
+        .replace("{browser_vision_block}", browser_vision_block)
         .replace("{error_line}", error_line)
         .replace("{catalog_block}", catalog_block)
         .replace("{index_usage_rules}", index_usage_rules)
