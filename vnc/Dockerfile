@@ -26,7 +26,7 @@ WORKDIR /opt
 COPY . /opt/vnc
 
 # 依存関係が正しくインストールされていることをビルド時に検証
-ENV PYTHONPATH=/opt
+ENV PYTHONPATH=/opt/vnc:/opt
 RUN python -m vnc.dependency_check --component vnc
 
 # ② 既存パス互換のためエントリポイントにシンボリックリンクを張る
