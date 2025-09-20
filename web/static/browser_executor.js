@@ -31,7 +31,14 @@ async function captureScreenshot() {
         console.error("screenshot fetch failed:", response.status, await response.text());
         return null;
     }
-    return await response.text(); // base64エンコードされたデータURIを返す
+    const payload = (await response.text()).trim();
+    if (!payload) {
+        return null;
+    }
+    if (payload.startsWith("data:image")) {
+        return payload;
+    }
+    return `data:image/png;base64,${payload}`;
 
   } catch (e) {
     console.error("screenshot error:", e);

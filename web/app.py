@@ -387,7 +387,12 @@ def execute():
         return jsonify(error="command empty"), 400
 
     page = data.get("pageSource") or vnc_html()
-    shot = data.get("screenshot")
+    raw_screenshot = data.get("screenshot")
+    screenshot_payload = None
+    if isinstance(raw_screenshot, str):
+        trimmed = raw_screenshot.strip()
+        if trimmed:
+            screenshot_payload = trimmed if trimmed.startswith("data:image") else f"data:image/png;base64,{trimmed}"
     model = data.get("model", "gemini")
     prev_error = data.get("error")
     hist = load_hist()
@@ -444,15 +449,15 @@ def execute():
         cmd,
         page,
         hist,
-        bool(shot),
+        bool(screenshot_payload),
         elements,
         err_msg,
         element_catalog_text=catalog_prompt_text,
         catalog_metadata=catalog_data,
     )
-    
+
     # Call LLM first
-    res = call_llm(prompt, model, shot)
+    res = call_llm(prompt, model, screenshot_payload)
 
     # Save conversation history immediately with current URL
     append_history_entry(cmd, res, current_url)

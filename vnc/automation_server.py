@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import inspect
+import io
 import json
 import logging
 import os
@@ -20,6 +21,13 @@ import httpx
 from flask import Flask, Response, jsonify, request
 from jsonschema import Draft7Validator, ValidationError
 from playwright.async_api import Error as PwError, Locator, async_playwright
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:  # pragma: no cover - dependency validated at runtime
+    Image = None  # type: ignore[assignment]
+    ImageDraw = None  # type: ignore[assignment]
+    ImageFont = None  # type: ignore[assignment]
 
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 from vnc.executor import RunExecutor
@@ -533,6 +541,114 @@ def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Di
         "full": full,
         "index_map": index_map,
     }
+
+
+def _annotate_screenshot_with_catalog(img_bytes: bytes, catalog: Dict[str, Any]) -> bytes:
+    """Draw catalog bounding boxes and indices onto a screenshot."""
+
+    if not INDEX_MODE:
+        return img_bytes
+
+    if Image is None or ImageDraw is None or ImageFont is None:
+        return img_bytes
+
+    if not isinstance(catalog, dict):
+        return img_bytes
+
+    entries = catalog.get("full") or []
+    if not entries:
+        return img_bytes
+
+    try:
+        with Image.open(io.BytesIO(img_bytes)) as source:
+            image = source.convert("RGBA")
+    except Exception as exc:  # pragma: no cover - defensive
+        log.error("Failed to load screenshot for annotation: %s", exc)
+        return img_bytes
+
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+    img_width, img_height = image.size
+
+    outline_color = (255, 99, 71, 255)
+    label_fill = (255, 255, 255, 230)
+    text_color = (0, 0, 0, 255)
+    padding = 2
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        idx = entry.get("index")
+        bbox = entry.get("bbox") or {}
+        if idx is None or not isinstance(bbox, dict):
+            continue
+
+        try:
+            x = float(bbox.get("x", 0.0))
+            y = float(bbox.get("y", 0.0))
+            width = float(bbox.get("width", 0.0))
+            height = float(bbox.get("height", 0.0))
+        except (TypeError, ValueError):
+            continue
+
+        if width <= 1 or height <= 1:
+            continue
+
+        x2 = x + width
+        y2 = y + height
+        if x >= img_width or y >= img_height or x2 <= 0 or y2 <= 0:
+            continue
+
+        x1_int = max(0, min(int(round(x)), img_width - 1))
+        y1_int = max(0, min(int(round(y)), img_height - 1))
+        x2_int = max(0, min(int(round(x2)), img_width - 1))
+        y2_int = max(0, min(int(round(y2)), img_height - 1))
+        if x2_int <= x1_int or y2_int <= y1_int:
+            continue
+
+        draw.rectangle([(x1_int, y1_int), (x2_int, y2_int)], outline=outline_color, width=2)
+
+        label = str(idx)
+        try:
+            text_bbox = draw.textbbox((0, 0), label, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+        except AttributeError:  # pragma: no cover - Pillow < 8 fallback
+            text_width, text_height = draw.textsize(label, font=font)
+
+        label_width = text_width + padding * 2
+        label_height = text_height + padding * 2
+
+        label_x = x1_int
+        label_y = y1_int - label_height
+        if label_y < 0:
+            label_y = y1_int + 1
+        if label_y + label_height > img_height:
+            label_y = max(img_height - label_height, 0)
+        if label_x + label_width > img_width:
+            label_x = max(img_width - label_width, 0)
+
+        draw.rectangle(
+            [
+                (label_x, label_y),
+                (label_x + label_width, label_y + label_height),
+            ],
+            fill=label_fill,
+        )
+        draw.text(
+            (label_x + padding, label_y + padding),
+            label,
+            fill=text_color,
+            font=font,
+        )
+
+    try:
+        output = io.BytesIO()
+        image.convert("RGB").save(output, format="PNG")
+        return output.getvalue()
+    except Exception as exc:  # pragma: no cover - defensive
+        log.error("Failed to serialize annotated screenshot: %s", exc)
+        return img_bytes
 
 
 async def _compute_dom_signature() -> Dict[str, Any]:
@@ -2197,7 +2313,17 @@ def screenshot():
         if not PAGE or not _run(_check_browser_health()):
             _run(_init_browser())
         img = _run(PAGE.screenshot(type="png"))
-        return Response(base64.b64encode(img), mimetype="text/plain")
+        catalog: Dict[str, Any] = {}
+        if INDEX_MODE:
+            try:
+                catalog = _run(_generate_element_catalog(force=False)) or {}
+            except Exception as catalog_exc:  # pragma: no cover - defensive
+                log.warning("Failed to refresh catalog for screenshot: %s", catalog_exc)
+                catalog = _CURRENT_CATALOG or {}
+
+        annotated = _annotate_screenshot_with_catalog(img, catalog or {})
+        encoded = base64.b64encode(annotated).decode("ascii")
+        return Response(encoded, mimetype="text/plain")
     except Exception as e:
         log.error("screenshot error: %s", e)
         return Response("", mimetype="text/plain")
