@@ -22,6 +22,8 @@ from .models import (
     ScreenshotAction,
     SelectAction,
     SwitchTabAction,
+    SearchAction,
+    SubmitFormAction,
     ClickBlankAreaAction,
     ClosePopupAction,
     StopAction,
@@ -126,9 +128,11 @@ registry.register(NavigateAction, version=1)
 registry.register(ClickAction, version=1)
 registry.register(HoverAction, version=1)
 registry.register(TypeAction, version=1)
+registry.register(SearchAction, version=1)
 registry.register(SelectAction, version=1)
 registry.register(PressKeyAction, version=1)
 registry.register(WaitAction, version=1)
+registry.register(SubmitFormAction, version=1)
 registry.register(ScrollAction, version=1)
 registry.register(ScrollToTextAction, version=1)
 registry.register(SwitchTabAction, version=1)
