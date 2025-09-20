@@ -5,7 +5,7 @@ import time
 
 import requests
 
-from .dom import DOMElementNode, DOM_SNAPSHOT_SCRIPT
+from .dom import DOMElementNode
 
 _DEFAULT_ENDPOINTS = ("http://vnc:7000", "http://localhost:7000")
 _VNC_ENDPOINT: str | None = None
@@ -496,14 +496,18 @@ def eval_js(script: str, wait_timeout: float = 5.0, poll_interval: float = 0.5):
     raise TimeoutError("Timed out waiting for eval_js result")
 
 
-def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
-    """Retrieve the DOM tree using browser-side evaluation.
+def get_dom_tree() -> tuple[DOMElementNode | None, dict | None, str | None]:
+    """Retrieve the DOM tree and associated snapshot from the automation server."""
 
-    Returns a tuple of (DOM tree or None, error message or None).
-    """
     try:
-        dom_dict = eval_js(DOM_SNAPSHOT_SCRIPT)
-        return DOMElementNode.from_json(dom_dict), None
+        res = requests.get(_vnc_url("/dom-snapshot"), timeout=(5, 30))
+        res.raise_for_status()
+        data = res.json()
+        snapshot = data.get("snapshot")
+        if not isinstance(snapshot, dict):
+            return None, None, "Snapshot not available"
+        dom = DOMElementNode.from_json(snapshot)
+        return dom, data, None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
-        return None, str(e)
+        return None, None, str(e)

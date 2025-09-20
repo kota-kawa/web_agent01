@@ -28,6 +28,7 @@ def _normalize_catalog(raw: Dict[str, Any] | None) -> Dict[str, Any]:
         "catalog_version": catalog_version,
         "index_mode_enabled": raw.get("index_mode_enabled", INDEX_MODE_ENABLED),
         "error": raw.get("error"),
+        "snapshot": raw.get("snapshot"),
     }
 
 
@@ -220,6 +221,7 @@ def format_catalog_for_prompt(catalog: Dict[str, Any]) -> str:
         section = item.get("section_hint") or ""
         state = item.get("state_hint") or ""
         href = item.get("href_short") or ""
+        stable_id = item.get("stable_id") or ""
 
         label_parts = []
         if primary:
@@ -235,6 +237,8 @@ def format_catalog_for_prompt(catalog: Dict[str, Any]) -> str:
             hint_parts.append(state)
         if href:
             hint_parts.append(href)
+        if stable_id:
+            hint_parts.append(f"sid:{stable_id[:8]}")
         hints = f" ({'; '.join(hint_parts)})" if hint_parts else ""
 
         lines.append(f"[{index}] {role}: {label_text}{hints}")
