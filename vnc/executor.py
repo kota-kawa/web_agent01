@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import random
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,8 @@ from .safe_interactions import prepare_locator, safe_click, safe_fill, safe_hove
 from .selector_resolver import SelectorResolver, StableNodeStore
 from .structured_logging import LogPaths, StructuredLogger, prepare_log_paths
 from .watchdogs import PageWatchdog
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -154,6 +157,50 @@ class ActionPerformer:
                 await self._resolve_selector(action.submit_selector)
             if action.wait_for and isinstance(action.wait_for, WaitForSelector):
                 await self._resolve_selector(action.wait_for.selector)
+
+    async def _clear_and_type_carefully(self, locator: Locator, text: str) -> None:
+        """Clear input field and type text carefully to avoid autocomplete interference."""
+        timeout = self.context.config.action_timeout_ms
+        
+        # Prepare the locator for interaction
+        interactable = await prepare_locator(self.context.page, locator, timeout)
+        
+        # Clear the field thoroughly
+        await interactable.click(timeout=timeout)
+        await interactable.fill("", timeout=timeout)
+        
+        # Wait a moment for any autocomplete suggestions to appear and settle
+        await asyncio.sleep(0.1)
+        
+        # Select all and delete to ensure complete clearing
+        await interactable.press("Control+a")
+        await interactable.press("Delete")
+        
+        # Wait another moment for autocomplete to settle
+        await asyncio.sleep(0.1)
+        
+        # Type the text character by character with delays to avoid autocomplete interference
+        for char in text:
+            await interactable.type(char, delay=50)
+            # Small delay between characters to let autocomplete settle
+            await asyncio.sleep(0.02)
+        
+        # Wait for final autocomplete to settle
+        await asyncio.sleep(0.1)
+        
+        # Verify the correct text was entered
+        current_val = await interactable.input_value()
+        if current_val != text:
+            # If text doesn't match, try one more time with a different approach
+            await interactable.click(timeout=timeout)
+            await interactable.press("Control+a")
+            await interactable.type(text, delay=100)
+            
+            # Final verification
+            final_val = await interactable.input_value()
+            if final_val != text:
+                # Log a warning but don't fail completely
+                log.warning("Text verification failed: expected '%s', got '%s'", text, final_val)
 
     async def execute(self, action: ActionBase) -> ActionOutcome:
         timeout = self.context.config.action_timeout_ms
@@ -260,13 +307,19 @@ class ActionPerformer:
         resolved = await self._resolve(action)
         if resolved.locator is None:
             raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
-        await safe_fill(
-            self.context.page,
-            resolved.locator,
-            action.text,
-            timeout=self.context.config.action_timeout_ms,
-            original_target=str(action.selector.as_legacy()),
-        )
+        
+        # Handle the clear flag to prevent autocomplete interference
+        if action.clear:
+            await self._clear_and_type_carefully(resolved.locator, action.text)
+        else:
+            await safe_fill(
+                self.context.page,
+                resolved.locator,
+                action.text,
+                timeout=self.context.config.action_timeout_ms,
+                original_target=str(action.selector.as_legacy()),
+            )
+        
         if action.press_enter:
             await safe_press(self.context.page, resolved.locator, "Enter", timeout=self.context.config.action_timeout_ms)
         details = {"text": action.text, "stable_id": resolved.stable_id}
