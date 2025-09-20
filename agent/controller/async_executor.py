@@ -43,7 +43,8 @@ class ExecutionTask:
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
-    
+    history_entry_id: Optional[int] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -54,6 +55,7 @@ class ExecutionTask:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
+            "history_entry_id": self.history_entry_id,
             "duration": (self.completed_at - self.started_at) if self.started_at and self.completed_at else None
         }
 
@@ -66,10 +68,10 @@ class AsyncExecutor:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self.cleanup_interval = 300  # Clean up completed tasks after 5 minutes
         
-    def create_task(self) -> str:
+    def create_task(self, history_entry_id: Optional[int] = None) -> str:
         """Create a new task and return its ID (optimized for speed)."""
         global _task_id_pool
-        
+
         # Use pre-generated task ID for immediate creation
         if _task_id_pool:
             task_id = _task_id_pool.pop()
@@ -77,9 +79,9 @@ class AsyncExecutor:
             # Fallback to generating new ID if pool is empty
             task_id = str(uuid.uuid4())
             log.warning("Task ID pool exhausted, generating new ID")
-        
+
         # Create task with minimal overhead
-        self.tasks[task_id] = ExecutionTask(task_id=task_id)
+        self.tasks[task_id] = ExecutionTask(task_id=task_id, history_entry_id=history_entry_id)
         log.debug("Created task %s", task_id)
         
         # Replenish pool asynchronously to maintain performance
@@ -164,11 +166,28 @@ class AsyncExecutor:
                     
                     current_url = get_url()
                     if current_url:  # Only update if we got a valid URL
-                        hist = load_hist()
-                        if hist:  # Only update if history exists
-                            hist[-1]["url"] = current_url
-                            save_hist(hist)
-                            log.debug("Updated conversation history URL to: %s", current_url)
+                        history_entry_id = task.history_entry_id
+                        if history_entry_id is None:
+                            log.debug(
+                                "No history entry id associated with task %s; skipping URL update",
+                                task_id,
+                            )
+                        else:
+                            hist = load_hist()
+                            if 0 <= history_entry_id < len(hist):
+                                hist[history_entry_id]["url"] = current_url
+                                save_hist(hist)
+                                log.debug(
+                                    "Updated conversation history URL for entry %s to: %s",
+                                    history_entry_id,
+                                    current_url,
+                                )
+                            else:
+                                log.warning(
+                                    "History entry %s not found when updating URL for task %s",
+                                    history_entry_id,
+                                    task_id,
+                                )
                     else:
                         log.debug("No URL available to update conversation history")
                 except Exception as url_error:
