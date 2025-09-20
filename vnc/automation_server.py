@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - dependency validated at runtime
     ImageFont = None  # type: ignore[assignment]
 
 
-from automation.dsl import Selector
+from automation.dsl import RunRequest, Selector, registry as typed_registry
 from vnc.selector_resolver import SelectorResolver, StableNodeStore
 
 from vnc.executor import RunExecutor
@@ -2312,12 +2312,29 @@ async def _stabilize_page():
 
 
 async def _apply(
-    act: Dict, is_final_retry: bool = False, *, store: Optional[StableNodeStore] = None
+    act: Dict,
+    is_final_retry: bool = False,
+    *,
+    store: Optional[StableNodeStore] = None,
+    plan_state: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Execute a single action. Raises exceptions for retryable errors unless is_final_retry=True."""
     global PAGE
     action_warnings = []
     store = store or StableNodeStore()
+    plan_state_provided = plan_state is not None
+    plan_state_data: Dict[str, Any] = plan_state if plan_state is not None else {}
+
+    def _mark_dom_dirty() -> None:
+        if plan_state_provided:
+            plan_state_data["dom_dirty"] = True
+
+    def _clear_dom_dirty() -> None:
+        if plan_state_provided:
+            plan_state_data["dom_dirty"] = False
+
+    def _is_dom_dirty() -> bool:
+        return bool(plan_state_provided and plan_state_data.get("dom_dirty"))
 
     a = act["action"]
     raw_target = act.get("target")
@@ -2384,6 +2401,7 @@ async def _apply(
                 return action_warnings
             try:
                 catalog = await _generate_element_catalog(force=True)
+                _clear_dom_dirty()
                 version = (catalog or {}).get("catalog_version") or (_CURRENT_CATALOG_SIGNATURE or {}).get("catalog_version")
                 action_warnings.append(
                     f"INFO:auto:Element catalog refreshed (version={version})"
@@ -2400,13 +2418,13 @@ async def _apply(
             if not _validate_url(tgt):
                 action_warnings.append(f"WARNING:auto:Skipping navigate - Invalid URL: {tgt}")
                 return action_warnings
-                
+
             # Security check for domain allowlist/blocklist
             domain_allowed, domain_msg = _is_domain_allowed(tgt)
             if not domain_allowed:
                 action_warnings.append(f"ERROR:auto:Navigation blocked - {domain_msg}")
                 return action_warnings
-                
+
             timeout = NAVIGATION_TIMEOUT if ms == 0 else ms
             try:
                 await PAGE.goto(tgt, wait_until="load", timeout=timeout)
@@ -2426,20 +2444,24 @@ async def _apply(
                     else:
                         # External error, don't retry
                         action_warnings.append(f"WARNING:auto:{friendly_msg}")
+            else:
+                _mark_dom_dirty()
             return action_warnings
-            
+
         if a == "go_back":
             await PAGE.go_back(wait_until="load", timeout=NAVIGATION_TIMEOUT)
             await _stabilize_page()
             wait_warnings = await _wait_for_page_ready()
             action_warnings.extend(wait_warnings)
+            _mark_dom_dirty()
             return action_warnings
-            
+
         if a == "go_forward":
             await PAGE.go_forward(wait_until="load", timeout=NAVIGATION_TIMEOUT)
             await _stabilize_page()
             wait_warnings = await _wait_for_page_ready()
             action_warnings.extend(wait_warnings)
+            _mark_dom_dirty()
             return action_warnings
             
         if a == "wait":
@@ -2565,6 +2587,7 @@ async def _apply(
                 try:
                     result = await run_eval_js(PAGE, script)
                     EVAL_RESULTS.append(result)
+                    _mark_dom_dirty()
                 except Exception as e:
                     action_warnings.append(f"WARNING:auto:eval_js failed - {str(e)}")
             return action_warnings
@@ -2577,6 +2600,8 @@ async def _apply(
                     action_warnings.append("INFO:auto:Used fallback coordinates for blank area click")
                 if not result.get("success"):
                     action_warnings.append("WARNING:auto:click_blank_area did not report success")
+                else:
+                    _mark_dom_dirty()
             except Exception as e:
                 action_warnings.append(f"WARNING:auto:click_blank_area failed - {str(e)}")
             return action_warnings
@@ -2593,6 +2618,8 @@ async def _apply(
                     action_warnings.append("WARNING:auto:Popup detected but could not find safe click area")
                 else:
                     action_warnings.append("INFO:auto:No popups detected to close")
+                if result.get("clicked"):
+                    _mark_dom_dirty()
             except Exception as e:
                 action_warnings.append(f"WARNING:auto:close_popup failed - {str(e)}")
             return action_warnings
@@ -2606,9 +2633,16 @@ async def _apply(
             selector_candidates: List[Tuple[Selector, str]] = []
             if index_value is not None:
                 auto_refresh_message: Optional[str] = None
-                if INDEX_MODE and (not _CURRENT_CATALOG or "index_map" not in _CURRENT_CATALOG):
+                needs_catalog_refresh = INDEX_MODE and (
+                    not _CURRENT_CATALOG or "index_map" not in _CURRENT_CATALOG
+                )
+                refresh_due_to_dom = _is_dom_dirty()
+
+                if refresh_due_to_dom or needs_catalog_refresh:
                     try:
                         catalog = await _generate_element_catalog(force=True)
+                        if refresh_due_to_dom:
+                            _clear_dom_dirty()
                         if catalog and catalog.get("index_map"):
                             version = (catalog or {}).get("catalog_version") or (
                                 _CURRENT_CATALOG_SIGNATURE or {}
@@ -2626,11 +2660,15 @@ async def _apply(
                                 {"index": index_value},
                             )
                     except ExecutionError as exc:
+                        if refresh_due_to_dom:
+                            _clear_dom_dirty()
                         if is_final_retry:
                             action_warnings.append(f"WARNING:auto:{exc}")
                             return action_warnings
                         raise
                     except Exception as exc:
+                        if refresh_due_to_dom:
+                            _clear_dom_dirty()
                         log.error("Automatic catalog refresh failed: %s", exc)
                         if is_final_retry:
                             action_warnings.append(
@@ -2725,6 +2763,7 @@ async def _apply(
                 display_target = chosen_selector_display or tgt
                 if a in ("click", "click_text"):
                     await _safe_click(loc, timeout=action_timeout)
+                    _mark_dom_dirty()
                 elif a == "type":
                     await _safe_fill(
                         loc,
@@ -2732,14 +2771,17 @@ async def _apply(
                         timeout=action_timeout,
                         original_target=display_target,
                     )
+                    _mark_dom_dirty()
                 elif a == "hover":
                     await _safe_hover(loc, timeout=action_timeout)
                 elif a == "select_option":
                     await _safe_select(loc, val, timeout=action_timeout)
+                    _mark_dom_dirty()
                 elif a == "press_key":
                     key = act.get("key", "")
                     if key:
                         await _safe_press(loc, key, timeout=action_timeout)
+                        _mark_dom_dirty()
                     else:
                         action_warnings.append("WARNING:auto:No key specified for press_key action")
                 elif a == "extract_text":
@@ -2825,6 +2867,7 @@ async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "") 
 async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
     all_warnings = []
     store = StableNodeStore()
+    plan_state: Dict[str, Any] = {"dom_dirty": False}
 
     for i, act in enumerate(actions):
         # Enhanced DOM stabilization before each action
@@ -2836,7 +2879,12 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
         for attempt in range(1, retries + 1):
             try:
                 is_final_retry = (attempt == retries)
-                action_warnings = await _apply(act, is_final_retry, store=store)
+                action_warnings = await _apply(
+                    act,
+                    is_final_retry,
+                    store=store,
+                    plan_state=plan_state,
+                )
                 all_warnings.extend(action_warnings)
                 action_executed = True
 
@@ -2854,7 +2902,12 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                 if attempt == retries:
                     # Final retry failure - try once more with is_final_retry=True to get warnings
                     try:
-                        action_warnings = await _apply(act, is_final_retry=True, store=store)
+                        action_warnings = await _apply(
+                            act,
+                            is_final_retry=True,
+                            store=store,
+                            plan_state=plan_state,
+                        )
                         all_warnings.extend(action_warnings)
                     except Exception as final_e:
                         # If even final retry with warnings fails, add error message
