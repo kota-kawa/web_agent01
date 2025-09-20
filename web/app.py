@@ -1160,8 +1160,6 @@ def execute():
             )
             
             if success:
-                # Start parallel data fetching immediately (no delay)
-                executor.submit_parallel_data_fetch(task_id, {"updated_html": vnc_html})
                 log.info("Started immediate async execution for task %s", task_id)
             else:
                 log.error("Failed to start async execution")
