@@ -232,8 +232,15 @@ class SelectorResolver:
         locator = self.page.get_by_label(selector.aria_label, exact=False)
         return await self._collect_from_locator(locator, selector, "aria_label", ref_metrics=ref_metrics)
 
-    async def _collect_index(self, selector: Selector) -> List[ResolutionAttempt]:
+    async def _collect_index(
+        self,
+        selector: Selector,
+        *,
+        ref_metrics: Optional[Dict[str, Any]] = None,
+    ) -> List[ResolutionAttempt]:
         # Index acts as a filter on previous results; handled in scoring.
+        # The ref_metrics argument is accepted for interface parity with other
+        # collectors but is not used.
         return []
 
     async def _collect_generic(
