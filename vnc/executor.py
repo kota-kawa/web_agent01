@@ -590,7 +590,16 @@ class RunExecutor:
 
     def _parse_payload(self, payload: Dict[str, Any]) -> RunRequest:
         if "plan" in payload:
-            return RunRequest.model_validate(payload)
+            plan_value = payload.get("plan")
+            sanitized: Dict[str, Any] = {
+                "run_id": payload.get("run_id") or f"run-{int(time.time())}",
+                "plan": plan_value,
+            }
+            if "config" in payload:
+                sanitized["config"] = payload["config"]
+            if "metadata" in payload:
+                sanitized["metadata"] = payload["metadata"]
+            return RunRequest.model_validate(sanitized)
         actions = payload.get("actions", [])
         plan = []
         for action in actions:
