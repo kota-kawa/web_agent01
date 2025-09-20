@@ -21,7 +21,7 @@ from typing import Optional
 
 from playwright.async_api import Locator, Page
 
-LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "2000"))  # ms(8000)
+LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "8000"))  # ms default wait
 
 class SmartLocator:
     _ROLE = re.compile(r"^role=(\w+)\[name=['\"](.+?)['\"]]$", re.I)

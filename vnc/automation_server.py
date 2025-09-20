@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 
@@ -31,9 +31,10 @@ except ImportError:  # pragma: no cover - dependency validated at runtime
     ImageDraw = None  # type: ignore[assignment]
     ImageFont = None  # type: ignore[assignment]
 
-from automation.dsl import RunRequest, registry as typed_registry
 
-from vnc.locator_utils import SmartLocator  # 同ディレクトリ
+from automation.dsl import Selector
+from vnc.selector_resolver import SelectorResolver, StableNodeStore
+
 from vnc.executor import RunExecutor
 from vnc.config import load_config
 from vnc.safe_interactions import (
@@ -100,6 +101,8 @@ def handle_exception(error):
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10000"))  # ms  個別アクション猶予
 NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "30000"))  # ms  ナビゲーション専用
 WAIT_FOR_SELECTOR_TIMEOUT = int(os.getenv("WAIT_FOR_SELECTOR_TIMEOUT", "5000"))  # ms  セレクタ待機
+LOCATOR_TIMEOUT = int(os.getenv("LOCATOR_TIMEOUT", "8000"))  # ms ロケータ解決
+LOCATOR_POLL_INTERVAL = float(os.getenv("LOCATOR_POLL_INTERVAL", "0.25"))  # s 解決リトライ間隔
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
@@ -1342,8 +1345,27 @@ def _build_observation(nav_detected: bool = False, signature: Optional[Dict[str,
     }
 
 
-def _parse_index_target(target: str) -> Optional[int]:
-    if not target or not isinstance(target, str):
+def _parse_index_target(target: Any) -> Optional[int]:
+    if target is None:
+        return None
+    if isinstance(target, Selector):
+        return target.index
+    if isinstance(target, dict):
+        if "index" in target:
+            try:
+                return int(target["index"])
+            except (TypeError, ValueError):
+                return None
+        nested = target.get("selector") or target.get("target")
+        if nested is not None:
+            return _parse_index_target(nested)
+    if isinstance(target, list):
+        for item in target:
+            result = _parse_index_target(item)
+            if result is not None:
+                return result
+        return None
+    if not isinstance(target, str):
         return None
     text = target.strip()
     if not text.lower().startswith("index="):
@@ -1359,22 +1381,10 @@ def _actions_use_catalog_indices(actions: Iterable[Dict[str, Any]]) -> bool:
         if not isinstance(act, dict):
             continue
 
-        candidates: List[str] = []
-        target = act.get("target")
-        if isinstance(target, list):
-            candidates.extend(str(t) for t in target if isinstance(t, str))
-        elif isinstance(target, str):
-            candidates.append(target)
-
-        value = act.get("value")
-        if isinstance(value, list):
-            candidates.extend(str(v) for v in value if isinstance(v, str))
-        elif isinstance(value, str):
-            candidates.append(value)
-
-        for candidate in candidates:
-            if _parse_index_target(candidate) is not None:
-                return True
+        if _parse_index_target(act.get("target")) is not None:
+            return True
+        if _parse_index_target(act.get("value")) is not None:
+            return True
 
     return False
 
@@ -1393,6 +1403,196 @@ def _log_index_adoption(version: str, index: int, selector: str, action: str) ->
     )
 
 
+_ROLE_PATTERN = re.compile(r"^role=(?P<role>[\w-]+)(?:\[name=['\"](?P<name>.+?)['\"]])?$", re.I)
+
+
+def _stringify_selector_target(target: Any) -> str:
+    """Produce a human-readable representation for selector-like inputs."""
+
+    if isinstance(target, Selector):
+        return _describe_selector(target)
+    if isinstance(target, dict):
+        try:
+            selector = Selector.model_validate(target)
+            return _describe_selector(selector)
+        except PydanticValidationError:
+            return json.dumps(target, ensure_ascii=False, sort_keys=True)
+    if isinstance(target, list):
+        parts = [_stringify_selector_target(item) for item in target if item]
+        return " || ".join(part for part in parts if part)
+    if target is None:
+        return ""
+    return str(target)
+
+
+def _flatten_selector_inputs(selector_input: Any) -> List[Any]:
+    if selector_input is None:
+        return []
+    if isinstance(selector_input, list):
+        flattened: List[Any] = []
+        for item in selector_input:
+            flattened.extend(_flatten_selector_inputs(item))
+        return flattened
+    return [selector_input]
+
+
+def _parse_selector_string(value: str, *, prefer_text: bool = False) -> Selector:
+    text = value.strip()
+    if not text:
+        raise ValueError("Selector string is empty")
+
+    lowered = text.lower()
+    if lowered.startswith("css="):
+        return Selector.model_validate({"css": text[4:]})
+    if lowered.startswith("text="):
+        return Selector.model_validate({"text": text[5:]})
+    if lowered.startswith("xpath="):
+        return Selector.model_validate({"xpath": text[6:]})
+    if lowered.startswith("role="):
+        match = _ROLE_PATTERN.match(text)
+        if match:
+            data: Dict[str, Any] = {"role": match.group("role")}
+            name = match.group("name")
+            if name:
+                data["text"] = name
+            return Selector.model_validate(data)
+        return Selector.model_validate({"role": text[5:]})
+
+    if text.startswith("//"):
+        return Selector.model_validate({"xpath": text})
+
+    if prefer_text:
+        return Selector.model_validate({"text": text})
+
+    return Selector.model_validate({"css": text})
+
+
+def _attach_stable_id(selector: Selector, stable_id: Optional[str]) -> Selector:
+    if stable_id and not selector.stable_id:
+        try:
+            return selector.model_copy(update={"stable_id": stable_id})
+        except Exception:
+            pass
+    return selector
+
+
+def _describe_selector(selector: Selector) -> str:
+    legacy = selector.as_legacy()
+    if isinstance(legacy, str):
+        return legacy
+    return json.dumps(legacy, ensure_ascii=False, sort_keys=True)
+
+
+def _dedupe_selector_candidates(
+    candidates: Sequence[Tuple[Selector, str]]
+) -> List[Tuple[Selector, str]]:
+    seen: set[str] = set()
+    unique: List[Tuple[Selector, str]] = []
+    for selector, display in candidates:
+        payload = selector.model_dump(by_alias=True, exclude_none=True)
+        payload.pop("__legacy_value__", None)
+        key = json.dumps(payload, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((selector, display))
+    return unique
+
+
+def _prepare_selector_candidates(
+    selector_input: Any,
+    *,
+    action: str,
+    stable_id: Optional[str] = None,
+    prefer_text: Optional[bool] = None,
+) -> List[Tuple[Selector, str]]:
+    prefer_text = prefer_text if prefer_text is not None else (action == "click_text")
+    candidates: List[Tuple[Selector, str]] = []
+    for raw in _flatten_selector_inputs(selector_input):
+        selectors: List[Selector] = []
+        if isinstance(raw, Selector):
+            selectors = [raw]
+        elif isinstance(raw, dict):
+            try:
+                selectors = [Selector.model_validate(raw)]
+            except PydanticValidationError:
+                continue
+        elif isinstance(raw, str):
+            parts = [part.strip() for part in raw.split("||") if part.strip()]
+            for part in parts:
+                try:
+                    selectors.append(_parse_selector_string(part, prefer_text=prefer_text))
+                except ValueError:
+                    continue
+        elif raw is not None:
+            text = str(raw).strip()
+            if text:
+                parts = [part.strip() for part in text.split("||") if part.strip()]
+                for part in parts:
+                    try:
+                        selectors.append(_parse_selector_string(part, prefer_text=prefer_text))
+                    except ValueError:
+                        continue
+
+        for selector in selectors:
+            attached = _attach_stable_id(selector, stable_id)
+            candidates.append((attached, _describe_selector(attached)))
+
+    return _dedupe_selector_candidates(candidates)
+
+
+async def _resolve_with_timeout(
+    resolver: SelectorResolver,
+    selector: Selector,
+    *,
+    timeout_ms: Optional[int] = None,
+) -> Any:
+    timeout_ms = timeout_ms if timeout_ms and timeout_ms > 0 else LOCATOR_TIMEOUT
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    last_error: Optional[str] = None
+    while True:
+        try:
+            resolved = await resolver.resolve(selector)
+            if getattr(resolved, "locator", None) is None:
+                last_error = "Resolved element did not provide a locator"
+            else:
+                return resolved
+        except Exception as exc:  # pragma: no cover - handled by caller
+            last_error = str(exc)
+
+        now = time.monotonic()
+        if now >= deadline:
+            raise LookupError(last_error or "Element not found within timeout")
+        await asyncio.sleep(min(LOCATOR_POLL_INTERVAL, max(deadline - now, 0.01)))
+
+
+async def _resolve_selector_candidates(
+    page: Any,
+    selector_candidates: Sequence[Tuple[Selector, str]],
+    *,
+    store: StableNodeStore,
+    timeout_ms: Optional[int] = None,
+    retries: int = LOCATOR_RETRIES,
+) -> Tuple[Optional[Any], Optional[str], List[str], Optional[str]]:
+    failures: List[str] = []
+    last_error: Optional[str] = None
+    for selector, display in selector_candidates:
+        candidate_error: Optional[str] = None
+        for attempt in range(max(retries, 1)):
+            try:
+                resolver = SelectorResolver(page, store)
+                resolved = await _resolve_with_timeout(resolver, selector, timeout_ms=timeout_ms)
+                return resolved, display, failures, None
+            except Exception as exc:
+                candidate_error = str(exc)
+                last_error = candidate_error
+                if attempt < max(retries, 1) - 1:
+                    await _stabilize_page()
+                else:
+                    failures.append(f"Locator search failed for '{display}' - {candidate_error}")
+        if candidate_error is None:
+            failures.append(f"Locator search failed for '{display}' - Unknown error")
+    return None, None, failures, last_error
 def _resolve_index_entry(index: int) -> Tuple[List[str], Dict[str, Any]]:
     if not INDEX_MODE:
         raise ExecutionError(
@@ -1486,8 +1686,20 @@ payload_schema = {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": _ACTIONS},
-                    "target": {"type": "string"},
-                    "value": {"type": "string"},
+                    "target": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "object"},
+                            {"type": "array"},
+                        ]
+                    },
+                    "value": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "object"},
+                            {"type": "array"},
+                        ]
+                    },
                     "ms": {"type": "integer", "minimum": 0},
                     "amount": {"type": "integer"},
                     "direction": {"type": "string", "enum": ["up", "down"]},
@@ -1526,9 +1738,26 @@ def _validate_url(url: str) -> bool:
         return False
 
 
-def _validate_selector(selector: str) -> bool:
-    """Validate that selector is non-empty."""
-    return bool(selector and selector.strip())
+def _validate_selector(selector: Any) -> bool:
+    """Validate selector-like input ensuring it carries usable information."""
+
+    if selector is None:
+        return False
+    if isinstance(selector, Selector):
+        data = selector.model_dump(exclude_none=True)
+        data.pop("__legacy_value__", None)
+        return bool(data)
+    if isinstance(selector, dict):
+        try:
+            typed = Selector.model_validate(selector)
+        except PydanticValidationError:
+            return False
+        return _validate_selector(typed)
+    if isinstance(selector, list):
+        return any(_validate_selector(item) for item in selector)
+    if isinstance(selector, str):
+        return bool(selector.strip())
+    return False
 
 
 def _validate_action_params(act: Dict) -> List[str]:
@@ -1542,14 +1771,20 @@ def _validate_action_params(act: Dict) -> List[str]:
             warnings.append(f"ERROR:auto:Invalid navigate URL '{url}' - URL must be non-empty and properly formatted")
     
     elif action == "wait_for_selector":
-        selector = act.get("target", "")
+        selector = act.get("target")
         if not _validate_selector(selector):
-            warnings.append(f"ERROR:auto:Invalid selector '{selector}' - Selector must be non-empty")
-    
+            display = _stringify_selector_target(selector)
+            warnings.append(
+                f"ERROR:auto:Invalid selector '{display}' - Selector must be non-empty"
+            )
+
     elif action in ["click", "click_text", "type", "hover", "select_option", "press_key", "extract_text"]:
-        selector = act.get("target", "")
+        selector = act.get("target")
         if not _validate_selector(selector):
-            warnings.append(f"ERROR:auto:Invalid selector '{selector}' for action '{action}' - Selector must be non-empty")
+            display = _stringify_selector_target(selector)
+            warnings.append(
+                f"ERROR:auto:Invalid selector '{display}' for action '{action}' - Selector must be non-empty"
+            )
 
     elif action == "stop":
         reason = act.get("reason", "")
@@ -1561,9 +1796,11 @@ def _validate_action_params(act: Dict) -> List[str]:
         if wait_until and wait_until not in {"network_idle", "selector", "timeout"}:
             warnings.append(f"ERROR:auto:Unsupported wait condition '{wait_until}'")
         if wait_until == "selector":
-            selector = act.get("target") or act.get("value", "")
+            selector = act.get("target") or act.get("value")
             if not _validate_selector(selector):
-                warnings.append("ERROR:auto:wait selector condition requires non-empty selector in 'target' or 'value'")
+                warnings.append(
+                    "ERROR:auto:wait selector condition requires non-empty selector in 'target' or 'value'"
+                )
 
     elif action == "scroll_to_text":
         text = act.get("target") or act.get("text") or act.get("value")
@@ -2074,15 +2311,17 @@ async def _stabilize_page():
     await stabilize_page(PAGE, timeout=SPA_STABILIZE_TIMEOUT)
 
 
-async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
+async def _apply(
+    act: Dict, is_final_retry: bool = False, *, store: Optional[StableNodeStore] = None
+) -> List[str]:
     """Execute a single action. Raises exceptions for retryable errors unless is_final_retry=True."""
     global PAGE
     action_warnings = []
-    
+    store = store or StableNodeStore()
+
     a = act["action"]
-    tgt = act.get("target", "")
-    if isinstance(tgt, list):
-        tgt = " || ".join(str(s).strip() for s in tgt if s)
+    raw_target = act.get("target")
+    tgt = _stringify_selector_target(raw_target)
     val = act.get("value", "")
     ms = int(act.get("ms", 0))
     amt = int(act.get("amount", 400))
@@ -2224,36 +2463,76 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     else:
                         raise
             elif wait_until == "selector":
-                selector = act.get("target") or act.get("value")
-                if not selector:
-                    action_warnings.append("WARNING:auto:wait selector condition missing selector")
+                selector_input = act.get("target") or act.get("value")
+                if not _validate_selector(selector_input):
+                    action_warnings.append(
+                        "WARNING:auto:wait selector condition requires a valid selector"
+                    )
                     return action_warnings
-                try:
-                    await SmartLocator(PAGE, selector).locate()
-                except Exception as exc:
+
+                candidates = _prepare_selector_candidates(
+                    selector_input,
+                    action="wait",
+                )
+                if not candidates:
+                    action_warnings.append(
+                        "WARNING:auto:wait selector condition could not interpret selector candidates"
+                    )
+                    return action_warnings
+
+                timeout_override = ms if ms > 0 else LOCATOR_TIMEOUT
+                resolved, _, failures, last_error = await _resolve_selector_candidates(
+                    PAGE,
+                    candidates,
+                    store=store,
+                    timeout_ms=timeout_override,
+                    retries=LOCATOR_RETRIES,
+                )
+                action_warnings.extend(f"WARNING:auto:{msg}" for msg in failures)
+                if resolved is None:
+                    message = last_error or "Selector did not appear"
                     if is_final_retry:
-                        action_warnings.append(f"WARNING:auto:wait selector failed - {str(exc)}")
-                    else:
-                        raise
+                        action_warnings.append(
+                            f"WARNING:auto:wait selector failed - {message}"
+                        )
+                        return action_warnings
+                    raise Exception(message)
             else:
                 timeout = _coerce_timeout(act.get("value"), default_ms)
                 await PAGE.wait_for_timeout(timeout)
             return action_warnings
-            
+
         if a == "wait_for_selector":
-            if not _validate_selector(tgt):
-                action_warnings.append(f"WARNING:auto:Skipping wait_for_selector - Empty selector")
+            if not _validate_selector(raw_target):
+                action_warnings.append(
+                    f"WARNING:auto:Skipping wait_for_selector - Empty selector"
+                )
                 return action_warnings
             timeout = ms if ms > 0 else WAIT_FOR_SELECTOR_TIMEOUT
-            try:
-                await PAGE.wait_for_selector(tgt, state="visible", timeout=timeout)
-            except Exception as e:
-                error_msg = f"wait_for_selector failed for '{tgt}' - {str(e)}"
+            candidates = _prepare_selector_candidates(
+                raw_target,
+                action="wait_for_selector",
+            )
+            if not candidates:
+                action_warnings.append(
+                    f"WARNING:auto:wait_for_selector could not interpret selector '{tgt}'"
+                )
+                return action_warnings
+
+            resolved, _, failures, last_error = await _resolve_selector_candidates(
+                PAGE,
+                candidates,
+                store=store,
+                timeout_ms=timeout,
+                retries=LOCATOR_RETRIES,
+            )
+            action_warnings.extend(f"WARNING:auto:{msg}" for msg in failures)
+            if resolved is None:
+                error_msg = last_error or f"Selector '{tgt}' not found"
                 if is_final_retry:
-                    action_warnings.append(f"WARNING:auto:{error_msg}")
-                else:
-                    # Not final retry, raise exception to trigger retry
-                    raise Exception(error_msg)
+                    action_warnings.append(f"WARNING:auto:wait_for_selector failed - {error_msg}")
+                    return action_warnings
+                raise Exception(f"wait_for_selector failed - {error_msg}")
             return action_warnings
             
         if a == "scroll":
@@ -2320,11 +2599,11 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
 
         locator_actions = {"click", "click_text", "type", "hover", "select_option", "press_key", "extract_text"}
         if a in locator_actions:
-            selectors_to_try: List[str] = []
             resolved_entry: Optional[Dict[str, Any]] = None
-            chosen_selector: Optional[str] = None
-            index_value = _parse_index_target(tgt)
+            chosen_selector_display: Optional[str] = None
+            index_value = _parse_index_target(raw_target)
 
+            selector_candidates: List[Tuple[Selector, str]] = []
             if index_value is not None:
                 auto_refresh_message: Optional[str] = None
                 if INDEX_MODE and (not _CURRENT_CATALOG or "index_map" not in _CURRENT_CATALOG):
@@ -2339,9 +2618,7 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                                     f"INFO:auto:Element catalog refreshed automatically (version={version})"
                                 )
                             else:
-                                auto_refresh_message = (
-                                    "INFO:auto:Element catalog refreshed automatically"
-                                )
+                                auto_refresh_message = "INFO:auto:Element catalog refreshed automatically"
                         else:
                             raise ExecutionError(
                                 "CATALOG_OUTDATED",
@@ -2365,14 +2642,39 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                             "Element catalog is not available. Please execute refresh_catalog.",
                             {"index": index_value},
                         ) from exc
-                selectors_to_try, resolved_entry = _resolve_index_entry(index_value)
+                selectors_raw, resolved_entry = _resolve_index_entry(index_value)
+                selector_candidates = _prepare_selector_candidates(
+                    selectors_raw,
+                    action=a,
+                    stable_id=(resolved_entry or {}).get("stable_id"),
+                    prefer_text=False,
+                )
                 if auto_refresh_message:
                     action_warnings.append(auto_refresh_message)
             else:
-                if not _validate_selector(tgt):
+                if not _validate_selector(raw_target):
                     action_warnings.append(f"WARNING:auto:Skipping {a} - Empty selector")
                     return action_warnings
-                selectors_to_try = [tgt]
+                selector_candidates = _prepare_selector_candidates(
+                    raw_target,
+                    action=a,
+                    prefer_text=(a == "click_text"),
+                )
+
+            if not selector_candidates:
+                if index_value is not None:
+                    raise ExecutionError(
+                        "ELEMENT_NOT_FOUND",
+                        f"Catalog index {index_value} did not provide usable selectors",
+                        {
+                            "index": index_value,
+                            "selectors": [display for _, display in selector_candidates],
+                        },
+                    )
+                action_warnings.append(
+                    f"WARNING:auto:No interpretable selector candidates for '{tgt}'"
+                )
+                return action_warnings
 
             if PAGE is None:
                 error_msg = f"Browser not initialized - cannot execute {a} action"
@@ -2381,40 +2683,26 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     return action_warnings
                 raise Exception(error_msg)
 
-            loc: Optional = None
-            last_error: Optional[str] = None
-            for selector in selectors_to_try:
-                candidate = selector
-                for attempt in range(LOCATOR_RETRIES):
-                    try:
-                        if a == "click_text" and index_value is None:
-                            if "||" in candidate or candidate.strip().startswith(("css=", "text=", "role=", "xpath=")):
-                                loc = await SmartLocator(PAGE, candidate).locate()
-                            else:
-                                loc = await SmartLocator(PAGE, f"text={candidate}").locate()
-                        else:
-                            loc = await SmartLocator(PAGE, candidate).locate()
-                        if loc is not None:
-                            chosen_selector = candidate
-                            break
-                        await _stabilize_page()
-                    except Exception as exc:
-                        last_error = str(exc)
-                        if attempt == LOCATOR_RETRIES - 1:
-                            action_warnings.append(
-                                f"WARNING:auto:Locator search failed for '{candidate}' - {last_error}"
-                            )
-                if loc is not None:
-                    break
+            resolved_node, chosen_display, failures, last_error = await _resolve_selector_candidates(
+                PAGE,
+                selector_candidates,
+                store=store,
+                timeout_ms=LOCATOR_TIMEOUT,
+                retries=LOCATOR_RETRIES,
+            )
+            action_warnings.extend(f"WARNING:auto:{msg}" for msg in failures)
 
-            if loc is None:
+            if resolved_node is None or getattr(resolved_node, "locator", None) is None:
                 if index_value is not None:
                     raise ExecutionError(
                         "ELEMENT_NOT_FOUND",
                         f"Catalog index {index_value} could not be resolved to a live element",
-                        {"index": index_value, "selectors": selectors_to_try},
+                        {
+                            "index": index_value,
+                            "selectors": [display for _, display in selector_candidates],
+                        },
                     )
-                error_msg = (
+                error_msg = last_error or (
                     f"Element not found: {tgt}. Consider using alternative selectors or text matching."
                 )
                 if is_final_retry:
@@ -2422,15 +2710,19 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     return action_warnings
                 raise Exception(error_msg)
 
+            loc = resolved_node.locator
+            chosen_selector_display = chosen_display
+
             if index_value is not None and resolved_entry:
                 catalog_version = (_CURRENT_CATALOG_SIGNATURE or {}).get("catalog_version", "")
-                _log_index_adoption(catalog_version, index_value, chosen_selector or selectors_to_try[0], a)
+                recorded_selector = chosen_selector_display or selector_candidates[0][1]
+                _log_index_adoption(catalog_version, index_value, recorded_selector, a)
 
             # Execute the action with enhanced error handling
             action_timeout = ACTION_TIMEOUT if ms == 0 else ms
 
             try:
-                display_target = chosen_selector or tgt
+                display_target = chosen_selector_display or tgt
                 if a in ("click", "click_text"):
                     await _safe_click(loc, timeout=action_timeout)
                 elif a == "type":
@@ -2449,10 +2741,7 @@ async def _apply(act: Dict, is_final_retry: bool = False) -> List[str]:
                     if key:
                         await _safe_press(loc, key, timeout=action_timeout)
                     else:
-                        if key:
-                            await PAGE.keyboard.press(key)
-                        else:
-                            action_warnings.append("WARNING:auto:No key specified for press_key action")
+                        action_warnings.append("WARNING:auto:No key specified for press_key action")
                 elif a == "extract_text":
                     try:
                         attr = act.get("attr")
@@ -2535,7 +2824,8 @@ async def _run_actions_with_lock(actions: List[Dict], correlation_id: str = "") 
 
 async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[str, List[str]]:
     all_warnings = []
-    
+    store = StableNodeStore()
+
     for i, act in enumerate(actions):
         # Enhanced DOM stabilization before each action
         await _stabilize_page()
@@ -2546,7 +2836,7 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
         for attempt in range(1, retries + 1):
             try:
                 is_final_retry = (attempt == retries)
-                action_warnings = await _apply(act, is_final_retry)
+                action_warnings = await _apply(act, is_final_retry, store=store)
                 all_warnings.extend(action_warnings)
                 action_executed = True
 
@@ -2564,7 +2854,7 @@ async def _run_actions(actions: List[Dict], correlation_id: str = "") -> tuple[s
                 if attempt == retries:
                     # Final retry failure - try once more with is_final_retry=True to get warnings
                     try:
-                        action_warnings = await _apply(act, is_final_retry=True)
+                        action_warnings = await _apply(act, is_final_retry=True, store=store)
                         all_warnings.extend(action_warnings)
                     except Exception as final_e:
                         # If even final retry with warnings fails, add error message
