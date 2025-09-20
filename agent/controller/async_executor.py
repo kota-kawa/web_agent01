@@ -1,7 +1,6 @@
 """
 Async task manager for parallel Playwright execution and data fetching.
 """
-import asyncio
 import uuid
 import logging
 import time
@@ -43,7 +42,9 @@ class ExecutionTask:
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
-    history_entry_id: Optional[int] = None
+
+    post_completion_fetches: Dict[str, Callable] = field(default_factory=dict)
+    
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -131,34 +132,56 @@ class AsyncExecutor:
                 task.status = TaskStatus.RUNNING
                 task.started_at = time.time()
                 log.debug("Starting execution for task %s", task_id)
-                
+
                 # Execute the Playwright operations immediately
                 payload_data: Dict[str, Any] = {"actions": actions}
                 if payload:
                     payload_data.update(payload)
                 result = execute_func(payload_data)
-                
-                # Ensure warnings are properly formatted and truncated
-                if result and isinstance(result, dict):
-                    if "warnings" in result and result["warnings"]:
-                        # Include all warning messages without character limits
-                        result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
 
-                    # If execution returned an error but not in warnings format, convert it
-                    error_info = result.get("error")
-                    if error_info:
-                        formatted_error = _format_error_info(error_info)
-                        if "warnings" not in result:
-                            result["warnings"] = []
-                        result["warnings"].append(_truncate_warning(f"ERROR:auto:{formatted_error}"))
-                        result["error"] = None
-                
+                if result is None:
+                    result = {}
+                elif not isinstance(result, dict):
+                    result = {"result": result}
+
+                # Ensure warnings are properly formatted and truncated
+                if "warnings" in result and result["warnings"]:
+                    # Include all warning messages without character limits
+                    result["warnings"] = [_truncate_warning(warning) for warning in result["warnings"]]
+
+                # If execution returned an error but not in warnings format, convert it
+                error_info = result.get("error")
+                if error_info:
+                    formatted_error = _format_error_info(error_info)
+                    if "warnings" not in result:
+                        result["warnings"] = []
+                    result["warnings"].append(_truncate_warning(f"ERROR:auto:{formatted_error}"))
+                    result["error"] = None
+
+                # Fetch fresh HTML after execution completes
+                updated_html = None
+                try:
+                    from agent.browser.vnc import get_html as vnc_html
+
+                    updated_html = vnc_html()
+                except Exception as html_error:
+                    log.error("Failed to fetch updated HTML for task %s: %s", task_id, html_error)
+
+                if updated_html is not None:
+                    result["updated_html"] = updated_html
+                    if not result.get("html"):
+                        result["html"] = updated_html
+
                 task.result = result
+
+                # Run any deferred data fetchers now that execution finished
+                self._run_deferred_fetches(task_id)
+
                 task.status = TaskStatus.COMPLETED
                 task.completed_at = time.time()
-                log.info("Completed execution for task %s in %.2fs", 
+                log.info("Completed execution for task %s in %.2fs",
                         task_id, task.completed_at - task.started_at)
-                
+
                 # Update conversation history with current URL after successful execution
                 try:
                     from agent.browser.vnc import get_url
@@ -195,8 +218,6 @@ class AsyncExecutor:
                 
             except Exception as e:
                 task.error = str(e)
-                task.status = TaskStatus.FAILED
-                task.completed_at = time.time()
                 
                 # Create comprehensive warnings from the exception
                 error_type = type(e).__name__
@@ -218,55 +239,79 @@ class AsyncExecutor:
                         warnings.append(_truncate_warning(stack_warning))
                 
                 task.result = {
-                    "html": "", 
+                    "html": "",
                     "warnings": warnings
                 }
-                
+
+                # Attempt to fetch the current HTML even after failures
+                try:
+                    from agent.browser.vnc import get_html as vnc_html
+
+                    updated_html = vnc_html()
+                except Exception as html_error:
+                    log.error("Failed to fetch updated HTML for failed task %s: %s", task_id, html_error)
+                    updated_html = None
+
+                if updated_html is not None:
+                    task.result["updated_html"] = updated_html
+                    if not task.result.get("html"):
+                        task.result["html"] = updated_html
+
+                # Run any deferred data fetchers before finalizing failure state
+                self._run_deferred_fetches(task_id)
+
+                task.status = TaskStatus.FAILED
+                task.completed_at = time.time()
+
                 log.error("Failed execution for task %s: %s", task_id, e)
-        
+
         # Submit to thread pool
         future = self.executor.submit(run_execution)
         return True
-    
+
+    def _run_deferred_fetches(self, task_id: str) -> None:
+        """Execute any data fetchers queued for post-execution processing."""
+        task = self.tasks.get(task_id)
+        if not task:
+            return
+
+        while task.post_completion_fetches:
+            fetch_funcs = dict(task.post_completion_fetches)
+            task.post_completion_fetches.clear()
+
+            if not fetch_funcs:
+                break
+
+            log.info("Running deferred data fetch for task %s", task_id)
+            fetch_results = {}
+            for name, func in fetch_funcs.items():
+                try:
+                    fetch_results[name] = func()
+                except Exception as e:
+                    log.error("Failed to fetch %s for task %s: %s", name, task_id, e)
+                    fetch_results[name] = None
+
+            if task.result is None:
+                task.result = {}
+            task.result.update(fetch_results)
+            log.info("Completed deferred data fetch for task %s", task_id)
+
     def submit_parallel_data_fetch(self, task_id: str, fetch_funcs: Dict[str, Callable]) -> bool:
-        """Submit parallel data fetching operations."""
-        if task_id not in self.tasks:
+        """Queue data fetching operations to run after execution completes."""
+        task = self.tasks.get(task_id)
+        if not task:
             log.error("Task %s not found", task_id)
             return False
-            
-        def run_parallel_fetch():
-            try:
-                log.info("Starting parallel data fetch for task %s", task_id)
-                
-                # Run all fetch functions in parallel
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(fetch_funcs)) as fetch_executor:
-                    future_to_name = {
-                        fetch_executor.submit(func): name 
-                        for name, func in fetch_funcs.items()
-                    }
-                    
-                    fetch_results = {}
-                    for future in concurrent.futures.as_completed(future_to_name):
-                        name = future_to_name[future]
-                        try:
-                            fetch_results[name] = future.result()
-                        except Exception as e:
-                            log.error("Failed to fetch %s for task %s: %s", name, task_id, e)
-                            fetch_results[name] = None
-                
-                # Update task result with fetched data
-                task = self.tasks[task_id]
-                if task.result is None:
-                    task.result = {}
-                task.result.update(fetch_results)
-                
-                log.info("Completed parallel data fetch for task %s", task_id)
-                
-            except Exception as e:
-                log.error("Failed parallel data fetch for task %s: %s", task_id, e)
-        
-        # Submit to thread pool (non-blocking)
-        future = self.executor.submit(run_parallel_fetch)
+
+        if not fetch_funcs:
+            log.debug("No fetch functions provided for task %s", task_id)
+            return True
+
+        task.post_completion_fetches.update(fetch_funcs)
+
+        if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+            self.executor.submit(self._run_deferred_fetches, task_id)
+
         return True
     
     def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
