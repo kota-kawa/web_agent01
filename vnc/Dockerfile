@@ -12,12 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # ---- Python ライブラリ -------------------------------------------------
-RUN pip install --no-cache-dir \
-      "playwright[all]==1.44.0" \
-      flask \
-      httpx \
-      "jsonschema>=4.0" \
-      "pydantic>=2.5" \
+COPY vnc/requirements.txt /tmp/vnc-requirements.txt
+
+RUN pip install --no-cache-dir -r /tmp/vnc-requirements.txt \
+  && pip install --no-cache-dir "playwright[all]==1.44.0" \
   && playwright install --with-deps chromium
   
 
@@ -26,6 +24,10 @@ WORKDIR /opt
 
 # ① build-context (= ./vnc) 全体を /opt/vnc へコピー
 COPY . /opt/vnc
+
+# 依存関係が正しくインストールされていることをビルド時に検証
+ENV PYTHONPATH=/opt
+RUN python -m vnc.dependency_check --component vnc
 
 # ② 既存パス互換のためエントリポイントにシンボリックリンクを張る
 RUN ln -s /opt/vnc/automation_server.py /opt/automation_server.py
@@ -38,9 +40,6 @@ COPY vnc/supervisor/ /etc/supervisor/conf.d/
 
 # 実行ビットを付与
 RUN chmod +x /usr/local/bin/start-chromium.sh
-
-# ④ Python から /opt 配下をパッケージ検索できるように
-ENV PYTHONPATH=/opt
 
 EXPOSE 6901 9222 7000
 CMD ["/usr/bin/supervisord","-n"]
