@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 import httpx
 from flask import Flask, Response, jsonify, request
 from jsonschema import Draft7Validator, ValidationError
+from pydantic import ValidationError as PydanticValidationError
 from playwright.async_api import Error as PwError, Locator, async_playwright
 
 try:
@@ -29,6 +30,8 @@ except ImportError:  # pragma: no cover - dependency validated at runtime
     Image = None  # type: ignore[assignment]
     ImageDraw = None  # type: ignore[assignment]
     ImageFont = None  # type: ignore[assignment]
+
+from automation.dsl import RunRequest, registry as typed_registry
 
 from vnc.locator_utils import SmartLocator  # 同ディレクトリ
 from vnc.executor import RunExecutor
@@ -108,6 +111,7 @@ SPA_STABILIZE_TIMEOUT = int(
 MAX_DSL_ACTIONS = int(os.getenv("MAX_DSL_ACTIONS", "50"))  # DSL アクション数上限
 INDEX_MODE = os.getenv("INDEX_MODE", "true").lower() == "true"
 CATALOG_MAX_ELEMENTS = int(os.getenv("CATALOG_MAX_ELEMENTS", "120"))
+TYPED_ONLY_ACTIONS = {"switch_tab", "focus_iframe", "assert", "submit_form"}
 
 
 # Security and navigation configuration
@@ -2607,6 +2611,7 @@ def execute_dsl():
     html = ""
     nav_detected = False
     observation_signature: Optional[Dict[str, Any]] = None
+    complete_flag = False
 
     def _handle_typed_run(payload: Dict[str, Any]):
         try:
@@ -2635,8 +2640,77 @@ def execute_dsl():
         data = request.get_json(force=True)
         if isinstance(data, list):
             data = {"actions": data}
+        if not isinstance(data, dict):
+            raise TypeError("Request JSON must be an object or list of actions")
+
+        complete_flag = bool(data.get("complete"))
+        typed_payload: Optional[Dict[str, Any]] = None
+        typed_error_message: Optional[str] = None
+
         if "plan" in data:
-            return _handle_typed_run(data)
+            typed_payload = data
+        else:
+            raw_actions = data.get("actions", [])
+            if isinstance(raw_actions, list) and raw_actions:
+                contains_type_key = False
+                typed_only_declared = False
+                parsed_actions = []
+                parse_error: Optional[Exception] = None
+                for raw in raw_actions:
+                    if not isinstance(raw, dict):
+                        parse_error = TypeError("Typed actions must be objects")
+                        break
+                    if "type" in raw:
+                        contains_type_key = True
+                    action_name = raw.get("type") or raw.get("action")
+                    if isinstance(action_name, str) and action_name in TYPED_ONLY_ACTIONS:
+                        typed_only_declared = True
+                    try:
+                        parsed = typed_registry.parse_action(raw)
+                        parsed_actions.append(parsed)
+                        if parsed.action_name in TYPED_ONLY_ACTIONS:
+                            typed_only_declared = True
+                    except Exception as exc:
+                        parse_error = exc
+                        break
+                if parse_error:
+                    if contains_type_key or typed_only_declared:
+                        typed_error_message = str(parse_error)
+                elif parsed_actions and (contains_type_key or typed_only_declared):
+                    try:
+                        run_request = RunRequest.model_validate(
+                            {
+                                "run_id": data.get("run_id", f"run-{int(time.time()*1000)}"),
+                                "plan": {"actions": parsed_actions},
+                                "config": data.get("config", {}),
+                                "metadata": data.get("metadata", {}),
+                            }
+                        )
+                        typed_payload = run_request.to_payload()
+                    except PydanticValidationError as exc:
+                        typed_error_message = str(exc)
+
+        if typed_error_message:
+            warnings.append(f"[{correlation_id}] ERROR:auto:InvalidTypedDSL - {typed_error_message}")
+            success = False
+            error_info = {"code": "INVALID_DSL", "message": typed_error_message, "details": {}}
+            observation_signature = _run(_ensure_catalog_signature()) if INDEX_MODE else _collect_basic_signature()
+            html = _run(_safe_get_page_content()) if PAGE else ""
+            response = {
+                "success": success,
+                "error": error_info,
+                "warnings": warnings,
+                "html": html,
+                "correlation_id": correlation_id,
+                "observation": _build_observation(nav_detected=False, signature=observation_signature),
+                "is_done": complete_flag,
+                "complete": complete_flag,
+            }
+            return jsonify(response)
+
+        if typed_payload is not None:
+            return _handle_typed_run(typed_payload)
+
         _validate_schema(data)
     except ValidationError as ve:
         warnings.append(f"[{correlation_id}] ERROR:auto:InvalidDSL - {str(ve)}")
@@ -2651,8 +2725,8 @@ def execute_dsl():
             "html": html,
             "correlation_id": correlation_id,
             "observation": _build_observation(nav_detected=False, signature=observation_signature),
-            "is_done": False,
-            "complete": False,
+            "is_done": complete_flag,
+            "complete": complete_flag,
         }
         return jsonify(response)
     except Exception as e:
@@ -2668,8 +2742,8 @@ def execute_dsl():
             "html": html,
             "correlation_id": correlation_id,
             "observation": _build_observation(nav_detected=False, signature=observation_signature),
-            "is_done": False,
-            "complete": False,
+            "is_done": complete_flag,
+            "complete": complete_flag,
         }
         return jsonify(response)
 
