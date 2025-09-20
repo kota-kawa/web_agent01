@@ -2,8 +2,11 @@ import logging
 import os
 import threading
 import time
+from typing import Any, Dict, List
 
 import requests
+
+from automation.dsl.registry import registry
 
 from .dom import DOMElementNode, DOM_SNAPSHOT_SCRIPT
 
@@ -133,8 +136,49 @@ def _truncate_warning(warning_msg, max_length=None):
 
 def execute_dsl(payload, timeout=120):
     """Forward DSL JSON to the automation server with retry logic."""
-    if not payload.get("actions"):
+    if not isinstance(payload, dict):
+        payload = {}
+
+    plan_field = payload.get("plan")
+    raw_plan_actions: List[Any]
+    if isinstance(plan_field, dict):
+        raw_plan_actions = plan_field.get("actions") or []
+        plan_actions = [action for action in raw_plan_actions if isinstance(action, dict)]
+        normalized_plan = dict(plan_field)
+        normalized_plan["actions"] = plan_actions
+        payload["plan"] = normalized_plan
+    elif isinstance(plan_field, list):
+        plan_actions = [action for action in plan_field if isinstance(action, dict)]
+        if plan_actions:
+            payload["plan"] = {"actions": plan_actions}
+    else:
+        plan_actions = []
+
+    legacy_actions_field = payload.get("actions")
+    legacy_actions: List[Dict[str, Any]] = legacy_actions_field if isinstance(legacy_actions_field, list) else []
+
+    if not plan_actions and not legacy_actions:
         return {"html": "", "warnings": []}
+
+    if "run_id" not in payload:
+        payload["run_id"] = f"run-{int(time.time() * 1000)}"
+
+    actions_for_feedback: List[Dict[str, Any]] = legacy_actions
+    if plan_actions:
+        try:
+            plan_legacy: List[Dict[str, Any]] = []
+            for action in plan_actions:
+                try:
+                    parsed = registry.parse_action(action)
+                except Exception:
+                    continue
+                plan_legacy.append(parsed.legacy_payload())
+            if plan_legacy:
+                actions_for_feedback = plan_legacy
+                if not legacy_actions:
+                    payload["actions"] = plan_legacy
+        except Exception as exc:
+            log.debug("Failed to convert plan actions for legacy feedback: %s", exc)
 
     max_retries = 2  # Allow 1 retry attempt
     all_errors = []  # Collect ALL errors from all attempts
@@ -169,9 +213,6 @@ def execute_dsl(payload, timeout=120):
             try:  # Best-effort catalog bookkeeping
                 from agent.element_catalog import handle_execution_feedback
 
-                actions_for_feedback = []
-                if isinstance(payload, dict):
-                    actions_for_feedback = payload.get("actions") or []
                 handle_execution_feedback(actions_for_feedback, result)
             except Exception as catalog_exc:  # pragma: no cover - diagnostics only
                 log.debug("Catalog feedback handling failed: %s", catalog_exc)
