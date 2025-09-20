@@ -1021,12 +1021,23 @@ def reset():
         return jsonify(error=str(e)), 500
 
 
-def update_last_history_url(url=None):
+def update_last_history_url(url=None, history_entry_id=None):
     """Update the most recent conversation entry with the current page URL."""
     try:
         hist = load_hist()
         if not hist:
             log.debug("No conversation history found to update with URL")
+            return
+
+        entry_index = history_entry_id
+        if entry_index is None:
+            entry_index = len(hist) - 1
+
+        if entry_index is None or entry_index < 0 or entry_index >= len(hist):
+            log.debug(
+                "Conversation history entry %s not available for URL update",
+                entry_index,
+            )
             return
 
         # Use provided URL or fetch from VNC server
@@ -1039,12 +1050,16 @@ def update_last_history_url(url=None):
                 return
         
         if current_url:  # Only update if we have a valid URL
-            hist[-1]["url"] = current_url
+            hist[entry_index]["url"] = current_url
             save_hist(hist)
-            log.debug("Updated conversation history URL to: %s", current_url)
+            log.debug(
+                "Updated conversation history URL for entry %s to: %s",
+                entry_index,
+                current_url,
+            )
         else:
             log.warning("No valid URL available to update conversation history")
-            
+
     except Exception as e:
         log.error("update_last_history_url error: %s", e)
 
@@ -1126,7 +1141,7 @@ def execute():
     res = call_llm(prompt, model, shot)
 
     # Save conversation history immediately with current URL
-    append_history_entry(cmd, res, current_url)
+    history_entry_id = append_history_entry(cmd, res, current_url)
     
     # Extract and normalize actions from LLM response
     actions = normalize_actions(res)
@@ -1145,7 +1160,7 @@ def execute():
         try:
             # Use pre-initialized executor for immediate execution
             executor = get_preinitialized_async_executor()
-            task_id = executor.create_task()
+            task_id = executor.create_task(history_entry_id=history_entry_id)
 
             # Start Playwright execution in parallel (immediate submission)
             plan_payload = {"actions": [action.payload(by_alias=True) for action in actions]}
@@ -1191,7 +1206,7 @@ def get_execution_status(task_id):
 
         # When task completes, update conversation history with current URL
         if status.get("status") == "completed":
-            update_last_history_url()
+            update_last_history_url(history_entry_id=status.get("history_entry_id"))
 
         # Include all warnings without character limits
         if status and "result" in status and status["result"] and isinstance(status["result"], dict):
