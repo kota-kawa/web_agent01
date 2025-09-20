@@ -157,6 +157,20 @@ def _escape_quotes(value: str) -> str:
     return value.replace("\"", "\\\"")
 
 
+# Actions that still rely on the legacy string-based selector serialization.
+_LEGACY_ACTION_NAMES = {
+    "click_text",
+    "select_option",
+    "wait_for_selector",
+    "extract_text",
+    "go_back",
+    "go_forward",
+}
+
+# Allow callers to explicitly force legacy behaviour even for modern action names.
+_LEGACY_FLAG_KEYS = ("__legacy__", "__legacy_action__", "legacy_only", "_legacy", "legacy")
+
+
 def _stringify_selector(selector: Any) -> str:
     """Convert structured selector data into the legacy string-based DSL form."""
 
@@ -248,6 +262,25 @@ def _stringify_selector(selector: Any) -> str:
         return ""
 
 
+def _is_legacy_action(action: Dict[str, Any]) -> bool:
+    """Determine whether the action should use legacy selector coercion."""
+
+    for flag in _LEGACY_FLAG_KEYS:
+        value = action.get(flag)
+        if isinstance(value, str):
+            if value.strip().lower() in {"", "false", "0", "no"}:
+                continue
+            return True
+        if value:
+            return True
+
+    name = action.get("action")
+    if isinstance(name, str) and name.lower() in _LEGACY_ACTION_NAMES:
+        return True
+
+    return False
+
+
 def normalize_actions(llm_response):
     """Extract and normalize actions from LLM response (optimized for speed)."""
     if not llm_response:
@@ -257,32 +290,35 @@ def normalize_actions(llm_response):
     if not isinstance(actions, list):
         return []
     
-    # Optimized normalization using list comprehension for speed
     normalized = []
     for action in actions:
         if not isinstance(action, dict):
             continue
-            
-        # Create normalized action with proper lowercasing
-        normalized_action = dict(action)  # Start with copy
-        
-        # Normalize action name to lowercase
+
+        normalized_action = dict(action)
+
         if "action" in normalized_action:
             normalized_action["action"] = str(normalized_action["action"]).lower()
-        
-        # Handle selector -> target mapping (optimized)
+
+        legacy_action = _is_legacy_action(normalized_action)
+
+        target_value = normalized_action.get("target")
         if "selector" in action and "target" not in action:
-            normalized_action["target"] = action["selector"]
-            
-        # Handle click_text action (optimized)
-        elif (normalized_action.get("action") == "click_text" and
-              "text" in action and "target" not in action):
-            normalized_action["target"] = action["text"]
+            target_value = action["selector"]
+        elif (
+            normalized_action.get("action") == "click_text"
+            and "text" in action
+            and "target" not in action
+        ):
+            target_value = action["text"]
 
-        if "target" in normalized_action:
-            normalized_action["target"] = _stringify_selector(normalized_action["target"])
+        if target_value is not None or "target" in normalized_action:
+            if legacy_action:
+                normalized_action["target"] = _stringify_selector(target_value)
+            elif target_value is not None:
+                normalized_action["target"] = target_value
 
-        if "value" in normalized_action and not isinstance(normalized_action["value"], str):
+        if legacy_action and "value" in normalized_action and not isinstance(normalized_action["value"], str):
             normalized_action["value"] = str(normalized_action["value"])
 
         normalized.append(normalized_action)
