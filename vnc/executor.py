@@ -63,9 +63,6 @@ class ActionOutcome:
     resolved: Optional[ResolvedNode] = None
     warnings: List[str] = field(default_factory=list)
     error: Optional[str] = None
-    error_code: Optional[str] = None
-    error_details: Dict[str, Any] = field(default_factory=dict)
-    attempts: int = 1
 
     def as_dict(self) -> Dict[str, Any]:
         payload = {"ok": self.ok, "details": self.details}
@@ -73,12 +70,6 @@ class ActionOutcome:
             payload["warnings"] = self.warnings
         if self.error:
             payload["error"] = self.error
-        if self.error_code:
-            payload["error_code"] = self.error_code
-        if self.error_details:
-            payload["error_details"] = self.error_details
-        if not self.ok or self.attempts > 1:
-            payload["attempts"] = self.attempts
         return payload
 
 
@@ -590,16 +581,7 @@ class RunExecutor:
 
     def _parse_payload(self, payload: Dict[str, Any]) -> RunRequest:
         if "plan" in payload:
-            plan_value = payload.get("plan")
-            sanitized: Dict[str, Any] = {
-                "run_id": payload.get("run_id") or f"run-{int(time.time())}",
-                "plan": plan_value,
-            }
-            if "config" in payload:
-                sanitized["config"] = payload["config"]
-            if "metadata" in payload:
-                sanitized["metadata"] = payload["metadata"]
-            return RunRequest.model_validate(sanitized)
+            return RunRequest.model_validate(payload)
         actions = payload.get("actions", [])
         plan = []
         for action in actions:
@@ -641,124 +623,35 @@ class RunExecutor:
                 raise ExecutionError(str(exc), code="DRY_RUN_FAIL") from exc
 
     async def _execute_with_retry(self, performer: ActionPerformer, action: ActionBase) -> ActionOutcome:
-        attempt = 1
+        attempt = 0
         warnings: List[str] = []
         backoff = self.config.retry_backoff_base
-        max_retries = max(1, self.config.max_retries)
-        while attempt <= max_retries:
+        while True:
             try:
                 outcome = await performer.execute(action)
-                if warnings:
-                    outcome.warnings = [*warnings, *outcome.warnings]
-                outcome.attempts = attempt
-                await self._log_action(
-                    performer.context,
-                    action,
-                    outcome,
-                    retry_count=attempt - 1,
-                )
+                outcome.warnings = warnings or outcome.warnings
+                await self._log_action(performer.context, action, outcome)
                 return outcome
             except ExecutionError as exc:
+                attempt += 1
                 warnings.append(f"Execution error {exc.code}: {exc}")
-                should_retry = self._should_retry_execution_error(exc)
-                if not should_retry or attempt == max_retries:
-                    detail_payload = dict(exc.details or {})
-                    failure_details = self._build_failure_details(attempt, exc.code, detail_payload)
-                    failure = ActionOutcome(
-                        ok=False,
-                        details=failure_details,
-                        warnings=warnings,
-                        error=str(exc),
-                        error_code=exc.code,
-                        error_details=detail_payload,
-                        attempts=attempt,
-                    )
-                    self._write_error_report(
-                        performer.context,
-                        action,
-                        warnings,
-                        str(exc),
-                        error_code=exc.code,
-                        error_details=detail_payload,
-                        attempts=attempt,
-                    )
-                    await self._log_action(
-                        performer.context,
-                        action,
-                        failure,
-                        retry_count=attempt - 1,
-                    )
+                if attempt >= self.config.max_retries:
+                    failure = ActionOutcome(ok=False, details={}, warnings=warnings, error=str(exc))
+                    self._write_error_report(performer.context, action, warnings, str(exc))
+                    await self._log_action(performer.context, action, failure)
                     return failure
             except PlaywrightError as exc:
+                attempt += 1
                 warnings.append(f"Playwright error: {exc}")
-                if attempt == max_retries:
-                    details = {"message": str(exc), "name": exc.__class__.__name__}
-                    failure_details = self._build_failure_details(attempt, "PLAYWRIGHT_ERROR", details)
-                    failure = ActionOutcome(
-                        ok=False,
-                        details=failure_details,
-                        warnings=warnings,
-                        error=str(exc),
-                        error_code="PLAYWRIGHT_ERROR",
-                        error_details=details,
-                        attempts=attempt,
-                    )
-                    self._write_error_report(
-                        performer.context,
-                        action,
-                        warnings,
-                        str(exc),
-                        error_code="PLAYWRIGHT_ERROR",
-                        error_details=details,
-                        attempts=attempt,
-                    )
-                    await self._log_action(
-                        performer.context,
-                        action,
-                        failure,
-                        retry_count=attempt - 1,
-                    )
+                if attempt >= self.config.max_retries:
+                    failure = ActionOutcome(ok=False, details={}, warnings=warnings, error=str(exc))
+                    self._write_error_report(performer.context, action, warnings, str(exc))
+                    await self._log_action(performer.context, action, failure)
                     return failure
             await asyncio.sleep(min(self.config.retry_backoff_max, backoff + random.random()))
-            backoff = min(backoff * 2, self.config.retry_backoff_max)
-            attempt += 1
+            backoff *= 2
 
-    def _should_retry_execution_error(self, exc: ExecutionError) -> bool:
-        non_retryable = {
-            "VALIDATION",
-            "LOCATOR",
-            "TARGET_NOT_FOUND",
-            "ELEMENT_NOT_FOUND",
-            "DRY_RUN_FAIL",
-            "PRESS_KEY_FAILED",
-        }
-        return exc.code not in non_retryable
-
-    def _build_failure_details(
-        self,
-        attempts: int,
-        error_code: Optional[str],
-        error_details: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"attempts": attempts}
-        if error_code:
-            payload["error_code"] = error_code
-        if isinstance(error_details, dict):
-            payload["error_details"] = dict(error_details)
-        elif error_details is None:
-            payload["error_details"] = {}
-        else:
-            payload["error_details"] = {"value": error_details}
-        return payload
-
-    async def _log_action(
-        self,
-        context: ActionContext,
-        action: ActionBase,
-        outcome: ActionOutcome,
-        *,
-        retry_count: int = 0,
-    ) -> None:
+    async def _log_action(self, context: ActionContext, action: ActionBase, outcome: ActionOutcome) -> None:
         resolved = outcome.resolved
         resolved_payload = None
         dom_digest = None
@@ -779,7 +672,6 @@ class RunExecutor:
             result=outcome.details,
             warnings=outcome.warnings,
             error=outcome.error,
-            retry_count=retry_count,
             dom_digest_sha=dom_digest,
             screenshot_path=screenshot_path,
         )
@@ -792,18 +684,11 @@ class RunExecutor:
         action: ActionBase,
         warnings: List[str],
         error: str,
-        *,
-        error_code: Optional[str] = None,
-        error_details: Optional[Dict[str, Any]] = None,
-        attempts: int = 1,
     ) -> None:
         report = {
             "action": action.payload(),
             "warnings": warnings,
             "error": error,
-            "error_code": error_code,
-            "error_details": error_details or {},
-            "attempts": attempts,
             "timestamp": time.time(),
         }
         report_path = context.paths.base / "error_report.json"

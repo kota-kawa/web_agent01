@@ -73,12 +73,6 @@ def append_history_entry(user, bot, url=None):
     url : str, optional
         The page URL at the time of interaction. If ``None``, an attempt is
         made to retrieve the current URL from the VNC browser module.
-
-    Returns
-    -------
-    int | None
-        The index of the persisted history entry, or ``None`` if the entry
-        could not be saved.
     """
 
     try:
@@ -93,8 +87,6 @@ def append_history_entry(user, bot, url=None):
 
         history.append({"user": user, "bot": bot, "url": url})
         save_hist(history)
-        return len(history) - 1
     except Exception as e:
         log.error("append_history_entry error: %s", e)
-        return None
 
