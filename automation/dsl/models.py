@@ -185,6 +185,13 @@ class FrameTarget(BaseModel):
     value: Optional[Union[int, str, Selector]] = None
 
 
+class FormField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selector: Selector = Field(alias="selector", validation_alias=AliasChoices("selector", "target"))
+    value: str = Field(alias="value")
+
+
 class ActionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -326,6 +333,27 @@ class TypeAction(ActionBase):
     clear: bool = Field(default=False, alias="clear")
 
 
+class SearchAction(ActionBase):
+    __action_name__ = "search"
+
+    type: Literal["search"] = Field(
+        default="search",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+    input: Selector = Field(alias="input", validation_alias=AliasChoices("input", "selector", "target"))
+    query: str = Field(alias="query")
+    submit_via: Literal["enter", "button"] = Field(default="enter", alias="submit_via")
+    submit_selector: Optional[Selector] = Field(default=None, alias="submit_selector")
+    wait_for: Optional[WaitCondition] = Field(default=None, alias="wait_for")
+
+    @model_validator(mode="after")
+    def _validate_submit(self) -> "SearchAction":
+        if self.submit_via == "button" and self.submit_selector is None:
+            raise ValueError("submit_selector is required when submit_via='button'")
+        return self
+
+
 class SelectAction(ActionBase):
     __action_name__ = "select"
 
@@ -380,6 +408,30 @@ class WaitAction(ActionBase):
         alias="timeout_ms",
         validation_alias=AliasChoices("timeout_ms", "ms"),
     )
+
+
+class SubmitFormAction(ActionBase):
+    __action_name__ = "submit_form"
+
+    type: Literal["submit_form"] = Field(
+        default="submit_form",
+        alias="type",
+        validation_alias=AliasChoices("type", "action"),
+    )
+    fields: List[FormField] = Field(default_factory=list, alias="fields")
+    submit_via: Literal["enter", "button"] = Field(default="enter", alias="submit_via")
+    submit_selector: Optional[Selector] = Field(default=None, alias="submit_selector")
+    max_attempts: int = Field(default=1, ge=1, alias="max_attempts")
+    retry_interval_ms: int = Field(default=500, ge=0, alias="retry_interval_ms")
+    wait_for: Optional[WaitCondition] = Field(default=None, alias="wait_for")
+
+    @model_validator(mode="after")
+    def _validate_submit(self) -> "SubmitFormAction":
+        if self.submit_via == "button" and self.submit_selector is None:
+            raise ValueError("submit_selector is required when submit_via='button'")
+        if not self.fields:
+            raise ValueError("fields must contain at least one entry")
+        return self
 
 
 class ScrollAction(ActionBase):
@@ -527,9 +579,11 @@ ActionTypes = Union[
     ClickAction,
     HoverAction,
     TypeAction,
+    SearchAction,
     SelectAction,
     PressKeyAction,
     WaitAction,
+    SubmitFormAction,
     ScrollAction,
     ScrollToTextAction,
     SwitchTabAction,

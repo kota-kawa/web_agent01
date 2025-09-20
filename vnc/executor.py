@@ -37,6 +37,8 @@ from automation.dsl import (
     WaitForSelector,
     WaitForState,
     WaitForTimeout,
+    SearchAction,
+    SubmitFormAction,
     registry,
     AssertAction,
 )
@@ -54,6 +56,7 @@ from .page_stability import stabilize_page, wait_for_page_ready
 from .safe_interactions import prepare_locator, safe_click, safe_fill, safe_hover, safe_press, safe_select
 from .selector_resolver import SelectorResolver, StableNodeStore
 from .structured_logging import LogPaths, StructuredLogger, prepare_log_paths
+from .watchdogs import PageWatchdog
 
 
 @dataclass(slots=True)
@@ -81,7 +84,15 @@ class ExecutionError(Exception):
 
 
 class ActionContext:
-    def __init__(self, page: Page, config: RunConfig, logger: StructuredLogger, paths: LogPaths, store: StableNodeStore):
+    def __init__(
+        self,
+        page: Page,
+        config: RunConfig,
+        logger: StructuredLogger,
+        paths: LogPaths,
+        store: StableNodeStore,
+        watchdog: Optional[PageWatchdog] = None,
+    ):
         self.page = page
         self.config = config
         self.logger = logger
@@ -90,6 +101,7 @@ class ActionContext:
         self.frame_stack: List[Frame] = [page.main_frame]
         self._last_result: Dict[str, Any] = {}
         self.stop_requested: bool = False
+        self.watchdog = watchdog
 
     @property
     def current_frame(self) -> Frame:
@@ -129,6 +141,19 @@ class ActionPerformer:
                 await self._resolve_selector(target.selector)
         if isinstance(action, WaitAction) and isinstance(action.for_, WaitForSelector):
             await self._resolve_selector(action.for_.selector)
+        if isinstance(action, SearchAction):
+            await self._resolve_selector(action.input)
+            if action.submit_selector is not None:
+                await self._resolve_selector(action.submit_selector)
+            if action.wait_for and isinstance(action.wait_for, WaitForSelector):
+                await self._resolve_selector(action.wait_for.selector)
+        if isinstance(action, SubmitFormAction):
+            for field in action.fields:
+                await self._resolve_selector(field.selector)
+            if action.submit_selector is not None:
+                await self._resolve_selector(action.submit_selector)
+            if action.wait_for and isinstance(action.wait_for, WaitForSelector):
+                await self._resolve_selector(action.wait_for.selector)
 
     async def execute(self, action: ActionBase) -> ActionOutcome:
         timeout = self.context.config.action_timeout_ms
@@ -146,12 +171,16 @@ class ActionPerformer:
             return await self._hover(action)
         if isinstance(action, TypeAction):
             return await self._type(action)
+        if isinstance(action, SearchAction):
+            return await self._search(action)
         if isinstance(action, SelectAction):
             return await self._select(action)
         if isinstance(action, PressKeyAction):
             return await self._press_key(action)
         if isinstance(action, WaitAction):
             return await self._wait(action)
+        if isinstance(action, SubmitFormAction):
+            return await self._submit_form(action)
         if isinstance(action, ScrollAction):
             return await self._scroll(action)
         if isinstance(action, ScrollToTextAction):
@@ -247,6 +276,58 @@ class ActionPerformer:
             details["cleared"] = True
         return ActionOutcome(ok=True, details=details, resolved=resolved)
 
+    async def _search(self, action: SearchAction) -> ActionOutcome:
+        input_resolved = await self._resolve_selector(action.input)
+        if input_resolved.locator is None:
+            raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
+        await safe_fill(
+            self.context.page,
+            input_resolved.locator,
+            action.query,
+            timeout=self.context.config.action_timeout_ms,
+            original_target=str(action.input.as_legacy()),
+        )
+        submit_target: Optional[ResolvedNode] = input_resolved
+        details: Dict[str, Any] = {
+            "query": action.query,
+            "input_stable_id": input_resolved.stable_id,
+            "submitted_via": action.submit_via,
+        }
+        if action.submit_via == "enter":
+            if action.submit_selector is not None:
+                submit_target = await self._resolve_selector(action.submit_selector)
+            if submit_target is None or submit_target.locator is None:
+                raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
+            await safe_press(
+                self.context.page,
+                submit_target.locator,
+                "Enter",
+                timeout=self.context.config.action_timeout_ms,
+            )
+        else:
+            if action.submit_selector is None:
+                raise ExecutionError("Search action requires submit_selector when submit_via='button'", code="VALIDATION")
+            submit_target = await self._resolve_selector(action.submit_selector)
+            if submit_target.locator is None:
+                raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
+            await safe_click(
+                self.context.page,
+                submit_target.locator,
+                timeout=self.context.config.action_timeout_ms,
+            )
+        if submit_target is not None and submit_target.stable_id:
+            details["submit_stable_id"] = submit_target.stable_id
+        wait_details: Dict[str, Any] = {}
+        resolved_wait: Optional[ResolvedNode] = None
+        if action.wait_for:
+            wait_details, resolved_wait = await self._handle_wait_condition(
+                action.wait_for,
+                self.context.config.wait_timeout_ms,
+            )
+        details.update(wait_details)
+        final_resolved = resolved_wait or submit_target or input_resolved
+        return ActionOutcome(ok=True, details=details, resolved=final_resolved)
+
     async def _select(self, action: SelectAction) -> ActionOutcome:
         resolved = await self._resolve(action)
         if resolved.locator is None:
@@ -283,6 +364,138 @@ class ActionPerformer:
             return ActionOutcome(ok=True, details={"waited_ms": action.timeout_ms})
         details, resolved = await self._handle_wait_condition(action.for_, action.timeout_ms)
         return ActionOutcome(ok=True, details=details, resolved=resolved)
+
+    async def _submit_form(self, action: SubmitFormAction) -> ActionOutcome:
+        warnings: List[str] = []
+        attempt = 0
+        last_error: Optional[Exception] = None
+        last_exception: Optional[Exception] = None
+        while attempt < action.max_attempts:
+            attempt += 1
+            try:
+                field_details: List[Dict[str, Any]] = []
+                final_field: Optional[ResolvedNode] = None
+                for field in action.fields:
+                    resolved_field = await self._resolve_selector(field.selector)
+                    if resolved_field.locator is None:
+                        raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
+                    await safe_fill(
+                        self.context.page,
+                        resolved_field.locator,
+                        field.value,
+                        timeout=self.context.config.action_timeout_ms,
+                        original_target=str(field.selector.as_legacy()),
+                    )
+                    field_details.append(
+                        {
+                            "stable_id": resolved_field.stable_id,
+                            "dom_path": resolved_field.dom_path,
+                            "value": field.value,
+                        }
+                    )
+                    final_field = resolved_field
+
+                submit_target: Optional[ResolvedNode] = final_field
+                submit_details: Dict[str, Any] = {"submitted_via": action.submit_via}
+                if action.submit_via == "enter":
+                    if action.submit_selector is not None:
+                        submit_target = await self._resolve_selector(action.submit_selector)
+                    if submit_target is None or submit_target.locator is None:
+                        raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
+                    await safe_press(
+                        self.context.page,
+                        submit_target.locator,
+                        "Enter",
+                        timeout=self.context.config.action_timeout_ms,
+                    )
+                else:
+                    if action.submit_selector is None:
+                        raise ExecutionError(
+                            "Submit selector is required when submit_via='button'",
+                            code="VALIDATION",
+                        )
+                    submit_target = await self._resolve_selector(action.submit_selector)
+                    if submit_target.locator is None:
+                        raise ExecutionError("Resolved locator is unavailable", code="LOCATOR")
+                    await safe_click(
+                        self.context.page,
+                        submit_target.locator,
+                        timeout=self.context.config.action_timeout_ms,
+                    )
+                if submit_target is not None and submit_target.stable_id:
+                    submit_details["submit_stable_id"] = submit_target.stable_id
+
+                wait_details: Dict[str, Any] = {}
+                wait_resolved: Optional[ResolvedNode] = None
+                if action.wait_for:
+                    wait_details, wait_resolved = await self._handle_wait_condition(
+                        action.wait_for,
+                        self.context.config.wait_timeout_ms,
+                    )
+
+                details: Dict[str, Any] = {
+                    "attempts": attempt,
+                    "fields": field_details,
+                }
+                details.update(submit_details)
+                details.update(wait_details)
+
+                if attempt > 1:
+                    message = f"Form submission succeeded after {attempt} attempt(s)"
+                    warnings.append(f"INFO:auto:{message}")
+                    if self.context.watchdog:
+                        self.context.watchdog.record_recovery(
+                            source="submit_form",
+                            message=message,
+                            details={"attempts": attempt},
+                            level="INFO",
+                            emit_warning=False,
+                        )
+                return ActionOutcome(
+                    ok=True,
+                    details=details,
+                    warnings=warnings,
+                    resolved=wait_resolved or submit_target or final_field,
+                )
+            except ExecutionError as exc:
+                last_error = exc
+                last_exception = exc
+                if exc.code in {"VALIDATION", "LOCATOR"}:
+                    raise
+                warnings.append(f"WARNING:auto:Form submission attempt {attempt} failed ({exc.code})")
+            except Exception as exc:  # pragma: no cover - complex runtime recovery
+                last_error = exc
+                last_exception = exc
+                warnings.append(f"WARNING:auto:Form submission attempt {attempt} raised error: {exc}")
+
+            if attempt < action.max_attempts:
+                if self.context.watchdog:
+                    self.context.watchdog.record_recovery(
+                        source="submit_form",
+                        message=f"Retrying form submission after attempt {attempt} failed",
+                        details={"attempt": attempt, "error": str(last_error) if last_error else ""},
+                        level="WARNING",
+                    )
+                if action.retry_interval_ms > 0:
+                    await self.context.page.wait_for_timeout(action.retry_interval_ms)
+                continue
+            break
+
+        if self.context.watchdog:
+            self.context.watchdog.record_recovery(
+                source="submit_form",
+                message=f"Form submission failed after {action.max_attempts} attempts",
+                details={
+                    "attempts": action.max_attempts,
+                    "error": str(last_error) if last_error else "unknown",
+                },
+                level="ERROR",
+            )
+        error_message = str(last_error) if last_error else "unknown error"
+        raise ExecutionError(
+            f"Form submission failed after {action.max_attempts} attempt(s): {error_message}",
+            code="FORM_SUBMIT_FAILED",
+        ) from last_exception
 
     async def _handle_wait_condition(
         self,
@@ -546,13 +759,17 @@ class RunExecutor:
         dirs = ensure_run_directories(request.run_id, self.config)
         log_paths = prepare_log_paths(request.run_id, dirs["base"])
         logger = StructuredLogger(request.run_id, log_paths)
-        context = ActionContext(self.page, self.config, logger, log_paths, self.store)
+        watchdog = PageWatchdog(self.page)
+        watchdog.start()
+        context = ActionContext(self.page, self.config, logger, log_paths, self.store, watchdog=watchdog)
         performer = ActionPerformer(context)
         plan = request.plan.actions
         validation_warnings = self._validate(plan)
-        await self._dry_run(performer, plan)
         results: List[Dict[str, Any]] = []
+        watcher_warnings: List[str] = []
+        observation: Dict[str, Any] = {}
         try:
+            await self._dry_run(performer, plan)
             for action in plan:
                 result = await self._execute_with_retry(performer, action)
                 results.append(result.as_dict())
@@ -560,11 +777,15 @@ class RunExecutor:
                     break
         finally:
             logger.close()
+            watchdog.stop()
+            watcher_warnings = watchdog.collect_warnings()
+            observation = watchdog.snapshot()
         success = all(r.get("ok") for r in results)
         warnings: List[str] = []
         warnings.extend(validation_warnings)
         for entry in results:
             warnings.extend(entry.get("warnings", []))
+        warnings.extend(watcher_warnings)
         html = ""
         try:
             html = await self.page.content()
@@ -577,6 +798,7 @@ class RunExecutor:
             "html": html,
             "run_id": request.run_id,
             "log_path": str(log_paths.events),
+            "observation": observation,
         }
 
     def _parse_payload(self, payload: Dict[str, Any]) -> RunRequest:
