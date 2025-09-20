@@ -11,6 +11,7 @@ import os
 import re
 import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -439,6 +440,544 @@ CATALOG_COLLECTION_SCRIPT = """
 })()
 """ % CATALOG_MAX_ELEMENTS
 
+SNAPSHOT_COMPUTED_STYLES = [
+    "display",
+    "visibility",
+    "position",
+    "overflow",
+    "overflow-x",
+    "overflow-y",
+    "opacity",
+    "pointer-events",
+    "z-index",
+]
+
+_STABLE_ATTR_WHITELIST = {
+    "id",
+    "name",
+    "data-testid",
+    "data-test",
+    "data-test-id",
+    "data-qa",
+    "aria-label",
+    "aria-labelledby",
+    "aria-describedby",
+    "title",
+}
+
+
+def _safe_get_string(strings: List[str], index: Optional[int]) -> str:
+    if isinstance(index, int) and 0 <= index < len(strings):
+        value = strings[index]
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _decode_array_of_strings(strings: List[str], values: Optional[Iterable[int]]) -> List[str]:
+    if not isinstance(values, Iterable):
+        return []
+    result: List[str] = []
+    for idx in values:
+        result.append(_safe_get_string(strings, idx))
+    return result
+
+
+def _rare_string_map(data: Optional[Dict[str, Any]], strings: List[str]) -> Dict[int, str]:
+    if not isinstance(data, dict):
+        return {}
+    indexes = data.get("index") or []
+    values = data.get("value") or []
+    result: Dict[int, str] = {}
+    for idx, value in zip(indexes, values):
+        if isinstance(idx, int):
+            result[idx] = _safe_get_string(strings, value)
+    return result
+
+
+def _rare_boolean_set(data: Optional[Dict[str, Any]]) -> set[int]:
+    if not isinstance(data, dict):
+        return set()
+    indexes = data.get("index") or []
+    return {idx for idx in indexes if isinstance(idx, int)}
+
+
+def _rare_integer_map(data: Optional[Dict[str, Any]]) -> Dict[int, int]:
+    if not isinstance(data, dict):
+        return {}
+    indexes = data.get("index") or []
+    values = data.get("value") or []
+    result: Dict[int, int] = {}
+    for idx, value in zip(indexes, values):
+        if isinstance(idx, int) and isinstance(value, int):
+            result[idx] = value
+    return result
+
+
+def _convert_rect(rect: Optional[Any]) -> Optional[Dict[str, float]]:
+    if not rect:
+        return None
+    if isinstance(rect, dict):
+        return {
+            "x": float(rect.get("x", 0.0)),
+            "y": float(rect.get("y", 0.0)),
+            "width": float(rect.get("width", 0.0)),
+            "height": float(rect.get("height", 0.0)),
+        }
+    if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+        return {
+            "x": float(rect[0] or 0.0),
+            "y": float(rect[1] or 0.0),
+            "width": float(rect[2] or 0.0),
+            "height": float(rect[3] or 0.0),
+        }
+    return None
+
+
+def _flatten_frame_tree(frame_tree: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    frames: Dict[str, Dict[str, Any]] = {}
+
+    def _visit(node: Optional[Dict[str, Any]], path: List[str]) -> None:
+        if not isinstance(node, dict):
+            return
+        frame = node.get("frame") or {}
+        frame_id = frame.get("id")
+        if frame_id:
+            current_path = path + [frame_id]
+            frames[frame_id] = {
+                "id": frame_id,
+                "parent_id": frame.get("parentId"),
+                "name": frame.get("name"),
+                "url": frame.get("url"),
+                "security_origin": frame.get("securityOrigin"),
+                "mime_type": frame.get("mimeType"),
+                "frame_path": current_path,
+            }
+        else:
+            current_path = list(path)
+        for child in node.get("childFrames") or []:
+            _visit(child, current_path)
+
+    if frame_tree and isinstance(frame_tree, dict):
+        _visit(frame_tree.get("frameTree"), [])
+    return frames
+
+
+def _decode_style_dict(strings: List[str], values: Optional[Iterable[int]]) -> Dict[str, str]:
+    resolved = _decode_array_of_strings(strings, values)
+    return {
+        SNAPSHOT_COMPUTED_STYLES[i] if i < len(SNAPSHOT_COMPUTED_STYLES) else f"property_{i}": value
+        for i, value in enumerate(resolved)
+        if value
+    }
+
+
+def _build_layout_entries(
+    layout: Dict[str, Any], strings: List[str]
+) -> Dict[int, Dict[str, Any]]:
+    entries: Dict[int, Dict[str, Any]] = {}
+    node_indices = layout.get("nodeIndex") or []
+    bounds = layout.get("bounds") or []
+    styles = layout.get("styles") or []
+    text_content = layout.get("text") or []
+    paint_orders = layout.get("paintOrders") or []
+    offset_rects = layout.get("offsetRects") or []
+    scroll_rects = layout.get("scrollRects") or []
+    client_rects = layout.get("clientRects") or []
+    stacking_contexts = _rare_boolean_set(layout.get("stackingContexts"))
+
+    for idx, node_idx in enumerate(node_indices):
+        if not isinstance(node_idx, int):
+            continue
+        entry: Dict[str, Any] = {}
+        if idx < len(bounds):
+            entry["bounds"] = _convert_rect(bounds[idx])
+        if idx < len(styles):
+            entry["computed_styles"] = _decode_style_dict(strings, styles[idx])
+        if idx < len(text_content):
+            entry["text"] = _safe_get_string(strings, text_content[idx])
+        if idx < len(paint_orders):
+            entry["paint_order"] = paint_orders[idx]
+        if idx < len(offset_rects):
+            entry["offset_rect"] = _convert_rect(offset_rects[idx])
+        if idx < len(scroll_rects):
+            entry["scroll_rect"] = _convert_rect(scroll_rects[idx])
+        if idx < len(client_rects):
+            entry["client_rect"] = _convert_rect(client_rects[idx])
+        if idx in stacking_contexts:
+            entry["is_stacking_context"] = True
+        entries[node_idx] = entry
+    return entries
+
+
+def _compute_dom_paths(nodes: List[Dict[str, Any]]) -> Dict[int, str]:
+    lookup = {node.get("index"): node for node in nodes if isinstance(node.get("index"), int)}
+    children_map = {idx: node.get("children", []) for idx, node in lookup.items()}
+    cache: Dict[int, str] = {}
+
+    def _resolve(idx: int) -> str:
+        if idx in cache:
+            return cache[idx]
+        node = lookup.get(idx)
+        if not node:
+            return ""
+        parent = node.get("parent")
+        node_type = node.get("node_type")
+        raw_name = node.get("node_name") or ""
+        if node_type == 3:
+            local_name = "text()"
+        else:
+            local_name = raw_name.lower() if isinstance(raw_name, str) else ""
+        if parent is None or parent not in lookup or parent < 0:
+            if node_type == 9:
+                cache[idx] = ""
+            elif node_type == 3:
+                cache[idx] = "/text()[1]"
+            else:
+                name = local_name or "node()"
+                cache[idx] = f"/{name}[1]"
+            return cache[idx]
+        parent_path = _resolve(parent)
+        siblings = children_map.get(parent, []) or []
+        same_tag: List[int] = []
+        for child_idx in siblings:
+            child = lookup.get(child_idx)
+            if not child:
+                continue
+            child_type = child.get("node_type")
+            if node_type == 3 and child_type == 3:
+                same_tag.append(child_idx)
+            elif node_type != 3 and child_type == node_type:
+                child_name = child.get("node_name") or ""
+                if isinstance(child_name, str) and child_name.lower() == local_name:
+                    same_tag.append(child_idx)
+        try:
+            position = same_tag.index(idx) + 1 if same_tag else siblings.index(idx) + 1
+        except ValueError:
+            position = 1
+        if node_type == 3:
+            segment = f"text()[{position}]"
+        else:
+            name = local_name or "node()"
+            segment = f"{name}[{position}]"
+        cache[idx] = f"{parent_path}/{segment}" if parent_path else f"/{segment}"
+        return cache[idx]
+
+    for idx in lookup.keys():
+        _resolve(idx)
+    return cache
+
+
+def _is_scrollable(styles: Dict[str, str], layout: Dict[str, Any]) -> bool:
+    for key in ("overflow", "overflow-x", "overflow-y"):
+        value = (styles.get(key) or "").lower()
+        if value in {"auto", "scroll"}:
+            return True
+    if layout.get("scroll_rect"):
+        rect = layout["scroll_rect"]
+        if rect and rect.get("height", 0) > 0 and rect.get("width", 0) > 0:
+            return True
+    return False
+
+
+def _is_visible(styles: Dict[str, str], layout: Dict[str, Any]) -> bool:
+    bounds = layout.get("bounds") or {}
+    if not bounds:
+        return False
+    width = bounds.get("width", 0)
+    height = bounds.get("height", 0)
+    if width <= 0 or height <= 0:
+        return False
+    display = (styles.get("display") or "").lower()
+    visibility = (styles.get("visibility") or "").lower()
+    if display == "none" or visibility in {"hidden", "collapse"}:
+        return False
+    opacity = (styles.get("opacity") or "").strip()
+    try:
+        if opacity and float(opacity) == 0.0:
+            return False
+    except ValueError:
+        pass
+    return True
+
+
+def _compute_stable_id(
+    node: Dict[str, Any], frame_path: List[str], scroll: Dict[str, float]
+) -> Optional[str]:
+    if node.get("node_type") != 1:
+        return None
+    dom_path = node.get("dom_path") or ""
+    if not dom_path:
+        return None
+    seed: Dict[str, Any] = {
+        "frame": "|".join(frame_path or []),
+        "path": dom_path,
+        "tag": (node.get("node_name") or "").lower(),
+    }
+    backend_id = node.get("backend_node_id")
+    if isinstance(backend_id, int):
+        seed["backend"] = backend_id
+    if scroll:
+        seed["scroll"] = [round(float(scroll.get("x", 0.0)), 2), round(float(scroll.get("y", 0.0)), 2)]
+    attributes = node.get("attributes") or {}
+    attr_subset = {k: v for k, v in attributes.items() if k in _STABLE_ATTR_WHITELIST and v}
+    if attr_subset:
+        seed["attrs"] = attr_subset
+    layout = node.get("layout") or {}
+    bounds = layout.get("bounds")
+    if bounds:
+        seed["bounds"] = [
+            round(bounds.get("x", 0.0), 2),
+            round(bounds.get("y", 0.0), 2),
+            round(bounds.get("width", 0.0), 2),
+            round(bounds.get("height", 0.0), 2),
+        ]
+    paint_order = layout.get("paint_order")
+    if isinstance(paint_order, int):
+        seed["paint"] = paint_order
+    if node.get("child_documents"):
+        seed["child_docs"] = node["child_documents"]
+    raw = json.dumps(seed, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _process_dom_snapshot(
+    raw_snapshot: Dict[str, Any],
+    frame_tree: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    strings: List[str] = raw_snapshot.get("strings") or []
+    documents_raw = raw_snapshot.get("documents") or []
+    frames = _flatten_frame_tree(frame_tree)
+    processed_docs: List[Dict[str, Any]] = []
+
+    child_document_lookup: Dict[int, Dict[int, List[int]]] = {}
+
+    for doc_index, raw_doc in enumerate(documents_raw):
+        nodes_raw = raw_doc.get("nodes") or {}
+        layout_raw = raw_doc.get("layout") or {}
+
+        parent_index = nodes_raw.get("parentIndex") or []
+        node_type = nodes_raw.get("nodeType") or []
+        node_name = nodes_raw.get("nodeName") or []
+        node_value = nodes_raw.get("nodeValue") or []
+        backend_ids = nodes_raw.get("backendNodeId") or []
+        attributes = nodes_raw.get("attributes") or []
+
+        node_count = max(
+            len(parent_index), len(node_type), len(node_name), len(node_value), len(backend_ids)
+        )
+
+        children: Dict[int, List[int]] = {i: [] for i in range(node_count)}
+        for idx in range(node_count):
+            parent = parent_index[idx] if idx < len(parent_index) else None
+            if isinstance(parent, int) and parent >= 0:
+                children.setdefault(parent, []).append(idx)
+
+        layout_entries = _build_layout_entries(layout_raw, strings)
+        text_value_map = _rare_string_map(nodes_raw.get("textValue"), strings)
+        input_value_map = _rare_string_map(nodes_raw.get("inputValue"), strings)
+        is_clickable_set = _rare_boolean_set(nodes_raw.get("isClickable"))
+        content_document_map = _rare_integer_map(nodes_raw.get("contentDocumentIndex"))
+
+        child_docs_map: Dict[int, List[int]] = defaultdict(list)
+        for node_idx, child_doc_idx in content_document_map.items():
+            child_docs_map[node_idx].append(child_doc_idx)
+        child_document_lookup[doc_index] = child_docs_map
+
+        frame_id = _safe_get_string(strings, raw_doc.get("frameId"))
+        frame_entry = frames.get(frame_id, {})
+        frame_path = frame_entry.get("frame_path", [frame_id] if frame_id else [])
+
+        scroll = {
+            "x": float(raw_doc.get("scrollOffsetX") or 0.0),
+            "y": float(raw_doc.get("scrollOffsetY") or 0.0),
+        }
+        content_size = {
+            "width": float(raw_doc.get("contentWidth") or 0.0),
+            "height": float(raw_doc.get("contentHeight") or 0.0),
+        }
+
+        nodes: List[Dict[str, Any]] = []
+        for idx in range(node_count):
+            node_entry: Dict[str, Any] = {
+                "index": idx,
+                "parent": parent_index[idx] if idx < len(parent_index) else None,
+                "node_type": node_type[idx] if idx < len(node_type) else None,
+                "node_name": _safe_get_string(strings, node_name[idx]) if idx < len(node_name) else "",
+                "node_value": _safe_get_string(strings, node_value[idx]) if idx < len(node_value) else "",
+                "backend_node_id": backend_ids[idx] if idx < len(backend_ids) else None,
+                "attributes": {},
+                "children": children.get(idx, []),
+                "text_value": text_value_map.get(idx),
+                "input_value": input_value_map.get(idx),
+                "is_clickable": idx in is_clickable_set,
+                "content_document_index": content_document_map.get(idx),
+                "layout": layout_entries.get(idx, {}),
+                "child_documents": child_docs_map.get(idx, []),
+                "frame_id": frame_id,
+                "frame_path": frame_path,
+            }
+            attrs = attributes[idx] if idx < len(attributes) else []
+            if attrs:
+                attr_map: Dict[str, str] = {}
+                for attr_idx in range(0, len(attrs), 2):
+                    name = _safe_get_string(strings, attrs[attr_idx])
+                    value = _safe_get_string(strings, attrs[attr_idx + 1]) if attr_idx + 1 < len(attrs) else ""
+                    if name:
+                        attr_map[name] = value
+                node_entry["attributes"] = attr_map
+            if node_entry["node_type"] == 3:
+                text_content = node_entry.get("node_value", "").strip()
+                if not text_content and node_entry.get("text_value"):
+                    text_content = node_entry["text_value"].strip()
+                node_entry["text_content"] = text_content
+            nodes.append(node_entry)
+
+        dom_paths = _compute_dom_paths(nodes)
+        for node_entry in nodes:
+            node_entry["dom_path"] = dom_paths.get(node_entry["index"], "")
+            layout = node_entry.get("layout") or {}
+            styles = layout.get("computed_styles") or {}
+            visible = _is_visible(styles, layout)
+            node_entry["is_visible"] = visible
+            tag = (node_entry.get("node_name") or "").lower()
+            attrs = node_entry.get("attributes") or {}
+            interactive_tags = {
+                "a",
+                "button",
+                "input",
+                "select",
+                "textarea",
+                "summary",
+                "label",
+                "option",
+            }
+            interactive_roles = {
+                "button",
+                "link",
+                "textbox",
+                "checkbox",
+                "radio",
+                "menuitem",
+                "tab",
+                "switch",
+                "combobox",
+                "option",
+            }
+            role = (attrs.get("role") or "").lower()
+            tabindex = attrs.get("tabindex")
+            is_focusable = False
+            if tabindex is not None:
+                try:
+                    is_focusable = int(str(tabindex).strip()) >= 0
+                except (TypeError, ValueError):
+                    is_focusable = False
+            content_editable = str(attrs.get("contenteditable", "")).lower() == "true"
+            is_interactive = visible and (
+                node_entry.get("is_clickable")
+                or tag in interactive_tags
+                or role in interactive_roles
+                or content_editable
+                or is_focusable
+            )
+            if tag == "input" and (attrs.get("type", "").lower() == "hidden"):
+                is_interactive = False
+            node_entry["is_interactive"] = is_interactive
+            node_entry["is_scrollable"] = _is_scrollable(styles, layout)
+            node_entry["stable_id"] = _compute_stable_id(node_entry, frame_path, scroll)
+            annotations: List[str] = []
+            if node_entry["is_scrollable"]:
+                annotations.append("SCROLL")
+            if node_entry.get("child_documents"):
+                annotations.append("IFRAME")
+            if node_entry.get("stable_id"):
+                annotations.append(f"SID:{node_entry['stable_id'][:8]}")
+            node_entry["annotations"] = annotations or None
+
+        doc_data = {
+            "index": doc_index,
+            "frame_id": frame_id,
+            "frame_path": frame_path,
+            "document_url": _safe_get_string(strings, raw_doc.get("documentURL")),
+            "title": _safe_get_string(strings, raw_doc.get("title")),
+            "scroll": scroll,
+            "content_size": content_size,
+            "nodes": nodes,
+            "_child_documents_map": {k: list(v) for k, v in child_docs_map.items()},
+        }
+        processed_docs.append(doc_data)
+
+    owner_lookup: Dict[int, Dict[str, Any]] = {}
+    for doc in processed_docs:
+        doc_index = doc["index"]
+        child_map = child_document_lookup.get(doc_index, {})
+        for node_idx, targets in child_map.items():
+            for child_doc_index in targets:
+                owner_lookup[child_doc_index] = {
+                    "document_index": doc_index,
+                    "node_index": node_idx,
+                }
+
+    for doc in processed_docs:
+        owner = owner_lookup.get(doc["index"])
+        if owner:
+            parent_doc = next((d for d in processed_docs if d["index"] == owner["document_index"]), None)
+            owner = dict(owner)
+            if parent_doc:
+                nodes = parent_doc.get("nodes") or []
+                if 0 <= owner["node_index"] < len(nodes):
+                    owner["stable_id"] = nodes[owner["node_index"]].get("stable_id")
+            doc["owner"] = owner
+        doc.pop("_child_documents_map", None)
+
+    return {
+        "documents": processed_docs,
+        "frames": frames,
+        "computed_styles": SNAPSHOT_COMPUTED_STYLES,
+        "timestamp": time.time(),
+    }
+
+
+async def _capture_dom_snapshot() -> Dict[str, Any]:
+    if PAGE is None:
+        return {}
+    session = await PAGE.context.new_cdp_session(PAGE)
+    try:
+        snapshot = await session.send(
+            "DOMSnapshot.captureSnapshot",
+            {
+                "computedStyles": SNAPSHOT_COMPUTED_STYLES,
+                "includePaintOrder": True,
+                "includeDOMRects": True,
+            },
+        )
+        frame_tree = await session.send("Page.getFrameTree")
+    finally:
+        try:
+            await session.detach()
+        except Exception:
+            pass
+    return _process_dom_snapshot(snapshot, frame_tree)
+
+
+def _build_snapshot_lookup(snapshot: Optional[Dict[str, Any]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    lookup: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    if not isinstance(snapshot, dict):
+        return lookup
+    for doc in snapshot.get("documents", []):
+        if not isinstance(doc, dict):
+            continue
+        frame_id = doc.get("frame_id") or ""
+        for node in doc.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            dom_path = node.get("dom_path")
+            if not dom_path:
+                continue
+            lookup[(frame_id, dom_path)] = node
+    return lookup
+
+
 # Event listener tracker script will be injected on every page load
 _WATCHER_SCRIPT = None
 
@@ -461,11 +1000,23 @@ def _trim(text: str, limit: int) -> str:
     return text[: limit - 3] + "..."
 
 
-def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Dict[str, Any]:
+def _build_catalog_entries(
+    raw: Dict[str, Any],
+    signature: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     elements = raw.get("elements", []) if isinstance(raw, dict) else []
     abbreviated: List[Dict[str, Any]] = []
     full: List[Dict[str, Any]] = []
     index_map: Dict[str, Dict[str, Any]] = {}
+
+    snapshot_lookup = _build_snapshot_lookup(snapshot)
+    root_frame_id = ""
+    if isinstance(snapshot, dict):
+        documents = snapshot.get("documents", []) or []
+        root_doc = next((doc for doc in documents if not doc.get("owner")), documents[0] if documents else None)
+        if isinstance(root_doc, dict):
+            root_frame_id = root_doc.get("frame_id") or ""
 
     for item in elements:
         if not isinstance(item, dict):
@@ -494,6 +1045,30 @@ def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Di
             if isinstance(t, str) and t.strip()
         ]
 
+        stable_id = None
+        frame_path = None
+        paint_order = None
+        snapshot_ref: Optional[Dict[str, Any]] = None
+        if dom_path:
+            node = snapshot_lookup.get((root_frame_id, dom_path))
+            if node:
+                stable_id = node.get("stable_id")
+                frame_path = node.get("frame_path")
+                layout = node.get("layout") or {}
+                bounds = layout.get("bounds")
+                if bounds:
+                    bbox = {
+                        "x": float(bounds.get("x", 0.0)),
+                        "y": float(bounds.get("y", 0.0)),
+                        "width": float(bounds.get("width", 0.0)),
+                        "height": float(bounds.get("height", 0.0)),
+                    }
+                paint_order = layout.get("paint_order")
+                snapshot_ref = {
+                    "frame_id": node.get("frame_id"),
+                    "node_index": node.get("index"),
+                }
+
         abbreviated_entry = {
             "index": idx,
             "role": item.get("role", ""),
@@ -504,6 +1079,8 @@ def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Di
             "state_hint": state,
             "href_short": href_short,
         }
+        if stable_id:
+            abbreviated_entry["stable_id"] = stable_id
 
         full_entry = {
             "index": idx,
@@ -523,6 +1100,16 @@ def _build_catalog_entries(raw: Dict[str, Any], signature: Dict[str, Any]) -> Di
             "nearest_texts": nearest_texts,
             "section_id": _trim(str(item.get("sectionId", "page")), 80),
         }
+        if dom_path:
+            full_entry["dom_path"] = dom_path
+        if frame_path:
+            full_entry["frame_path"] = frame_path
+        if stable_id:
+            full_entry["stable_id"] = stable_id
+        if paint_order is not None:
+            full_entry["paint_order"] = paint_order
+        if snapshot_ref:
+            full_entry["snapshot_ref"] = snapshot_ref
 
         abbreviated.append(abbreviated_entry)
         full.append(full_entry)
@@ -580,7 +1167,10 @@ async def _generate_element_catalog(force: bool = False) -> Dict[str, Any]:
             return _CURRENT_CATALOG
 
         raw_data = await PAGE.evaluate(CATALOG_COLLECTION_SCRIPT)
-        catalog = _build_catalog_entries(raw_data, signature)
+        snapshot = await _capture_dom_snapshot()
+        catalog = _build_catalog_entries(raw_data, signature, snapshot)
+        if snapshot:
+            catalog["snapshot"] = snapshot
         catalog.update(signature)
         catalog["generated_at"] = time.time()
         _CURRENT_CATALOG = catalog
@@ -2216,6 +2806,19 @@ def elements():
         return jsonify([])
 
 
+@app.get("/dom-snapshot")
+def dom_snapshot():
+    try:
+        if not PAGE or not _run(_check_browser_health()):
+            _run(_init_browser())
+        snapshot = _run(_capture_dom_snapshot())
+        signature = _run(_compute_dom_signature()) if INDEX_MODE else _collect_basic_signature()
+        return jsonify({"snapshot": snapshot, "signature": signature})
+    except Exception as e:
+        log.error("dom_snapshot error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.get("/catalog")
 def catalog():
     if not INDEX_MODE:
@@ -2244,6 +2847,7 @@ def catalog():
                     "url": signature.get("url"),
                     "title": signature.get("title"),
                 },
+                "snapshot": catalog_data.get("snapshot"),
                 "index_mode_enabled": True,
             }
         )

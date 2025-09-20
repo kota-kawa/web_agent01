@@ -392,7 +392,7 @@ def execute():
     prev_error = data.get("error")
     hist = load_hist()
     current_url = data.get("url") or vnc_url()
-    elements, dom_err = vnc_dom_tree()
+    elements, dom_snapshot, dom_err = vnc_dom_tree()
     if elements is None:
         try:
             fallback = vnc_elements()
