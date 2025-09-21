@@ -19,10 +19,9 @@ from agent.browser.vnc import (
     get_elements as vnc_elements,
     get_dom_tree as vnc_dom_tree,
 )
-from agent.browser.dom import DOMElementNode
+from agent.browser.dom import DOMSnapshot
 from agent.controller.prompt import build_prompt
 from agent.utils.history import load_hist, save_hist
-from agent.utils.html import strip_html
 
 # --------------- Flask & Logger ----------------------------------
 app = Flask(__name__)
@@ -78,38 +77,30 @@ def execute():
     if not cmd:
         return jsonify(error="command empty"), 400
 
-    page = data.get("pageSource") or vnc_html()
+    raw_page = data.get("pageSource") or vnc_html()
     shot = data.get("screenshot")
     model = data.get("model", "gemini")
     prev_error = data.get("error")
     hist = load_hist()
-    elements, dom_err = vnc_dom_tree()
-    if elements is None:
+    snapshot, dom_err = vnc_dom_tree()
+    if snapshot is None:
         try:
             fallback = vnc_elements()
-            elements = [
-                DOMElementNode(
-                    tagName=e.get("tag", ""),
-                    attributes={
-                        k: v
-                        for k, v in {
-                            "id": e.get("id"),
-                            "class": e.get("class"),
-                        }.items()
-                        if v
-                    },
-                    text=e.get("text"),
-                    xpath=e.get("xpath", ""),
-                    highlightIndex=e.get("index"),
-                    isVisible=True,
-                    isInteractive=True,
+            summary_lines = [
+                "[{:03d}] <{}> {} id={} class={}".format(
+                    int(e.get("index", 0)),
+                    e.get("tag", ""),
+                    (e.get("text") or "").strip(),
+                    e.get("id") or "-",
+                    e.get("class") or "-",
                 )
                 for e in fallback
             ]
+            snapshot = DOMSnapshot(summary_lines=summary_lines)
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
-    prompt = build_prompt(cmd, page, hist, bool(shot), elements, err_msg)
+    prompt = build_prompt(cmd, snapshot, hist, bool(shot), err_msg, raw_page)
     res = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})

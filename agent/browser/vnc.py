@@ -1,6 +1,8 @@
 import requests
 import logging
-from .dom import DOMElementNode
+from typing import Tuple
+
+from .dom import DOMSnapshot
 
 VNC_API = "http://vnc:7000"
 log = logging.getLogger(__name__)
@@ -71,16 +73,15 @@ def eval_js(script: str):
     return res[-1] if res else None
 
 
-def get_dom_tree() -> tuple[DOMElementNode | None, str | None]:
-    """Retrieve the DOM tree by parsing the current page HTML.
-
-    Returns a tuple of (DOM tree or None, error message or None).
-    """
+def get_dom_tree() -> Tuple[DOMSnapshot | None, str | None]:
+    """Retrieve the compact DOM snapshot from the automation server."""
     try:
-        html = get_html()
-        if not html:
-            raise ValueError("empty html")
-        return DOMElementNode.from_html(html), None
+        res = requests.get(f"{VNC_API}/dom", timeout=30)
+        res.raise_for_status()
+        data = res.json()
+        snapshot = DOMSnapshot.from_json(data)
+        err = data.get("error")
+        return snapshot, str(err) if err else None
     except Exception as e:
         log.error("get_dom_tree error: %s", e)
         return None, str(e)
