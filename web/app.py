@@ -25,6 +25,7 @@ from agent.browser.vnc import (
 )
 from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
+from agent.controller.action_optimizer import optimize_actions
 from agent.controller.async_executor import get_async_executor
 from agent.utils.history import load_hist, save_hist, append_history_entry
 from agent.utils.html import strip_html
@@ -500,6 +501,18 @@ def execute():
     
     # Extract and normalize actions from LLM response
     actions = normalize_actions(res)
+    optimization_notes: list[str] = []
+    if actions and (elements is not None or catalog_data):
+        try:
+            optimized, optimization_notes = optimize_actions(actions, catalog_data, elements)
+            if optimized:
+                actions = optimized
+        except Exception as opt_exc:
+            log.exception("Action optimization failed: %s", opt_exc)
+            optimization_notes = []
+    if optimization_notes:
+        log.info("Action optimizer adjustments: %s", " | ".join(optimization_notes))
+
     uses_catalog_indices = bool(actions) and is_catalog_enabled() and actions_use_catalog_indices(actions)
     if uses_catalog_indices:
         log.debug("Planned actions rely on catalog indices")
