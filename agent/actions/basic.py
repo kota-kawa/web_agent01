@@ -1,6 +1,6 @@
 """Action helpers used by the controller."""
 
-from typing import Dict
+from typing import Dict, List, Union
 
 
 def click(target: str) -> Dict:
@@ -135,4 +135,22 @@ def extract_structured_data(index: int | None = None, target: str | None = None)
         act["index"] = index
     if target:
         act["target"] = target
+    return act
+
+
+def extract_page_content(target: str | None = None) -> Dict:
+    act: Dict = {"action": "extract_page_content"}
+    if target:
+        act["target"] = target
+    return act
+
+
+def structured_output(data: Union[Dict, List, str], success: bool = True) -> Dict:
+    return {"action": "structured_output", "data": data, "success": success}
+
+
+def done(text: str, success: bool = True, files: List[str] | None = None) -> Dict:
+    act: Dict = {"action": "done", "text": text, "success": success}
+    if files:
+        act["files_to_display"] = files
     return act

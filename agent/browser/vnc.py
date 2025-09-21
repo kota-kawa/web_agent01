@@ -65,6 +65,20 @@ def get_eval_results() -> list:
         return []
 
 
+def get_action_trace() -> tuple[list, list]:
+    """Fetch and clear the most recent action execution trace and warnings."""
+    try:
+        res = requests.get(f"{VNC_API}/action-results", timeout=30)
+        res.raise_for_status()
+        data = res.json()
+        results = data.get("results") or []
+        warnings = data.get("warnings") or []
+        return results, warnings
+    except Exception as e:
+        log.error("get_action_trace error: %s", e)
+        return [], []
+
+
 def eval_js(script: str):
     """Execute JavaScript and return its result if any."""
     payload = {"actions": [{"action": "eval_js", "script": script}]}
