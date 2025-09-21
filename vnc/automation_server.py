@@ -58,6 +58,8 @@ _ACTIONS = [
     "wait_for_selector",
     "extract_text",
     "extract_structured_data",
+    "extract_page_content",
+    "structured_output",
     "eval_js",
     "switch_tab",
     "close_tab",
@@ -93,6 +95,12 @@ payload_schema = {
                     "frame_element_index": {"type": "integer", "minimum": 0},
                     "while_holding_ctrl": {"type": "boolean"},
                     "new_tab": {"type": "boolean"},
+                    "success": {"type": "boolean"},
+                    "files_to_display": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "data": {"type": "object"},
                 },
                 "required": ["action"],
                 "additionalProperties": True,  # ★ 不明キーは許可
@@ -129,6 +137,13 @@ EXTRACTED_TEXTS: List[str] = []
 EVAL_RESULTS: List[str] = []
 WARNINGS: List[str] = []
 LAST_SUMMARY: Dict[str, object] | None = None
+
+# Latest action trace & warnings exposed via /action-results for prompt building
+ACTION_TRACE: List[Dict[str, object]] = []
+LAST_WARNINGS: List[str] = []
+
+# Track element signatures to mark newly appeared interactive items
+_SEEN_ELEMENT_SIGNATURES: set[str] = set()
 
 
 def _run(coro):
@@ -548,6 +563,7 @@ def _format_summary_line(element: Dict[str, object], selectors: List[str]) -> st
     attrs = element.get("attributes") or {}
     if not isinstance(attrs, dict):
         attrs = {}
+
     attr_keys = [
         "id",
         "name",
@@ -572,7 +588,10 @@ def _format_summary_line(element: Dict[str, object], selectors: List[str]) -> st
 
     rect = element.get("rect") or {}
     try:
-        pos = f"({int(rect.get('x', 0))},{int(rect.get('y', 0))}) {int(rect.get('width', 0))}x{int(rect.get('height', 0))}"
+        pos = (
+            f"({int(rect.get('x', 0))},{int(rect.get('y', 0))}) "
+            f"{int(rect.get('width', 0))}x{int(rect.get('height', 0))}"
+        )
     except Exception:
         pos = "(0,0)"
 
@@ -585,7 +604,9 @@ def _format_summary_line(element: Dict[str, object], selectors: List[str]) -> st
     if len(text) > 80:
         label += "…"
 
-    line = f"[{idx:03d}] <{tag}>{' ' + label if label else ''}"
+    indent = "\t" * min(len(ancestors), 3)
+    prefix = "*" if element.get("isNew") else ""
+    line = f"{indent}{prefix}[{idx:03d}] <{tag}>{' ' + label if label else ''}"
     if attr_parts:
         line += " | " + ", ".join(attr_parts[:8])
     if element.get("isScrollable"):
@@ -594,8 +615,100 @@ def _format_summary_line(element: Dict[str, object], selectors: List[str]) -> st
         line += f" | parents: {parent_text}"
     line += f" | {pos}"
     if selectors:
-        line += f" | selector hint: {selectors[0]}"
+        hint = selectors[0]
+        if len(selectors) > 1:
+            hint += f" (+{len(selectors) - 1} more)"
+        line += f" | selector hint: {hint}"
     return line
+
+
+def _element_signature(element: Dict[str, object], selectors: List[str]) -> str:
+    attrs = element.get("attributes") or {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+    parts: List[str] = [str(element.get("tag", "")), (element.get("text") or "").strip()]
+    rect = element.get("rect") or {}
+    rect_key = (
+        rect.get("x"),
+        rect.get("y"),
+        rect.get("width"),
+        rect.get("height"),
+    )
+    parts.append(str(rect_key))
+    for key in sorted(attrs):
+        value = attrs[key]
+        if isinstance(value, dict):
+            parts.append(f"{key}:{json.dumps(value, sort_keys=True, ensure_ascii=False)}")
+        else:
+            parts.append(f"{key}:{value}")
+    parts.extend(selectors[:3])
+    return "|".join(parts)
+
+
+def _truncate(text: str | None, limit: int = 120) -> str | None:
+    if text is None:
+        return None
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _compact_action_params(act: Dict[str, object]) -> Dict[str, object]:
+    allow = {
+        "target",
+        "index",
+        "text",
+        "value",
+        "query",
+        "ms",
+        "num_pages",
+        "frame_element_index",
+        "while_holding_ctrl",
+        "new_tab",
+        "tab_id",
+        "down",
+        "direction",
+        "keys",
+        "key",
+        "success",
+        "files_to_display",
+        "path",
+        "data",
+        "clear_existing",
+    }
+    params: Dict[str, object] = {}
+    for key in allow:
+        if key in act:
+            value = act[key]
+            if isinstance(value, str):
+                params[key] = _truncate(value)
+            else:
+                params[key] = value
+    if "script" in act:
+        params["script"] = _truncate(act["script"], 180)
+    return params
+
+
+async def _collect_tabs() -> List[Dict[str, object]]:
+    _sync_open_tabs()
+    tabs: List[Dict[str, object]] = []
+    for tab_id, page in sorted(TAB_REGISTRY.items()):
+        if page.is_closed():
+            continue
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        tabs.append(
+            {
+                "id": tab_id,
+                "url": page.url,
+                "title": title,
+                "isActive": tab_id == CURRENT_TAB_ID,
+            }
+        )
+    return tabs
 
 
 async def _build_dom_snapshot(limit: int = 140) -> Dict[str, object]:
@@ -609,23 +722,47 @@ async def _build_dom_snapshot(limit: int = 140) -> Dict[str, object]:
 
     selector_map: Dict[int, Dict[str, object]] = {}
     lines: List[str] = []
+    tabs = await _collect_tabs()
+    if tabs:
+        lines.append("Open Tabs:")
+        for tab in tabs:
+            mark = "*" if tab.get("isActive") else "-"
+            title = tab.get("title") or "(no title)"
+            url = tab.get("url") or ""
+            lines.append(f"  {mark} {tab['id']}: {title} | {url}")
+        lines.append("")
+
+    new_signatures: set[str] = set()
     for el in trimmed:
         try:
             idx = int(el.get("index", 0))
         except Exception:
             continue
         selectors = _compute_selectors(el)
-        selector_map[idx] = {"selectors": selectors, "text": el.get("text")}
+        signature = _element_signature(el, selectors)
+        is_new = signature not in _SEEN_ELEMENT_SIGNATURES
+        if is_new:
+            el["isNew"] = True
+        selector_map[idx] = {
+            "selectors": selectors,
+            "text": el.get("text"),
+            "signature": signature,
+            "is_new": is_new,
+        }
         lines.append(_format_summary_line(el, selectors))
+        new_signatures.add(signature)
 
     SELECTOR_CACHE.clear()
     SELECTOR_CACHE.update(selector_map)
+    _SEEN_ELEMENT_SIGNATURES.update(new_signatures)
 
     summary = {
         "title": raw.get("title") or "",
         "url": raw.get("url") or "",
         "elements": trimmed,
         "summary": lines,
+        "tabs": tabs,
+        "newElements": sum(1 for el in trimmed if el.get("isNew")),
     }
 
     global LAST_SUMMARY
@@ -836,7 +973,7 @@ async def _apply(act: Dict):
         dest = await _page_for_navigation(bool(act.get("new_tab")))
         await dest.goto(url, wait_until="load", timeout=ACTION_TIMEOUT)
         _set_current_page(dest)
-        return
+        return {"url": url, "new_tab": bool(act.get("new_tab")), "tab_id": CURRENT_TAB_ID}
 
     if action == "search_google":
         query = act.get("query") or tgt or val
@@ -846,23 +983,23 @@ async def _apply(act: Dict):
         dest = await _page_for_navigation(bool(act.get("new_tab")))
         await dest.goto(url, wait_until="load", timeout=ACTION_TIMEOUT)
         _set_current_page(dest)
-        return
+        return {"query": query, "url": url, "new_tab": bool(act.get("new_tab")), "tab_id": CURRENT_TAB_ID}
 
     if action == "go_back":
         await page.go_back(wait_until="load")
-        return
+        return {"direction": "back", "url": page.url}
 
     if action == "go_forward":
         await page.go_forward(wait_until="load")
-        return
+        return {"direction": "forward", "url": page.url}
 
     if action == "wait":
         await page.wait_for_timeout(ms)
-        return
+        return {"ms": ms}
 
     if action == "wait_for_selector":
         await page.wait_for_selector(tgt, state="visible", timeout=ms)
-        return
+        return {"selector": tgt, "ms": ms}
 
     if action == "scroll":
         down_flag = act.get("down")
@@ -879,7 +1016,7 @@ async def _apply(act: Dict):
             if loc:
                 try:
                     await loc.first.evaluate("(el, delta) => { el.scrollBy(0, delta); return true; }", offset)
-                    return
+                    return {"offset": offset, "frame_index": int(frame_idx)}
                 except Exception as exc:
                     log.warning("scroll element by index failed: %s", exc)
         if tgt:
@@ -889,7 +1026,7 @@ async def _apply(act: Dict):
                 await page.evaluate("(delta) => window.scrollBy(0, delta)", offset)
         else:
             await page.evaluate("(delta) => window.scrollBy(0, delta)", offset)
-        return
+        return {"offset": offset, "frame_index": int(frame_idx) if frame_idx else None}
 
     if action == "scroll_to_text":
         text = act.get("text") or tgt or val
@@ -897,12 +1034,13 @@ async def _apply(act: Dict):
             found = await page.evaluate(JS_SCROLL_TO_TEXT, text)
             if not found:
                 WARNINGS.append(f"WARNING:auto:scroll_to_text not found: {text}")
-        return
+            return {"text": text, "found": bool(found)}
+        return {"text": text, "found": False}
 
     if action == "switch_tab":
         tab_id = act.get("tab_id") or (tgt if tgt else None)
         if not tab_id:
-            return
+            return {"tab_id": None, "found": False}
         _sync_open_tabs()
         tab = TAB_REGISTRY.get(tab_id)
         if tab and not tab.is_closed():
@@ -910,12 +1048,12 @@ async def _apply(act: Dict):
             await tab.bring_to_front()
         else:
             WARNINGS.append(f"WARNING:auto:tab not found: {tab_id}")
-        return
+        return {"tab_id": tab_id, "found": bool(tab and not tab.is_closed())}
 
     if action == "close_tab":
         tab_id = act.get("tab_id") or CURRENT_TAB_ID
         if not tab_id:
-            return
+            return {"tab_id": None}
         tab = TAB_REGISTRY.pop(tab_id, None)
         if tab and not tab.is_closed():
             await tab.close()
@@ -929,7 +1067,10 @@ async def _apply(act: Dict):
                 _set_current_page(new_page)
                 await new_page.bring_to_front()
         _sync_open_tabs()
-        return
+        return {
+            "tab_id": tab_id,
+            "remaining_tabs": len([pg for pg in TAB_REGISTRY.values() if not pg.is_closed()]),
+        }
 
     if action == "send_keys":
         keys = act.get("keys") or act.get("key")
@@ -940,7 +1081,7 @@ async def _apply(act: Dict):
                 await page.keyboard.type(keys)
             else:
                 await page.keyboard.type(keys)
-        return
+        return {"keys": keys}
 
     if action in {"click_element_by_index", "click_element"}:
         idx = int(act.get("index", 0))
@@ -956,7 +1097,10 @@ async def _apply(act: Dict):
         else:
             await _safe_click(loc)
         _sync_open_tabs()
-        return
+        return {
+            "index": idx,
+            "while_holding_ctrl": bool(act.get("while_holding_ctrl")),
+        }
 
     if action == "input_text":
         idx = int(act.get("index", 0))
@@ -976,7 +1120,11 @@ async def _apply(act: Dict):
             else:
                 await _prepare_element(loc)
                 await loc.first.type(text, timeout=ACTION_TIMEOUT)
-        return
+        return {
+            "index": idx,
+            "text": _truncate(text, 80),
+            "clear_existing": bool(clear_existing),
+        }
 
     if action == "upload_file_to_element":
         idx = int(act.get("index", 0))
@@ -987,7 +1135,7 @@ async def _apply(act: Dict):
         paths = act.get("path") or val
         files = paths if isinstance(paths, list) else [paths]
         await loc.first.set_input_files(files)
-        return
+        return {"index": idx, "files": files}
 
     if action == "get_dropdown_options":
         idx = int(act.get("index", 0))
@@ -996,7 +1144,8 @@ async def _apply(act: Dict):
             raise ValueError(f"no locator for index {idx}")
         options = await loc.first.evaluate(JS_GET_OPTIONS)
         EXTRACTED_TEXTS.append(json.dumps(options, ensure_ascii=False))
-        return
+        sample = options[:3] if isinstance(options, list) else []
+        return {"index": idx, "options_preview": sample, "count": len(options) if hasattr(options, "__len__") else None}
 
     if action == "select_dropdown_option":
         idx = int(act.get("index", 0))
@@ -1009,7 +1158,7 @@ async def _apply(act: Dict):
             await loc.first.select_option(label=choice)
         except Exception:
             await loc.first.select_option(value=choice)
-        return
+        return {"index": idx, "choice": choice}
 
     if action == "extract_structured_data":
         if act.get("index"):
@@ -1017,19 +1166,45 @@ async def _apply(act: Dict):
             if loc:
                 text = await loc.first.inner_text()
                 EXTRACTED_TEXTS.append(text)
-                return
+                return {"source": "element", "index": int(act["index"]), "chars": len(text)}
         if tgt:
             loc = await SmartLocator(page, tgt).locate()
             if loc:
                 text = await loc.first.inner_text()
                 EXTRACTED_TEXTS.append(text)
-                return
+                return {"source": "selector", "selector": tgt, "chars": len(text)}
         body_text = await page.inner_text("body")
         EXTRACTED_TEXTS.append(body_text)
-        return
+        return {"source": "page", "chars": len(body_text)}
+
+    if action == "extract_page_content":
+        target = act.get("target") or tgt
+        if target:
+            loc = await SmartLocator(page, target).locate()
+            if loc:
+                content = await loc.first.inner_text()
+            else:
+                content = await page.inner_text("body")
+        else:
+            content = await page.content()
+        EXTRACTED_TEXTS.append(content)
+        return {"source": target or "document", "chars": len(content)}
+
+    if action == "structured_output":
+        data = act.get("data")
+        if data is not None:
+            try:
+                EXTRACTED_TEXTS.append(json.dumps(data, ensure_ascii=False))
+            except TypeError:
+                EXTRACTED_TEXTS.append(str(data))
+        return {"data": data, "success": act.get("success", True)}
 
     if action == "done":
-        return
+        return {
+            "text": _truncate(act.get("text"), 200),
+            "success": act.get("success"),
+            "files_to_display": act.get("files_to_display"),
+        }
 
     if action == "eval_js":
         script = act.get("script") or val
@@ -1039,7 +1214,9 @@ async def _apply(act: Dict):
                 EVAL_RESULTS.append(result)
             except Exception as e:
                 log.error("eval_js error: %s", e)
-        return
+                return {"script": _truncate(script, 120), "error": str(e)}
+            return {"script": _truncate(script, 120), "result": result}
+        return {"script": None}
 
     # Fallback to legacy locator-based actions
     loc: Optional = None
@@ -1056,20 +1233,25 @@ async def _apply(act: Dict):
         msg = f"locator not found: {tgt}"
         log.warning(msg)
         WARNINGS.append(f"WARNING:auto:{msg}")
-        return
+        return {"error": "locator not found", "target": tgt}
 
     if action in ("click", "click_text"):
         await _safe_click(loc)
+        return {"target": tgt, "mode": action}
     elif action in ("type",):
         await _safe_fill(loc, val)
+        return {"target": tgt, "text": _truncate(val, 80)}
     elif action == "hover":
         await _safe_hover(loc)
+        return {"target": tgt, "mode": "hover"}
     elif action == "select_option":
         await _safe_select(loc, val)
+        return {"target": tgt, "value": val}
     elif action == "press_key":
         key = act.get("key", "")
         if key:
             await _safe_press(loc, key)
+            return {"target": tgt, "key": key}
     elif action == "extract_text":
         attr = act.get("attr")
         if attr:
@@ -1077,26 +1259,51 @@ async def _apply(act: Dict):
         else:
             text = await loc.inner_text()
         EXTRACTED_TEXTS.append(text)
+        return {"target": tgt, "attr": attr, "chars": len(text) if text else 0}
+
+    return {"target": tgt}
 
 
-async def _run_actions(actions: List[Dict]) -> tuple[str, List[str]]:
+async def _run_actions(actions: List[Dict]) -> tuple[str, List[str], List[Dict[str, object]]]:
     WARNINGS.clear()
+    execution_trace: List[Dict[str, object]] = []
+
     for act in actions:
-        # DOM の更新が落ち着くまで待ってから次のアクションを実行する
         await _stabilize_page()
+        action_name = (act.get("action") or "").lower()
+        entry: Dict[str, object] = {
+            "action": action_name,
+            "params": _compact_action_params(act),
+        }
         retries = int(act.get("retry", MAX_RETRIES))
         for attempt in range(1, retries + 1):
             try:
-                await _apply(act)
-                # アクション実行後も DOM 安定化を待つ
+                details = await _apply(act)
+                entry["status"] = "ok"
+                if details:
+                    entry["details"] = details
                 await _stabilize_page()
                 break
             except Exception as e:
                 log.error("action error (%d/%d): %s", attempt, retries, e)
+                entry.setdefault("errors", []).append(str(e))
                 if attempt == retries:
+                    entry["status"] = "error"
+                    entry["error"] = str(e)
+                    execution_trace.append(entry)
                     raise
+        else:
+            continue
+
+        execution_trace.append(entry)
+
     page = _get_current_page()
-    return await page.content(), WARNINGS.copy()
+    html = await page.content()
+    ACTION_TRACE.clear()
+    ACTION_TRACE.extend(execution_trace)
+    LAST_WARNINGS.clear()
+    LAST_WARNINGS.extend(WARNINGS)
+    return html, WARNINGS.copy(), execution_trace
 
 
 # -------------------------------------------------- HTTP エンドポイント
@@ -1115,8 +1322,8 @@ def execute_dsl():
 
     try:
         _run(_init_browser())
-        html, warns = _run(_run_actions(data["actions"]))
-        return jsonify({"html": html, "warnings": warns})
+        html, warns, trace = _run(_run_actions(data["actions"]))
+        return jsonify({"html": html, "warnings": warns, "results": trace})
     except Exception as e:
         log.exception("execution failed")
         return jsonify(error="ExecutionError", message=str(e)), 500
@@ -1174,6 +1381,17 @@ def extracted():
 @app.get("/eval_results")
 def eval_results():
     return jsonify(EVAL_RESULTS)
+
+
+@app.get("/action-results")
+def action_results():
+    data = {
+        "results": list(ACTION_TRACE),
+        "warnings": list(LAST_WARNINGS),
+    }
+    ACTION_TRACE.clear()
+    LAST_WARNINGS.clear()
+    return jsonify(data)
 
 
 @app.get("/healthz")

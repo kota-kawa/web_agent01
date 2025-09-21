@@ -18,6 +18,9 @@ from agent.browser.vnc import (
     execute_dsl,
     get_elements as vnc_elements,
     get_dom_tree as vnc_dom_tree,
+    get_extracted as vnc_extracted,
+    get_eval_results as vnc_eval_results,
+    get_action_trace as vnc_action_trace,
 )
 from agent.browser.dom import DOMSnapshot
 from agent.controller.prompt import build_prompt
@@ -100,7 +103,23 @@ def execute():
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
-    prompt = build_prompt(cmd, snapshot, hist, bool(shot), err_msg, raw_page)
+
+    action_trace, action_warnings = vnc_action_trace()
+    extracted = vnc_extracted()
+    eval_results = vnc_eval_results()
+
+    prompt = build_prompt(
+        cmd,
+        snapshot,
+        hist,
+        bool(shot),
+        err_msg,
+        raw_page,
+        action_trace=action_trace,
+        action_warnings=action_warnings,
+        extracted_texts=extracted,
+        eval_results=eval_results,
+    )
     res = call_llm(prompt, model, shot)
 
     hist.append({"user": cmd, "bot": res})
