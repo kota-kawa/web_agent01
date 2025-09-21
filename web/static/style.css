@@ -6,13 +6,79 @@ body {
     padding: 0;
 }
 
-/* 新しいレイアウトのチャットパネルスタイル */
-#chat-panel {
+header {
+    background-color: #333;
+    color: white;
+    padding: 10px 0;
+    text-align: center;
+}
+
+header nav ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+header nav ul li {
+    display: inline-block;
+    margin: 0 15px;
+}
+
+header nav ul li a {
+    color: white;
+    text-decoration: none;
+    font-weight: bold;
+}
+
+footer {
+    background-color: #333;
+    color: white;
+    text-align: center;
+    padding: 10px 0;
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+}
+
+/* チャットウィンドウスタイル */
+#draggable-window {
+    width: 400px;
+    border-radius: 12px;
+    position: absolute;
+    top: 100px;
+    left: 100px;
     background: #fff;
-    box-shadow: 2px 0px 8px rgba(0, 0, 0, 0.1);
-    /* Responsive width - reduced default for better VNC visibility */
-    width: 420px;
-    min-width: 300px; /* Ensure chat remains usable */
+    box-shadow: 0px 8px 16px rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    height: 500px;
+}
+
+#window-header {
+    background: linear-gradient(135deg, #6a11cb, #2575fc);
+    padding: 15px;
+    color: white;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: move;
+}
+
+#window-header .close-btn {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+}
+
+#window-header .close-btn:hover {
+    background: rgba(255, 255, 255, 0.5);
 }
 
 #chat-area {
@@ -34,12 +100,50 @@ body {
 .user-message {
     background: #e0f7fa;
     align-self: flex-end;
-    margin-left: auto;
 }
 
 .bot-message {
     background: #e8eaf6;
     align-self: flex-start;
+}
+
+#input-area {
+    background: #f9f9f9;
+    padding: 15px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+#input-area select {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 5px;
+    font-size: 14px;
+}
+
+
+
+#input-area textarea {
+    flex-grow: 1;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 14px;
+    resize: vertical;
+    min-height: 120px;
+}
+
+
+#input-area button {
+    background: linear-gradient(135deg, #6a11cb, #2575fc);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.3s ease;
 }
 
 #input-area button:hover {
@@ -75,120 +179,45 @@ body {
 
 
 
-
-
-/* Warning styles */
-.warnings-container {
-    font-family: 'Courier New', monospace;
-    font-size: 12px;
-    line-height: 1.4;
-}
-
-.warnings-container::-webkit-scrollbar {
-    width: 6px;
-}
-
-.warnings-container::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 3px;
-}
-
-.warnings-container::-webkit-scrollbar-thumb {
-    background: #ffc107;
-    border-radius: 3px;
-}
-
-/* Disabled button styles */
-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed !important;
-    background: #6c757d !important;
-    transform: none !important;
-}
-
-/* Enhanced spinner for inline usage */
-.inline-spinner {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border: 2px solid #f3f3f3;
-    border-top: 2px solid #3498db;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin-left: 4px;
-}
-
-/* Progress indicator */
-.execution-progress {
-    margin: 8px 0;
-    padding: 8px 12px;
-    background: linear-gradient(135deg, #e3f2fd, #bbdefb);
-    border-left: 4px solid #2196f3;
-    border-radius: 6px;
-    font-size: 12px;
-    color: #1565c0;
+#chat-controls {
+    position: fixed;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
-    align-items: center;
-    gap: 8px;
+    gap: 10px;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 6px 12px;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    z-index: 1000;
 }
 
-/* VNC section - ensure it fills available space properly */
-#vnc-section {
-    min-width: 400px; /* Reduced min-width to prevent horizontal scroll issues */
-    overflow: hidden; /* Prevent overflow, let iframe scale */
-}
-
-/* VNC iframe responsive scaling */
-#vnc_frame {
-    min-width: 100%;
-    min-height: 100%;
-    object-fit: contain; /* Ensure iframe content scales properly */
-}
-
-/* Responsive breakpoints for chat panel */
-@media (max-width: 1200px) {
-    #chat-panel {
-        width: 350px;
-    }
-}
-
-@media (max-width: 1000px) {
-    #chat-panel {
-        width: 320px;
-    }
-}
-
-@media (max-width: 900px) {
-    /* Switch to vertical layout earlier to ensure VNC visibility */
-    main {
-        flex-direction: column !important;
-    }
-    
-    #chat-panel {
-        width: 100% !important;
-        height: 35vh;
-        border-right: none !important;
-        border-bottom: 1px solid #ddd;
-    }
-    
-    #vnc-section {
-        height: 65vh;
-        min-width: unset; /* Remove min-width constraint in vertical layout */
-        overflow: visible; /* Allow proper scaling in vertical layout */
-    }
-}
-
-@media (max-width: 768px) {
-    #chat-panel {
-        height: 40vh;
-    }
-    
-    #vnc-section {
-        height: 60vh;
-    }
+#operation-history {
+    position: fixed;
+    bottom: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #fafafa;
+    border: 1px solid #ccc;
+    padding: 6px;
+    overflow-y: auto;
+    font-family: monospace;
+    display: none;
+    max-height: 150px;
+    font-size: 12px;
+    width: 90%;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    border-radius: 6px;
+    z-index: 999;
 }
 
 
 
 
+
+#operation-history pre {
+    white-space: pre-wrap;
+}
 

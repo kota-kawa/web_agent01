@@ -74,8 +74,8 @@ def _post_process(raw: str) -> Dict:
     except Exception as e:
         log.error("JSON parse error: %s", e)
         #return {"explanation": expl or "JSON 抽出失敗", "actions": [], "raw": raw, "complete": True}
-        return {"explanation": expl or "JSON 抽出失敗", "actions": [], "complete": True}
-
+        return {"explanation": expl or "JSON 抽出失敗", "actions": [], "complete": True} 
+    
     acts = []
     for act in js.get("actions", []):
         if isinstance(act, dict) and "commands" in act:
@@ -84,17 +84,12 @@ def _post_process(raw: str) -> Dict:
         else:
             acts.append(_normalize_action(act))
 
-    res = {
+    return {
         "explanation": expl,
-    }
-    if js.get("memory"):
-        res["memory"] = js.get("memory")
-    res.update({
         "actions": acts,
         #"raw": raw,
         "complete": js.get("complete", True),
-    })
-    return res
+    }
 
 
 def call_gemini(prompt: str, screenshot: str | None = None) -> Dict:
