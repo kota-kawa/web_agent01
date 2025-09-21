@@ -64,6 +64,38 @@ def _normalize_action(a: Dict) -> Dict:
     if act["action"] == "press_key" and "key" not in act:
         act["key"] = "Enter"
 
+    if act["action"] == "go_to_url" and "target" not in act and "url" in act:
+        act["target"] = act["url"]
+
+    if act["action"] == "click_element_by_index" and "index" in act:
+        try:
+            act["index"] = int(act["index"])
+        except Exception:
+            pass
+
+    if act["action"] == "input_text":
+        if "clear_existing" not in act:
+            act["clear_existing"] = True
+        if "index" in act:
+            try:
+                act["index"] = int(act["index"])
+            except Exception:
+                pass
+
+    if act["action"] == "scroll":
+        if "down" not in act and "direction" in act:
+            act["down"] = act["direction"].lower() != "up"
+        if "num_pages" in act:
+            try:
+                act["num_pages"] = float(act["num_pages"])
+            except Exception:
+                pass
+        if "frame_element_index" in act:
+            try:
+                act["frame_element_index"] = int(act["frame_element_index"])
+            except Exception:
+                pass
+
     return act
 
 
