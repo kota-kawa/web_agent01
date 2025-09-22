@@ -824,7 +824,10 @@ async function executeTask(cmd, model = "gemini", placeholder = null) {
   stopController = new AbortController();
   window.stopController = stopController;
 
-  const MAX_STEPS = typeof window.MAX_STEPS === "number" ? window.MAX_STEPS : 10;
+  const MAX_STEPS =
+    typeof window.MAX_STEPS === "number" && Number.isFinite(window.MAX_STEPS)
+      ? window.MAX_STEPS
+      : 15;
   let stepCount = 0;
   let keepLoop  = true;
   let firstIter = true;

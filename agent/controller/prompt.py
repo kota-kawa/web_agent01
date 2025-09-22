@@ -5,7 +5,7 @@ from ..utils.html import strip_html
 from ..browser.dom import DOMElementNode
 
 log = logging.getLogger("controller")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "10"))
+MAX_STEPS = max(1, int(os.getenv("MAX_STEPS", "15")))
 
 
 def _extract_recent_warnings(hist, max_warnings=5):
