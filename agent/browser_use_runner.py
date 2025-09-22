@@ -135,7 +135,7 @@ class BrowserUseSession:
             self.updated_at = _now()
 
     def _finalise_result(self, history: AgentHistoryList) -> None:
-        structured = history.structured_output()
+        structured = history.structured_output
         result: Dict[str, Any] = {
             "success": history.is_successful(),
             "errors": [err for err in history.errors() if err],
