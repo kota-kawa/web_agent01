@@ -12,12 +12,12 @@ RUN apt-get update \
         python3.11 \
         python3.11-distutils \
         python3.11-venv \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 2 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 2 \
-    && python -m ensurepip --upgrade
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 2
 
 # Ensure the base image provides a new enough interpreter for browser-use
 RUN python - <<'PY'
