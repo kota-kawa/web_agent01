@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgbm1 libgtk-3-0 libasound2 libxdamage1 libxfixes3 \
       libxrandr2 libxcomposite1 libxcursor1 libxinerama1 \
       libpango-1.0-0 libpangocairo-1.0-0 \
-      fonts-ipafont gstreamer1.0-libav \
+      fonts-ipafont fonts-ubuntu fonts-unifont gstreamer1.0-libav \
   && rm -rf /var/lib/apt/lists/*
 
 # ---- Python ライブラリ -------------------------------------------------
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir \
       httpx \
       "jsonschema>=4.0" \
       "pydantic>=2.5" \
-  && playwright install --with-deps chromium
+  && playwright install chromium
   
 
 
