@@ -71,7 +71,8 @@ if sources_dir.exists():
     for sources_file in sources_dir.glob("*.sources"):
         update_deb822(sources_file)
 PY
-    && apt-get update && apt-get install -y --no-install-recommends \
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
       chromium xvfb x11vnc websockify novnc supervisor \
       wget curl ca-certificates gnupg \
       libnss3 libatk-bridge2.0-0 libu2f-udev libdrm2 \
