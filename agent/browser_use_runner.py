@@ -17,9 +17,11 @@ from browser_use.llm.base import BaseChatModel
 from browser_use.llm.google.chat import ChatGoogle
 from browser_use.llm.groq.chat import ChatGroq
 
+from agent.browser.patches import apply_browser_use_patches
 from agent.utils.history import append_history_entry
 
 log = logging.getLogger(__name__)
+apply_browser_use_patches(log)
 
 
 def _now() -> float:

@@ -6,3 +6,4 @@ google-generativeai
 beautifulsoup4
 pydantic>=2.5
 browser-use
+playwright==1.44.0
