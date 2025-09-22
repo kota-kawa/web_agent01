@@ -89,42 +89,140 @@ function updatePreview(step) {
 }
 
 function renderActions(actions) {
-  if (!actions || !actions.length) return '<em>アクションなし</em>';
-  const items = actions.map((action) => {
+  const list = document.createElement('ul');
+  list.classList.add('step-action-list');
+
+  if (!actions || !actions.length) {
+    const emptyItem = document.createElement('li');
+    emptyItem.classList.add('step-action-empty');
+    emptyItem.textContent = 'アクションなし';
+    list.appendChild(emptyItem);
+    return list;
+  }
+
+  actions.forEach((action) => {
     const [name, params] = Object.entries(action)[0] || ['操作', {}];
-    const paramText = params
-      ? Object.entries(params)
-          .map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(String(value))}`)
-          .join(', ')
-      : '';
-    return `<li><strong>${escapeHtml(name)}</strong>${paramText ? ` — ${paramText}` : ''}</li>`;
+    const item = document.createElement('li');
+
+    const nameSpan = document.createElement('span');
+    nameSpan.classList.add('action-name');
+    nameSpan.textContent = name || '操作';
+    item.appendChild(nameSpan);
+
+    if (params && typeof params === 'object' && Object.keys(params).length) {
+      const paramsSpan = document.createElement('span');
+      paramsSpan.classList.add('action-params');
+      const paramText = Object.entries(params)
+        .map(([key, value]) => {
+          const printableValue =
+            value === null || value === undefined
+              ? ''
+              : typeof value === 'object'
+              ? JSON.stringify(value)
+              : String(value);
+          return `${key}=${printableValue}`;
+        })
+        .join(', ');
+      paramsSpan.textContent = paramText;
+      item.appendChild(paramsSpan);
+    }
+
+    list.appendChild(item);
   });
-  return `<ul>${items.join('')}</ul>`;
+
+  return list;
+}
+
+function createStepSection(label, content) {
+  if (content instanceof Node) {
+    // use the provided node as-is
+  } else {
+    const normalised = content === null || content === undefined ? '' : String(content).trim();
+    if (!normalised) {
+      return null;
+    }
+    content = normalised;
+  }
+
+  const section = document.createElement('div');
+  section.classList.add('step-section');
+
+  const heading = document.createElement('div');
+  heading.classList.add('step-section-label');
+  heading.textContent = label;
+  section.appendChild(heading);
+
+  const body = document.createElement('div');
+  body.classList.add('step-card', 'step-section-body');
+
+  if (content instanceof Node) {
+    body.appendChild(content);
+  } else {
+    body.textContent = content;
+  }
+
+  section.appendChild(body);
+  return section;
 }
 
 function renderStep(step) {
   const container = document.createElement('div');
-  container.classList.add('bot-message');
-  const title = escapeHtml(step.title || '無題のページ');
-  const thinking = step.thinking ? `<div class="step-card"><strong>思考</strong><div>${escapeHtml(step.thinking)}</div></div>` : '';
-  const nextGoal = step.next_goal
-    ? `<div class="step-card"><strong>次の目標</strong><div>${escapeHtml(step.next_goal)}</div></div>`
-    : '';
-  const memory = step.memory
-    ? `<div class="step-card"><strong>メモリ</strong><div>${escapeHtml(step.memory)}</div></div>`
-    : '';
-  const actions = `<div class="step-card"><strong>実行アクション</strong>${renderActions(step.actions)}</div>`;
-  const url = escapeHtml(step.url || '不明');
+  container.classList.add('bot-message', 'step-message');
 
-  container.innerHTML = `
-    <strong>STEP ${step.index}</strong><br />
-    <span>${title}</span><br />
-    <small>URL: ${url}</small>
-    ${thinking}
-    ${nextGoal}
-    ${memory}
-    ${actions}
-  `;
+  const header = document.createElement('div');
+  header.classList.add('step-header');
+
+  const indexBadge = document.createElement('span');
+  indexBadge.classList.add('step-index');
+  indexBadge.textContent = `STEP ${step.index}`;
+  header.appendChild(indexBadge);
+
+  const title = document.createElement('span');
+  title.classList.add('step-title');
+  const titleText = step.title ? String(step.title).trim() : '無題のページ';
+  title.textContent = titleText;
+  title.title = titleText;
+  header.appendChild(title);
+
+  container.appendChild(header);
+
+  const metaRow = document.createElement('div');
+  metaRow.classList.add('step-meta-row');
+
+  const metaLabel = document.createElement('span');
+  metaLabel.classList.add('step-meta-label');
+  metaLabel.textContent = 'URL';
+  metaRow.appendChild(metaLabel);
+
+  const hasUrl = step.url && typeof step.url === 'string' && step.url.trim().length;
+  const urlElement = document.createElement(hasUrl ? 'a' : 'span');
+  urlElement.classList.add('step-url');
+  const urlText = hasUrl ? step.url.trim() : '不明';
+  urlElement.textContent = urlText;
+  if (hasUrl) {
+    urlElement.href = urlText;
+    urlElement.target = '_blank';
+    urlElement.rel = 'noopener noreferrer';
+  }
+  metaRow.appendChild(urlElement);
+
+  container.appendChild(metaRow);
+
+  const sections = [
+    createStepSection('思考', step.thinking),
+    createStepSection('次の目標', step.next_goal),
+    createStepSection('メモリ', step.memory),
+  ];
+  sections.forEach((section) => {
+    if (section) {
+      container.appendChild(section);
+    }
+  });
+
+  const actionsSection = createStepSection('実行アクション', renderActions(step.actions));
+  if (actionsSection) {
+    container.appendChild(actionsSection);
+  }
 
   chatArea.appendChild(container);
   chatArea.scrollTop = chatArea.scrollHeight;
