@@ -1,68 +1,55 @@
-<!DOCTYPE html>
-<html lang="ja">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}AI Agent + VNC{% endblock %}</title>
+  <title>{% block title %}AI Browser Agent{% endblock %}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-
-
-  <!-- ===== メインコンテンツ: 左チャット + 右VNC ===== -->
-  <main style="display:flex;flex-direction:row;height:100vh;">
-    <!-- 左側: チャット欄 -->
-    <div id="chat-panel" style="display:flex;flex-direction:column;border-right:1px solid #ddd;">
-      <div id="chat-header" style="background:linear-gradient(135deg, #6a11cb, #2575fc);padding:15px;color:white;font-weight:bold;">
+  <main id="app" class="app-shell">
+    <section id="chat-panel" class="chat-panel">
+      <header id="chat-header" class="chat-header">
         <span>チャット</span>
-      </div>
-      <div id="chat-area" style="flex:1;padding:15px;overflow-y:auto;background:#f7f7f7;">
+      </header>
+      <div id="chat-area" class="chat-area">
         <p class="bot-message">こんにちは！ご質問はありますか？</p>
       </div>
-      <div id="input-area" style="background:#f9f9f9;padding:15px;display:flex;gap:10px;align-items:center;">
-        <div style="flex:1;">
-          <textarea id="user-input" rows="3" placeholder="ここに入力..." style="width:100%;border:1px solid #ddd;border-radius:8px;padding:10px;font-size:14px;resize:vertical;min-height:60px;"></textarea>
+      <footer id="input-area" class="input-area">
+        <div class="input-wrapper">
+          <textarea id="user-input" rows="3" placeholder="ここに入力..." class="chat-input"></textarea>
         </div>
-        <div style="display:flex;flex-direction:column;gap:8px;">
-          <button style="background:linear-gradient(135deg, #6a11cb, #2575fc);color:white;border:none;border-radius:8px;padding:10px 20px;font-weight:bold;cursor:pointer;">送信</button>
-          <div style="display:flex;gap:5px;">
-            <button id="stop-button" style="background:#dc3545;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">停止</button>
-            <button id="pause-button" style="background:#ffc107;color:#212529;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">一時停止</button>
-            <button id="resume-button" style="display:none;background:#28a745;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">続行</button>
-            <button id="reset-button" style="background:#dc3545;color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">リセット</button>
+        <div class="input-actions">
+          <button id="send-button" class="primary-action">送信</button>
+          <div class="secondary-actions">
+            <button id="stop-button" class="danger-action">停止</button>
+            <button id="reset-button" class="danger-action">リセット</button>
           </div>
         </div>
+      </footer>
+    </section>
+
+    <section id="preview-panel" class="preview-panel">
+      <header class="preview-header">
+        <span>最新スクリーンショット</span>
+      </header>
+      <div id="preview-body" class="preview-body">
+        <img id="preview-image" alt="最新のブラウザ状態" />
+        <div id="preview-placeholder" class="preview-placeholder">
+          実行中の操作がここに表示されます。
+        </div>
       </div>
-    </div>
-
-    <!-- 右側: VNC iframe -->
-    <div id="vnc-section" style="flex:1;display:flex;flex-direction:column;">
-      <iframe id="vnc_frame" src="{{ vnc_url }}" style="width:100%;height:100%;border:none;"></iframe>
-    </div>
-
-
+      <div id="preview-meta" class="preview-meta">
+        <div id="preview-status">実行の進捗はここに表示されます。</div>
+      </div>
+    </section>
 
     {% block content %}{% endblock %}
   </main>
 
-  <div id="hidden-browser-executor" style="display:none;">
-    <textarea id="nlCommand"></textarea>
-    <button id="executeButton">実行</button>
-    <pre id="logOutput"></pre>
-  </div>
-
-
-
-  <!-- JavaScript -->
   <script>
-    window.START_URL  = "{{ start_url }}";
+    window.DEFAULT_MODEL = "{{ default_model }}";
     window.MAX_STEPS = {{ max_steps }};
   </script>
-  <script src="/static/html2canvas.min.js"></script>
-  <script src="/static/common_executor.js"></script>
-  <script src="/static/browser_executor.js"></script>
-  <script src="/static/chat_integration.js"></script>
-  <script src="/static/script.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
