@@ -10,10 +10,13 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 from agent.browser_use_runner import get_browser_use_manager
 from agent.utils import history as history_utils
 from agent.utils.history import load_hist, save_hist
+from vnc.dependency_check import ensure_component_dependencies
 
 app = Flask(__name__)
 log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
+
+ensure_component_dependencies("web", logger=log)
 
 MAX_STEPS = max(1, int(os.getenv("MAX_STEPS", "15")))
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini")
