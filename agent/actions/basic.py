@@ -1,33 +1,49 @@
 """Action helpers used by the controller."""
 
-from typing import Dict, List, Union
+from __future__ import annotations
+
+from typing import Dict
+
+from automation.dsl import models
+
+
+def _legacy_payload(action: models.ActionBase) -> Dict:
+    """Convert a typed action model into the legacy controller payload."""
+
+    return action.legacy_payload()
 
 
 def click(target: str) -> Dict:
-    return {"action": "click", "target": target}
+    return _legacy_payload(models.ClickAction(selector=target))
 
 
 def click_text(text: str) -> Dict:
+    # Legacy helper retained for compatibility with existing prompts.
     return {"action": "click_text", "text": text, "target": text}
 
 
 def navigate(url: str) -> Dict:
-    return {"action": "navigate", "target": url}
+    return _legacy_payload(models.NavigateAction(url=url))
 
 
 def type_text(target: str, value: str) -> Dict:
-    return {"action": "type", "target": target, "value": value}
+    return _legacy_payload(models.TypeAction(selector=target, text=value))
 
 
 def wait(ms: int = 500, retry: int | None = None) -> Dict:
-    act = {"action": "wait", "ms": ms}
+    action = models.WaitAction(timeout_ms=ms)
+    payload = action.legacy_payload()
     if retry is not None:
-        act["retry"] = retry
-    return act
+        payload["retry"] = retry
+    return payload
 
 
 def wait_for_selector(target: str, ms: int = 3000) -> Dict:
-    return {"action": "wait_for_selector", "target": target, "ms": ms}
+    cond = models.WaitForSelector(selector=target)
+    action = models.WaitAction(for_=cond, timeout_ms=ms)
+    payload = action.legacy_payload()
+    payload.setdefault("target", target)
+    return payload
 
 
 def go_back() -> Dict:
@@ -39,22 +55,23 @@ def go_forward() -> Dict:
 
 
 def hover(target: str) -> Dict:
-    return {"action": "hover", "target": target}
+    return _legacy_payload(models.HoverAction(selector=target))
 
 
 def select_option(target: str, value: str) -> Dict:
-    return {"action": "select_option", "target": target, "value": value}
+    return _legacy_payload(models.SelectAction(selector=target, value_or_label=value))
 
 
 def press_key(key: str, target: str | None = None) -> Dict:
-    act = {"action": "press_key", "key": key}
+    action = models.PressKeyAction(keys=[key])
+    payload = action.legacy_payload()
     if target:
-        act["target"] = target
-    return act
+        payload["target"] = target
+    return payload
 
 
 def extract_text(target: str) -> Dict:
-    return {"action": "extract_text", "target": target}
+    return _legacy_payload(models.ExtractAction(selector=target))
 
 
 def eval_js(script: str) -> Dict:
@@ -64,93 +81,51 @@ def eval_js(script: str) -> Dict:
     page state must be inspected via DOM APIs.  The returned value is recorded
     by the automation server and can be fetched with :func:`get_eval_results`.
     """
-    return {"action": "eval_js", "script": script}
+    return _legacy_payload(models.EvalJsAction(script=script))
 
 
-def search_google(query: str, new_tab: bool = False) -> Dict:
-    return {"action": "search_google", "query": query, "new_tab": new_tab}
+def stop(reason: str, message: str = "") -> Dict:
+    """Stop execution and wait for user input.
+    
+    Use this when the LLM needs user confirmation, advice, or intervention.
+    Examples: captcha solving, date/price confirmations, repeated failures.
+    
+    Args:
+        reason: Type of stop (e.g., "captcha", "confirmation", "repeated_failures")
+        message: Optional message to display to the user
+    """
+    return _legacy_payload(models.StopAction(reason=reason, message=message))
 
 
-def go_to_url(url: str, new_tab: bool = False) -> Dict:
-    return {"action": "go_to_url", "target": url, "new_tab": new_tab}
+def click_blank_area() -> Dict:
+    """Click on a blank area of the page to close popups.
+    
+    This action finds an empty area on the page and clicks it, which is useful
+    for closing popups/modals that don't require specific element selectors.
+    
+    Returns:
+        Dictionary representing a blank area click action
+    """
+    return _legacy_payload(models.ClickBlankAreaAction())
 
 
-def click_element_by_index(index: int, ctrl: bool | None = None) -> Dict:
-    act = {"action": "click_element_by_index", "index": index}
-    if ctrl is not None:
-        act["while_holding_ctrl"] = ctrl
-    return act
+def close_popup() -> Dict:
+    """Close popups by clicking on blank areas.
+
+    Uses popup detection and blank area clicking to close modals/overlays
+    without needing to target specific close buttons or elements.
+
+    Returns:
+        Dictionary representing a popup close action
+    """
+    return _legacy_payload(models.ClosePopupAction())
 
 
-def input_text(index: int, text: str, clear_existing: bool = True) -> Dict:
-    return {
-        "action": "input_text",
-        "index": index,
-        "text": text,
-        "clear_existing": clear_existing,
-    }
-
-
-def scroll_pages(down: bool = True, num_pages: float = 1.0, frame_index: int | None = None) -> Dict:
-    act: Dict = {"action": "scroll", "down": down, "num_pages": num_pages}
-    if frame_index is not None:
-        act["frame_element_index"] = frame_index
-    return act
+def refresh_catalog() -> Dict:
+    """Refresh the element catalog prior to issuing index-based commands."""
+    return _legacy_payload(models.RefreshCatalogAction())
 
 
 def scroll_to_text(text: str) -> Dict:
-    return {"action": "scroll_to_text", "text": text}
-
-
-def send_keys(keys: str) -> Dict:
-    return {"action": "send_keys", "keys": keys}
-
-
-def switch_tab(tab_id: str) -> Dict:
-    return {"action": "switch_tab", "tab_id": tab_id}
-
-
-def close_tab(tab_id: str | None = None) -> Dict:
-    act = {"action": "close_tab"}
-    if tab_id:
-        act["tab_id"] = tab_id
-    return act
-
-
-def get_dropdown_options(index: int) -> Dict:
-    return {"action": "get_dropdown_options", "index": index}
-
-
-def select_dropdown_option(index: int, text: str) -> Dict:
-    return {"action": "select_dropdown_option", "index": index, "text": text}
-
-
-def upload_file_to_element(index: int, path: str | list[str]) -> Dict:
-    return {"action": "upload_file_to_element", "index": index, "path": path}
-
-
-def extract_structured_data(index: int | None = None, target: str | None = None) -> Dict:
-    act: Dict = {"action": "extract_structured_data"}
-    if index is not None:
-        act["index"] = index
-    if target:
-        act["target"] = target
-    return act
-
-
-def extract_page_content(target: str | None = None) -> Dict:
-    act: Dict = {"action": "extract_page_content"}
-    if target:
-        act["target"] = target
-    return act
-
-
-def structured_output(data: Union[Dict, List, str], success: bool = True) -> Dict:
-    return {"action": "structured_output", "data": data, "success": success}
-
-
-def done(text: str, success: bool = True, files: List[str] | None = None) -> Dict:
-    act: Dict = {"action": "done", "text": text, "success": success}
-    if files:
-        act["files_to_display"] = files
-    return act
+    """Scroll to the area containing the specified text snippet."""
+    return _legacy_payload(models.ScrollToTextAction(text=text))

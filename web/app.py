@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import re
+from typing import Any, Dict
 import requests
 from flask import (
     Flask,
@@ -18,22 +20,87 @@ from agent.browser.vnc import (
     execute_dsl,
     get_elements as vnc_elements,
     get_dom_tree as vnc_dom_tree,
-    get_extracted as vnc_extracted,
-    get_eval_results as vnc_eval_results,
-    get_action_trace as vnc_action_trace,
+    get_url as vnc_url,
+    get_vnc_api_base,
 )
-from agent.browser.dom import DOMSnapshot
+from agent.browser.dom import DOMElementNode
 from agent.controller.prompt import build_prompt
-from agent.utils.history import load_hist, save_hist
+from agent.controller.async_executor import get_async_executor
+from agent.utils.history import load_hist, save_hist, append_history_entry
+from agent.utils.html import strip_html
+from agent.element_catalog import (
+    actions_use_catalog_indices,
+    consume_pending_prompt_messages,
+    get_catalog_for_prompt,
+    get_expected_version as get_catalog_expected_version,
+    is_enabled as is_catalog_enabled,
+    record_prompt_version,
+    should_refresh_for_prompt,
+)
+from vnc.dependency_check import ensure_component_dependencies
 
 # --------------- Flask & Logger ----------------------------------
 app = Flask(__name__)
 log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
 
+# Validate that the Flask service has access to its declared dependencies at
+# startup.  This makes missing packages surface as a clear actionable error.
+ensure_component_dependencies("web", logger=log)
+
+# Pre-initialize AsyncExecutor for immediate Playwright execution
+_async_executor_instance = None
+
+def get_preinitialized_async_executor():
+    """Get pre-initialized async executor to reduce startup overhead."""
+    global _async_executor_instance
+    if _async_executor_instance is None:
+        _async_executor_instance = get_async_executor()
+        log.info("Pre-initialized AsyncExecutor for immediate execution")
+    return _async_executor_instance
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    """Global error handler to convert 500 errors to JSON warnings."""
+    import uuid
+    correlation_id = str(uuid.uuid4())[:8]
+    error_msg = f"Internal server error - {str(error)}"
+    log.exception("[%s] Unhandled exception: %s", correlation_id, error_msg)
+    
+    return jsonify({
+        "error": f"Internal failure - An unexpected error occurred",
+        "correlation_id": correlation_id
+    }), 200  # Return 200 instead of 500
+
+
+@app.errorhandler(404)
+def not_found_error(error):
+    """Handle 404 errors without logging a full exception."""
+    import uuid
+    correlation_id = str(uuid.uuid4())[:8]
+    # Avoid noisy stack traces for missing routes
+    return jsonify({
+        "error": f"Resource not found - {request.path}",
+        "correlation_id": correlation_id
+    }), 200
+
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Global exception handler to catch all uncaught exceptions."""
+    import uuid
+    correlation_id = str(uuid.uuid4())[:8]
+    log.exception("[%s] Uncaught exception: %s", correlation_id, str(error))
+    
+    return jsonify({
+        "error": f"Internal failure - {str(error)}",
+        "correlation_id": correlation_id
+    }), 200  # Return 200 instead of 500
+
 # --------------- VNC / Playwright API ----------------------------
-VNC_API = "http://vnc:7000"  # Playwright 側の API
-START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp")
+# Default to a blank page to prevent unintended navigation to external sites
+START_URL = os.getenv("START_URL", "about:blank")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "30"))
 
 # --------------- Conversation History ----------------------------
@@ -42,16 +109,205 @@ os.makedirs(LOG_DIR, exist_ok=True)
 HIST_FILE = os.path.join(LOG_DIR, "conversation_history.json")
 
 
-@app.get("/history")
+def _vnc_api_url(path: str) -> str:
+    """Build a URL for the automation server using the resolved base URL."""
+
+    base = get_vnc_api_base()
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+def _format_index_value(value: Any) -> str | None:
+    """Convert index-like values to the legacy ``index=N`` selector form."""
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        if value < 0:
+            return None
+        return f"index={value}"
+
+    if isinstance(value, float):
+        if value.is_integer() and value >= 0:
+            return f"index={int(value)}"
+        return None
+
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+
+    if not text:
+        return None
+
+    try:
+        idx = int(text)
+    except ValueError:
+        return None
+
+    if idx < 0:
+        return None
+
+    return f"index={idx}"
+
+
+def _escape_quotes(value: str) -> str:
+    return value.replace("\"", "\\\"")
+
+
+def _stringify_selector(selector: Any) -> str:
+    """Convert structured selector data into the legacy string-based DSL form."""
+
+    if selector is None:
+        return ""
+
+    if isinstance(selector, str):
+        return selector
+
+    if isinstance(selector, list):
+        parts = []
+        for item in selector:
+            formatted = _stringify_selector(item)
+            if formatted:
+                if formatted not in parts:
+                    parts.append(formatted)
+        return " || ".join(parts)
+
+    index_form = _format_index_value(selector)
+    if index_form:
+        return index_form
+
+    if isinstance(selector, dict):
+        if "selector" in selector and selector["selector"]:
+            candidate = _stringify_selector(selector["selector"])
+            if candidate:
+                return candidate
+
+        if "index" in selector:
+            index_form = _format_index_value(selector.get("index"))
+            if index_form:
+                return index_form
+
+        css_value = selector.get("css")
+        if css_value:
+            return f"css={css_value}"
+
+        xpath_value = selector.get("xpath")
+        if xpath_value:
+            return f"xpath={xpath_value}"
+
+        role_value = selector.get("role")
+        if role_value:
+            name_value = selector.get("name") or selector.get("text")
+            role_value = str(role_value).strip()
+            if name_value:
+                name_text = _escape_quotes(str(name_value).strip())
+                if name_text:
+                    return f'role={role_value}[name="{name_text}"]'
+            if role_value:
+                return f"role={role_value}"
+
+        text_value = selector.get("text")
+        if text_value:
+            return str(text_value)
+
+        aria_label = selector.get("aria_label") or selector.get("aria-label")
+        if aria_label:
+            escaped = _escape_quotes(str(aria_label).strip())
+            if escaped:
+                return f'css=[aria-label="{escaped}"]'
+
+        stable_id = selector.get("stable_id")
+        if stable_id:
+            stable = str(stable_id).strip()
+            if stable:
+                escaped = _escape_quotes(stable)
+                candidates = [f'css=[data-testid="{escaped}"]', f'css=[name="{escaped}"]']
+                if re.fullmatch(r"[A-Za-z_][-A-Za-z0-9_]*", stable):
+                    candidates.insert(1, f"css=#{stable}")
+                return " || ".join(candidates)
+
+        for key in ("value", "target"):
+            if selector.get(key):
+                candidate = _stringify_selector(selector[key])
+                if candidate:
+                    return candidate
+
+        for key, value in selector.items():
+            if isinstance(value, str) and value.strip():
+                return value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return str(value)
+
+    # Fallback to simple string conversion for any remaining types
+    try:
+        return str(selector)
+    except Exception:
+        return ""
+
+
+def normalize_actions(llm_response):
+    """Extract and normalize actions from LLM response (optimized for speed)."""
+    if not llm_response:
+        return []
+    
+    actions = llm_response.get("actions", [])
+    if not isinstance(actions, list):
+        return []
+    
+    # Optimized normalization using list comprehension for speed
+    normalized = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+            
+        # Create normalized action with proper lowercasing
+        normalized_action = dict(action)  # Start with copy
+        
+        # Normalize action name to lowercase
+        if "action" in normalized_action:
+            normalized_action["action"] = str(normalized_action["action"]).lower()
+        
+        # Handle selector -> target mapping (optimized)
+        if "selector" in action and "target" not in action:
+            normalized_action["target"] = action["selector"]
+            
+        # Handle click_text action (optimized)
+        elif (normalized_action.get("action") == "click_text" and
+              "text" in action and "target" not in action):
+            normalized_action["target"] = action["text"]
+
+        if "target" in normalized_action:
+            normalized_action["target"] = _stringify_selector(normalized_action["target"])
+
+        if "value" in normalized_action and not isinstance(normalized_action["value"], str):
+            normalized_action["value"] = str(normalized_action["value"])
+
+        normalized.append(normalized_action)
+
+    return normalized
+
+
+@app.route("/history", methods=["GET"])
 def get_history():
     try:
-        return jsonify(load_hist())
+        history_data = load_hist()
+        return jsonify(history_data)
     except Exception as e:
-        log.error("get_history error: %s", e)
-        return jsonify(error=str(e)), 500
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] get_history error: %s", correlation_id, e)
+        # Return structured error response instead of 500
+        return jsonify({
+            "error": f"Failed to load history - {str(e)}",
+            "correlation_id": correlation_id,
+            "data": []  # Provide empty data as fallback
+        }), 200
 
 
-@app.get("/history.json")
+@app.route("/history.json", methods=["GET"])
 def download_history():
     if os.path.exists(HIST_FILE):
         return send_from_directory(
@@ -63,13 +319,63 @@ def download_history():
 
 
 # ----- Memory endpoint -----
-@app.get("/memory")
+@app.route("/memory", methods=["GET"])
 def memory():
     try:
-        return jsonify(load_hist())
+        history_data = load_hist()
+        return jsonify(history_data)
     except Exception as e:
-        log.error("memory error: %s", e)
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] memory error: %s", correlation_id, e)
+        # Return structured error response instead of 500
+        return jsonify({
+            "error": f"Failed to load memory - {str(e)}",
+            "correlation_id": correlation_id,
+            "data": []  # Provide empty data as fallback
+        }), 200
+
+
+# ----- Reset endpoint -----
+@app.post("/reset")
+def reset():
+    """Reset conversation history by clearing the history file"""
+    try:
+        # Clear the history by saving an empty list
+        save_hist([])
+        log.info("Conversation history reset successfully")
+        return jsonify({"status": "success", "message": "会話履歴がリセットされました"})
+    except Exception as e:
+        log.error("reset error: %s", e)
         return jsonify(error=str(e)), 500
+
+
+def update_last_history_url(url=None):
+    """Update the most recent conversation entry with the current page URL."""
+    try:
+        hist = load_hist()
+        if not hist:
+            log.debug("No conversation history found to update with URL")
+            return
+
+        # Use provided URL or fetch from VNC server
+        current_url = url
+        if not current_url:
+            try:
+                current_url = vnc_url()
+            except Exception as vnc_error:
+                log.error("Failed to get URL from VNC server: %s", vnc_error)
+                return
+        
+        if current_url:  # Only update if we have a valid URL
+            hist[-1]["url"] = current_url
+            save_hist(hist)
+            log.debug("Updated conversation history URL to: %s", current_url)
+        else:
+            log.warning("No valid URL available to update conversation history")
+            
+    except Exception as e:
+        log.error("update_last_history_url error: %s", e)
 
 
 # --------------- API ---------------------------------------------
@@ -80,51 +386,218 @@ def execute():
     if not cmd:
         return jsonify(error="command empty"), 400
 
-    raw_page = data.get("pageSource") or vnc_html()
+    page = data.get("pageSource") or vnc_html()
     shot = data.get("screenshot")
     model = data.get("model", "gemini")
     prev_error = data.get("error")
     hist = load_hist()
-    snapshot, dom_err = vnc_dom_tree()
-    if snapshot is None:
+    current_url = data.get("url") or vnc_url()
+    elements, dom_err = vnc_dom_tree()
+    if elements is None:
         try:
             fallback = vnc_elements()
-            summary_lines = [
-                "[{:03d}] <{}> {} id={} class={}".format(
-                    int(e.get("index", 0)),
-                    e.get("tag", ""),
-                    (e.get("text") or "").strip(),
-                    e.get("id") or "-",
-                    e.get("class") or "-",
+            elements = [
+                DOMElementNode(
+                    tagName=e.get("tag", ""),
+                    attributes={
+                        k: v
+                        for k, v in {
+                            "id": e.get("id"),
+                            "class": e.get("class"),
+                        }.items()
+                        if v
+                    },
+                    text=e.get("text"),
+                    xpath=e.get("xpath", ""),
+                    highlightIndex=e.get("index"),
+                    isVisible=True,
+                    isInteractive=True,
                 )
                 for e in fallback
             ]
-            snapshot = DOMSnapshot(summary_lines=summary_lines)
         except Exception as fbe:
             log.error("fallback elements error: %s", fbe)
     err_msg = "\n".join(filter(None, [prev_error, dom_err])) or None
+    pending_catalog_messages = consume_pending_prompt_messages() if is_catalog_enabled() else []
+    if pending_catalog_messages:
+        combined = "\n".join(pending_catalog_messages)
+        log.debug("Catalog advisory added to prompt: %s", combined)
+        err_msg = "\n".join(filter(None, [err_msg, combined]))
 
-    action_trace, action_warnings = vnc_action_trace()
-    extracted = vnc_extracted()
-    eval_results = vnc_eval_results()
+    catalog_prompt_text = ""
+    catalog_data: Dict[str, Any] = {"abbreviated": [], "metadata": {}, "catalog_version": None}
+    expected_catalog_version = None
+    if is_catalog_enabled():
+        try:
+            refresh_catalog = should_refresh_for_prompt()
+            if refresh_catalog:
+                log.debug("Forcing element catalog refresh before prompting")
+            catalog_info = get_catalog_for_prompt(refresh=refresh_catalog)
+            catalog_prompt_text = catalog_info.get("prompt_text", "")
+            catalog_data = catalog_info.get("catalog", {}) or {}
+            expected_catalog_version = catalog_data.get("catalog_version") or get_catalog_expected_version()
+            record_prompt_version(expected_catalog_version)
+        except Exception as catalog_error:
+            log.error("Failed to fetch element catalog: %s", catalog_error)
 
     prompt = build_prompt(
         cmd,
-        snapshot,
+        page,
         hist,
         bool(shot),
+        elements,
         err_msg,
-        raw_page,
-        action_trace=action_trace,
-        action_warnings=action_warnings,
-        extracted_texts=extracted,
-        eval_results=eval_results,
+        element_catalog_text=catalog_prompt_text,
+        catalog_metadata=catalog_data,
     )
+    
+    # Call LLM first
     res = call_llm(prompt, model, shot)
 
-    hist.append({"user": cmd, "bot": res})
-    save_hist(hist)
+    # Save conversation history immediately with current URL
+    append_history_entry(cmd, res, current_url)
+    
+    # Extract and normalize actions from LLM response
+    actions = normalize_actions(res)
+    uses_catalog_indices = bool(actions) and is_catalog_enabled() and actions_use_catalog_indices(actions)
+    if uses_catalog_indices:
+        log.debug("Planned actions rely on catalog indices")
+
+    # If there are actions, start async Playwright execution immediately (optimized)
+    task_id = None
+    if actions:
+        try:
+            # Use pre-initialized executor for immediate execution
+            executor = get_preinitialized_async_executor()
+            task_id = executor.create_task()
+
+            # Start Playwright execution in parallel (immediate submission)
+            payload_extra = {}
+            if is_catalog_enabled() and expected_catalog_version:
+                payload_extra["expected_catalog_version"] = expected_catalog_version
+            success = executor.submit_playwright_execution(
+                task_id,
+                execute_dsl,
+                actions,
+                payload=payload_extra or None,
+            )
+            
+            if success:
+                # Start parallel data fetching immediately (no delay)
+                executor.submit_parallel_data_fetch(task_id, {"updated_html": vnc_html})
+                log.info("Started immediate async execution for task %s", task_id)
+            else:
+                log.error("Failed to start async execution")
+                task_id = None
+        except Exception as e:
+            log.error("Error starting async execution: %s", e)
+            task_id = None
+    
+    # Return LLM response immediately with task_id for status tracking (optimized)
+    if task_id:
+        # Direct field assignment instead of dict copying for speed
+        res["task_id"] = task_id
+        res["async_execution"] = True
+    else:
+        res["async_execution"] = False
+    
     return jsonify(res)
+
+
+@app.route("/execution-status/<task_id>", methods=["GET"])
+def get_execution_status(task_id):
+    """Get the status of an async execution task."""
+    try:
+        executor = get_async_executor()
+        status = executor.get_task_status(task_id)
+
+        if status is None:
+            return jsonify({"error": "Task not found"}), 404
+
+        # When task completes, update conversation history with current URL
+        if status.get("status") == "completed":
+            update_last_history_url()
+
+        # Include all warnings without character limits
+        if status and "result" in status and status["result"] and isinstance(status["result"], dict):
+            if "warnings" in status["result"] and status["result"]["warnings"]:
+                status["result"]["warnings"] = [_truncate_warning(warning) for warning in status["result"]["warnings"]]
+        
+        # Clean up old tasks periodically
+        executor.cleanup_old_tasks()
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        import uuid
+        correlation_id = str(uuid.uuid4())[:8]
+        log.error("[%s] get_execution_status error: %s", correlation_id, e)
+        error_warning = _truncate_warning(f"Failed to get status - {str(e)}")
+        return jsonify({
+            "error": error_warning,
+            "correlation_id": correlation_id
+        }), 200
+
+
+@app.post("/store-warnings")
+def store_warnings():
+    """Store warnings in the last conversation history item."""
+    try:
+        data = request.get_json(force=True)
+        warnings = data.get("warnings", [])
+        
+        if not warnings:
+            return jsonify({"status": "success", "message": "No warnings to store"})
+        
+        # Process warnings without character limits (as requested)
+        processed_warnings = [_truncate_warning(warning) for warning in warnings]
+        
+        # Load current history
+        hist = load_hist()
+        
+        if not hist:
+            log.warning("No conversation history found to update with warnings")
+            return jsonify({"status": "error", "message": "No conversation history found"})
+        
+        # Get the last conversation item
+        last_item = hist[-1]
+        
+        # Add warnings to the bot response, above the "complete" field
+        if "bot" in last_item and isinstance(last_item["bot"], dict):
+            # Make a copy of bot response to preserve order
+            bot_response = last_item["bot"].copy()
+            
+            # Remove complete field temporarily
+            complete_value = bot_response.pop("complete", True)
+            
+            # Add processed warnings (without character limits)
+            bot_response["warnings"] = processed_warnings
+            
+            # Re-add complete field at the end
+            bot_response["complete"] = complete_value
+            
+            # Update the history item
+            last_item["bot"] = bot_response
+            
+            # Save updated history
+            save_hist(hist)
+            
+            log.info("Added %d warnings to conversation history (character limits removed)", len(processed_warnings))
+            return jsonify({"status": "success", "message": f"Stored {len(processed_warnings)} warnings"})
+        else:
+            log.warning("Invalid conversation history format - cannot add warnings")
+            return jsonify({"status": "error", "message": "Invalid conversation history format"})
+            
+    except Exception as e:
+        log.error("store_warnings error: %s", e)
+        error_msg = _truncate_warning(f"Failed to store warnings: {str(e)}")
+        return jsonify({"status": "error", "message": error_msg})
+
+
+def _truncate_warning(warning_msg, max_length=None):
+    """Return warning message without truncation (character limits removed)."""
+    # Character limits removed for conversation history as requested
+    return warning_msg
 
 
 @app.post("/automation/execute-dsl")
@@ -134,30 +607,69 @@ def forward_dsl():
         return jsonify({"html": "", "warnings": []})
     try:
         res_obj = execute_dsl(payload, timeout=120)
+
+        # Update conversation history with the current URL after execution
+        update_last_history_url()
+
+        # Include all warnings without character limits
+        if res_obj and isinstance(res_obj, dict) and "warnings" in res_obj:
+            res_obj["warnings"] = [_truncate_warning(warning) for warning in res_obj["warnings"]]
+
         return jsonify(res_obj)
     except requests.Timeout:
         log.error("forward_dsl timeout")
-        return jsonify(error="timeout"), 504
+        timeout_warning = _truncate_warning("ERROR:auto:Request timeout - The operation took too long to complete")
+        return jsonify({"html": "", "warnings": [timeout_warning]})
     except Exception as e:
         log.error("forward_dsl error: %s", e)
-        return jsonify(error=str(e)), 500
+        error_warning = _truncate_warning(f"ERROR:auto:Communication error - {str(e)}")
+        return jsonify({"html": "", "warnings": [error_warning]})
 
 
-@app.get("/vnc-source")
+@app.route("/automation/stop-request", methods=["GET"])
+def get_stop_request():
+    """Get current stop request from automation server."""
+    try:
+        res = requests.get(_vnc_api_url("/stop-request"), timeout=10)
+        if res.ok:
+            return jsonify(res.json())
+        else:
+            return jsonify(None)
+    except Exception as e:
+        log.error("get_stop_request error: %s", e)
+        return jsonify(None)
+
+
+@app.route("/automation/stop-response", methods=["POST"])
+def post_stop_response():
+    """Forward user response to automation server."""
+    try:
+        data = request.get_json(force=True)
+        res = requests.post(_vnc_api_url("/stop-response"), json=data, timeout=10)
+        if res.ok:
+            return jsonify(res.json())
+        else:
+            return jsonify({"status": "error", "message": "Failed to send response"})
+    except Exception as e:
+        log.error("post_stop_response error: %s", e)
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/vnc-source", methods=["GET"])
 def vhtml():
     return Response(vnc_html(), mimetype="text/plain")
 
 
-@app.get("/screenshot")
+@app.route("/screenshot", methods=["GET"])
 def get_screenshot():
     """VNCサーバーからスクリーンショットを取得してブラウザに返す"""
     try:
-        res = requests.get(f"{VNC_API}/screenshot", timeout=300)
+        res = requests.get(_vnc_api_url("/screenshot"), timeout=300)
         res.raise_for_status()
         return Response(res.text, mimetype="text/plain")
     except Exception as e:
         log.error("get_screenshot error: %s", e)
-        return jsonify(error=str(e)), 500
+        return Response("", mimetype="text/plain")
 
 
 # --------------- UI エントリポイント ------------------------------
@@ -165,11 +677,21 @@ def get_screenshot():
 def outer():
     return render_template(
         "layout.html",
-        vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901",
+        vnc_url="http://localhost:6901/vnc.html?host=localhost&port=6901&resize=scale",
         start_url=START_URL,
         max_steps=MAX_STEPS,
     )
 
 
 if __name__ == "__main__":
+    import atexit
+    
+    # Setup cleanup on shutdown
+    def cleanup():
+        executor = get_async_executor()
+        executor.shutdown()
+        log.info("Application shutdown cleanup completed")
+    
+    atexit.register(cleanup)
+    
     app.run(host="0.0.0.0", port=5000, debug=True)

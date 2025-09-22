@@ -3,22 +3,65 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendButton  = document.querySelector("#input-area button");
   const userInput   = document.getElementById("user-input");
   const chatArea    = document.getElementById("chat-area");
-  const modelSelect = document.getElementById("model-select");
-  const memoryBtn   = document.getElementById("memory-button");
+  const resetBtn    = document.getElementById("reset-button");
 
-  if (memoryBtn) {
-    memoryBtn.addEventListener("click", async () => {
+  // Update input placeholder based on execution state
+  function updateInputPlaceholder() {
+    if (typeof window.isTaskExecuting === "function" && window.isTaskExecuting()) {
+      userInput.placeholder = "追加の指示やアドバイスを入力...";
+    } else {
+      userInput.placeholder = "ここに入力...";
+    }
+  }
+
+  // Monitor execution state and update input placeholder
+  setInterval(updateInputPlaceholder, 500);
+
+  if (resetBtn) {
+    resetBtn.addEventListener("click", async () => {
+      // Confirm before resetting
+      if (!confirm("会話履歴をリセットしますか？この操作は元に戻せません。")) {
+        return;
+      }
+      
+      // Stop any ongoing LLM operations
+      if (typeof window.stopRequested !== 'undefined') {
+        window.stopRequested = true;
+      }
+      
       try {
-        const r = await fetch("/memory");
-        if (!r.ok) throw new Error("memory fetch failed");
-        const hist = await r.json();
-        const pre = document.createElement("pre");
-        pre.classList.add("system-message");
-        pre.textContent = JSON.stringify(hist, null, 2);
-        chatArea.appendChild(pre);
+        const r = await fetch("/reset", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+        
+        if (!r.ok) throw new Error("reset request failed");
+        
+        const response = await r.json();
+        
+        // Clear the chat area and show initial message
+        chatArea.innerHTML = '<p class="bot-message">こんにちは！ご質問はありますか？</p>';
+        
+        // Show success message
+        const successMsg = document.createElement("p");
+        successMsg.classList.add("system-message");
+        successMsg.textContent = response.message || "会話履歴がリセットされました";
+        successMsg.style.color = "#28a745";
+        chatArea.appendChild(successMsg);
+        
         chatArea.scrollTop = chatArea.scrollHeight;
       } catch (e) {
-        console.error("memory fetch error:", e);
+        console.error("reset error:", e);
+        
+        // Show error message
+        const errorMsg = document.createElement("p");
+        errorMsg.classList.add("system-message");
+        errorMsg.textContent = "リセットに失敗しました: " + e.message;
+        errorMsg.style.color = "#dc3545";
+        chatArea.appendChild(errorMsg);
+        chatArea.scrollTop = chatArea.scrollHeight;
       }
     });
   }
@@ -37,8 +80,8 @@ document.addEventListener("DOMContentLoaded", () => {
           notice.classList.add("system-message");
           notice.textContent = `未完了タスクを再開します: 「${cmd}」`;
           chatArea.appendChild(notice);
-          /* 未完了タスクをモデル設定で再開する */
-          const model = modelSelect ? modelSelect.value : "gemini";
+          /* モデル選択がないのでgeminiを使用 */
+          const model = "gemini";
           if (typeof window.executeTask === "function") {
             await window.executeTask(cmd, model);
           } else {
@@ -62,11 +105,47 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  /* ----- キーボードショートカット (Ctrl+Enter で送信) ----- */
+  userInput.addEventListener("keydown", (evt) => {
+    if ((evt.ctrlKey || evt.metaKey) && evt.key === "Enter") {
+      evt.preventDefault();
+      if (!sendButton.disabled) {
+        sendButton.click();
+      }
+    }
+  });
+
   /* ----- 送信ボタンイベント ----- */
-  sendButton.addEventListener("click", async (evt) => {
+  sendButton.addEventListener("click", (evt) => {
     evt.preventDefault();
     const text = userInput.value.trim();
     if (!text) return;
+
+    // Check if a task is currently executing
+    if (typeof window.isTaskExecuting === "function" && window.isTaskExecuting()) {
+      // Task is executing, add to queue instead
+      if (typeof window.addPromptToQueue === "function") {
+        window.addPromptToQueue(text);
+
+        /* ユーザーメッセージを追加 */
+        const u = document.createElement("p");
+        u.classList.add("user-message");
+        u.innerHTML = `<strong>📝 追加指示をキューに追加:</strong> ${text}`;
+        u.style.cssText = "background: #fff3e0; border-left: 3px solid #ff9800;";
+        chatArea.appendChild(u);
+        chatArea.scrollTop = chatArea.scrollHeight;
+
+        userInput.value = "";
+        return;
+      }
+    }
+
+    // Prevent double submission for new tasks
+    if (sendButton.disabled) return;
+
+    // Disable briefly to avoid duplicate start
+    sendButton.disabled = true;
+    sendButton.textContent = "実行中...";
 
     /* ユーザーメッセージを追加 */
     const u = document.createElement("p");
@@ -79,24 +158,24 @@ document.addEventListener("DOMContentLoaded", () => {
     /* AI 応答プレースホルダー + スピナー */
     const b = document.createElement("p");
     b.classList.add("bot-message");
-    b.textContent = "AI が応答中...";
-    const spin = document.createElement("span");
-    spin.classList.add("spinner");
-    b.appendChild(spin);
+    b.innerHTML = 'AI が応答中... <span class="spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #f3f3f3;border-top:2px solid #3498db;border-radius:50%;animation:spin 1s linear infinite;"></span>';
     chatArea.appendChild(b);
     chatArea.scrollTop = chatArea.scrollHeight;
 
-    try {
-      const model = modelSelect ? modelSelect.value : "gemini";
-      /* ----- マルチターン実行開始 ----- */
-      if (typeof window.executeTask === "function") {
-        await window.executeTask(text, model, b);
-      } else {
-        console.error("executeTask function not found.");
-      }
-    } catch (err) {
-      console.error(err);
-      b.textContent = "AI の応答に失敗しました。";
+    const model = "gemini";  // デフォルトモデルを使用
+    if (typeof window.executeTask === "function") {
+      window.executeTask(text, model, b).catch(err => {
+        console.error(err);
+        b.textContent = "AI の応答に失敗しました: " + err.message;
+      });
+    } else {
+      console.error("executeTask function not found.");
+      b.textContent = "実行機能が見つかりません。";
     }
+
+    // Re-enable UI immediately to allow additional prompts
+    sendButton.disabled = false;
+    sendButton.textContent = "送信";
+    userInput.focus();
   });
 });

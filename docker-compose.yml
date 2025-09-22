@@ -16,7 +16,8 @@ services:
     volumes:
       - .:/app
     environment:
-      - START_URL=https://www.yahoo.co.jp
+      # Show Yahoo Japan only on the first browser launch
+      - START_URL=https://www.yahoo.co.jp/
 
   web:
     build: ./web
@@ -24,7 +25,8 @@ services:
     command: python -u app.py
     environment:
       - PYTHONPATH=/app
-      - START_URL=https://www.yahoo.co.jp
+      # Ensure front-end matches initial Yahoo start page
+      - START_URL=https://www.yahoo.co.jp/
     env_file:
       - .env
     ports:
