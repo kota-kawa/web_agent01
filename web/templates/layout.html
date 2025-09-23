@@ -31,12 +31,22 @@
     <section id="preview-panel" class="preview-panel">
       <header class="preview-header">
         <span class="preview-title">ブラウザビュー</span>
-        <div class="preview-mode-toggle" role="group" aria-label="プレビュー表示の切り替え">
-          <button type="button" class="preview-mode-button" data-preview-mode="screenshot" aria-pressed="false">
-            スクリーンショット
-          </button>
-          <button type="button" class="preview-mode-button active" data-preview-mode="live" aria-pressed="true">
-            ライブビュー
+        <div class="preview-controls">
+          <div class="preview-mode-toggle" role="group" aria-label="プレビュー表示の切り替え">
+            <button type="button" class="preview-mode-button" data-preview-mode="screenshot" aria-pressed="false">
+              スクリーンショット
+            </button>
+            <button type="button" class="preview-mode-button active" data-preview-mode="live" aria-pressed="true">
+              ライブビュー
+            </button>
+          </div>
+          <button
+            id="sync-live-view-button"
+            type="button"
+            class="preview-sync-button"
+            title="ライブビューを最新のスクリーンショットに合わせます"
+          >
+            スクショに同期
           </button>
         </div>
       </header>
