@@ -96,19 +96,60 @@ def _probe_cdp_endpoint(endpoint: str, timeout: float = 1.5) -> bool:
     return False
 
 
-def _resolve_cdp_endpoint(*, candidates: Iterable[str] | None = None) -> str | None:
+def _resolve_cdp_endpoint(
+    *,
+    candidates: Iterable[str] | None = None,
+    retries: int = 5,
+    delay: float = 1.0,
+) -> str | None:
     candidate_list = (
         list(candidates)
         if candidates is not None
         else _candidate_cdp_endpoints()
     )
 
-    for candidate in candidate_list:
-        normalised = _normalise_cdp_candidate(candidate)
-        if not normalised:
-            continue
-        if _probe_cdp_endpoint(normalised):
-            return normalised
+    if not candidate_list:
+        return None
+
+    first_viable: str | None = None
+
+    for attempt in range(1, max(retries, 1) + 1):
+        for candidate in candidate_list:
+            normalised = _normalise_cdp_candidate(candidate)
+            if not normalised:
+                continue
+            if first_viable is None:
+                first_viable = normalised
+            if _probe_cdp_endpoint(normalised):
+                if attempt > 1:
+                    log.info(
+                        "CDP endpoint %s became reachable on retry %d/%d",
+                        normalised,
+                        attempt,
+                        retries,
+                    )
+                return normalised
+
+        if attempt < retries:
+            log.debug(
+                "CDP endpoint probe attempt %d/%d failed; retrying in %.1fs",
+                attempt,
+                retries,
+                delay,
+            )
+            time.sleep(delay)
+
+    if first_viable is not None:
+        log.warning(
+            "Could not verify CDP endpoint connectivity after %d attempts; last candidate was %s",
+            retries,
+            first_viable,
+        )
+    else:
+        log.warning(
+            "Could not verify CDP endpoint connectivity after %d attempts; no candidates available",
+            retries,
+        )
 
     return None
 
