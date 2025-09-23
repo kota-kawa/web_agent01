@@ -16,8 +16,8 @@ services:
     volumes:
       - .:/app
     environment:
-      # Show Yahoo Japan only on the first browser launch
-      - START_URL=https://www.yahoo.co.jp/
+      # Show yahoo.cp.jp only on the first browser launch
+      - START_URL=https://yahoo.cp.jp/
 
   web:
     build: ./web
@@ -25,8 +25,8 @@ services:
     command: python -u app.py
     environment:
       - PYTHONPATH=/app
-      # Ensure front-end matches initial Yahoo start page
-      - START_URL=https://www.yahoo.co.jp/
+      # Ensure front-end matches the yahoo.cp.jp start page
+      - START_URL=https://yahoo.cp.jp/
       # Configure the live browser iframe (noVNC). Override NOVNC_PORT when the
       # service is published on a different host port, or use NOVNC_URL to point
       # at an externally reachable endpoint when running behind a proxy.
