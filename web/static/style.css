@@ -278,7 +278,7 @@ button:disabled {
   padding: 0;
 }
 
-#live-browser-container.is-ready #live-browser-frame {
+#live-browser-container.is-ready #live-browser-canvas {
   display: block;
 }
 
@@ -290,7 +290,7 @@ button:disabled {
   color: #fecaca;
 }
 
-#live-browser-frame {
+#live-browser-canvas {
   display: none;
   flex: 1 1 auto;
   width: 100%;
@@ -299,6 +299,7 @@ button:disabled {
   border-radius: 12px;
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.45);
   background: #0b1120;
+  cursor: default;
 }
 
 #preview-image {

@@ -84,6 +84,79 @@ def _normalise_novnc_url(raw_url: str) -> str:
     return urlunsplit(parsed._replace(path=normalised_path, query=new_query))
 
 
+def _normalise_novnc_ws_url(raw_url: str) -> str:
+    """Normalise a URL so it can be used to initiate a WebSocket connection."""
+
+    raw_url = (raw_url or "").strip()
+    if not raw_url:
+        return ""
+
+    try:
+        parsed = urlsplit(raw_url, allow_fragments=True)
+    except ValueError:
+        return raw_url
+
+    scheme = parsed.scheme.lower()
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+
+    def _extract_path() -> str:
+        for key, value in query_items:
+            if key.lower() == "path" and value:
+                trimmed = value.strip()
+                if not trimmed:
+                    continue
+                if trimmed.startswith("/"):
+                    return "/" + trimmed.lstrip("/")
+                base_path = parsed.path or ""
+                base_dir = base_path.rsplit("/", 1)[0] if "/" in base_path else ""
+                if base_dir:
+                    combined = f"{base_dir}/{trimmed}".lstrip("/")
+                else:
+                    combined = trimmed.lstrip("/")
+                return "/" + combined
+
+        path = (parsed.path or "").rstrip("/")
+        lowered = path.lower()
+
+        if lowered.endswith("websockify"):
+            candidate = path
+        elif lowered.endswith("vnc.html") or lowered.endswith("vnc_lite.html"):
+            trimmed = path[: path.rfind("/")] if "/" in path else ""
+            if not trimmed:
+                candidate = "websockify"
+            else:
+                candidate = trimmed.rstrip("/") + "/websockify"
+        elif path:
+            candidate = path + "/websockify"
+        else:
+            candidate = "websockify"
+
+        if not candidate:
+            candidate = "websockify"
+        if not candidate.startswith("/"):
+            candidate = "/" + candidate
+        return candidate
+
+    if scheme in {"ws", "wss"}:
+        websocket_path = parsed.path or ""
+        if not websocket_path:
+            websocket_path = _extract_path()
+        elif not websocket_path.startswith("/"):
+            websocket_path = "/" + websocket_path
+        return urlunsplit(parsed._replace(path=websocket_path))
+
+    if scheme in {"http", "https"}:
+        websocket_scheme = "ws" if scheme == "http" else "wss"
+        websocket_path = _extract_path()
+        return urlunsplit((websocket_scheme, parsed.netloc, websocket_path, "", ""))
+
+    if not scheme:
+        websocket_path = _extract_path()
+        return websocket_path
+
+    return raw_url
+
+
 @app.errorhandler(404)
 def not_found(error: Exception):  # pragma: no cover - simple JSON handler
     return jsonify({"error": f"resource not found: {request.path}"}), 404
@@ -98,7 +171,9 @@ def handle_exception(error: Exception):  # pragma: no cover - defensive handler
 def _compute_novnc_url() -> str:
     configured_url = (os.getenv("NOVNC_URL") or "").strip()
     if configured_url:
-        return _normalise_novnc_url(configured_url)
+        if configured_url.lower().startswith(("ws://", "wss://")):
+            return _normalise_novnc_ws_url(configured_url)
+        return _normalise_novnc_ws_url(_normalise_novnc_url(configured_url))
 
     configured_port = (os.getenv("NOVNC_PORT") or "").strip()
     port_value = "6901"
@@ -125,7 +200,8 @@ def _compute_novnc_url() -> str:
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"
 
-    return _normalise_novnc_url(f"{scheme}://{hostname}:{port_value}")
+    html_endpoint = _normalise_novnc_url(f"{scheme}://{hostname}:{port_value}")
+    return _normalise_novnc_ws_url(html_endpoint)
 
 
 @app.route("/")
