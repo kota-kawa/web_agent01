@@ -91,8 +91,8 @@ WAIT_FOR_SELECTOR_TIMEOUT = int(os.getenv("WAIT_FOR_SELECTOR_TIMEOUT", "5000")) 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
 CDP_URL = "http://localhost:9222"
-# Use yahoo.cp.jp as the default start page for immediate usability
-DEFAULT_URL = os.getenv("START_URL", "https://yahoo.cp.jp/")
+# Use Yahoo! JAPAN as the default start page for immediate usability
+DEFAULT_URL = os.getenv("START_URL", "https://www.yahoo.co.jp/")
 SPA_STABILIZE_TIMEOUT = int(
     os.getenv("SPA_STABILIZE_TIMEOUT", "2000")
 )  # ms  SPA描画安定待ち
