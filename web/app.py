@@ -4,7 +4,7 @@ import atexit
 import logging
 import os
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
@@ -24,6 +24,60 @@ DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini")
 START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp/")
 HIST_FILE = history_utils.HIST_FILE
 
+_NOVNC_DEFAULTS = (
+    ("autoconnect", "1"),
+    ("resize", "scale"),
+    ("reconnect", "true"),
+    ("path", "websockify"),
+)
+
+
+def _normalise_novnc_url(raw_url: str) -> str:
+    """Normalise an endpoint for embedding the bundled noVNC client.
+
+    The automation UI expects the iframe to point at ``vnc.html`` with query
+    parameters that trigger an immediate connection.  Operators can still
+    override the path/query portion via :envvar:`NOVNC_URL`, but this helper
+    ensures sensible defaults when they are omitted.
+    """
+
+    raw_url = (raw_url or "").strip()
+    if not raw_url:
+        return ""
+
+    try:
+        parsed = urlsplit(raw_url, allow_fragments=True)
+    except ValueError:
+        return raw_url
+
+    if parsed.scheme and not parsed.netloc and not parsed.path:
+        # ``urlsplit('foo')`` treats ``foo`` as a scheme.  In that case we
+        # cannot reliably inject defaults, so return the value unchanged.
+        return raw_url
+
+    path = parsed.path or ""
+    trimmed = path[:-1] if path.endswith("/") else path
+
+    if not trimmed:
+        normalised_path = "/vnc.html"
+    else:
+        if not trimmed.lower().endswith(".html"):
+            trimmed = f"{trimmed}/vnc.html"
+        normalised_path = trimmed
+        if not normalised_path.startswith("/"):
+            normalised_path = "/" + normalised_path.lstrip("/")
+
+    query_items = list(parse_qsl(parsed.query, keep_blank_values=True))
+    seen = {key for key, _ in query_items}
+    for key, value in _NOVNC_DEFAULTS:
+        if key not in seen:
+            query_items.append((key, value))
+            seen.add(key)
+
+    new_query = urlencode(query_items, doseq=True)
+
+    return urlunsplit(parsed._replace(path=normalised_path, query=new_query))
+
 
 @app.errorhandler(404)
 def not_found(error: Exception):  # pragma: no cover - simple JSON handler
@@ -39,7 +93,7 @@ def handle_exception(error: Exception):  # pragma: no cover - defensive handler
 def _compute_novnc_url() -> str:
     configured_url = (os.getenv("NOVNC_URL") or "").strip()
     if configured_url:
-        return configured_url
+        return _normalise_novnc_url(configured_url)
 
     configured_port = (os.getenv("NOVNC_PORT") or "").strip()
     port_value = "6901"
@@ -66,7 +120,7 @@ def _compute_novnc_url() -> str:
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"
 
-    return f"{scheme}://{hostname}:{port_value}"
+    return _normalise_novnc_url(f"{scheme}://{hostname}:{port_value}")
 
 
 @app.route("/")

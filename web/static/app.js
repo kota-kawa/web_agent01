@@ -3,6 +3,7 @@ const state = {
   pollTimer: null,
   renderedSteps: 0,
   previewMode: 'screenshot',
+  liveViewInitialised: false,
   liveViewLoaded: false,
 };
 
@@ -83,7 +84,7 @@ function syncPreviewModeUI() {
 }
 
 function initialiseLiveView() {
-  if (state.liveViewLoaded || !liveBrowserContainer || !liveBrowserFrame) {
+  if (state.liveViewInitialised || !liveBrowserContainer || !liveBrowserFrame) {
     return;
   }
 
@@ -92,12 +93,58 @@ function initialiseLiveView() {
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.textContent = 'ライブビューの URL が設定されていません。';
     }
+    liveBrowserContainer.classList.add('has-error');
     return;
   }
 
-  liveBrowserFrame.src = configuredUrl;
-  liveBrowserContainer.classList.add('is-ready');
-  state.liveViewLoaded = true;
+  let resolvedUrl = configuredUrl;
+  try {
+    // Allow relative URLs by resolving against the current location.
+    resolvedUrl = new URL(configuredUrl, window.location.href).toString();
+  } catch (err) {
+    // Ignore resolution failures so scheme-relative URLs remain usable.
+  }
+
+  state.liveViewInitialised = true;
+  state.liveViewLoaded = false;
+
+  liveBrowserContainer.classList.remove('has-error');
+  liveBrowserContainer.classList.add('is-loading');
+  if (liveBrowserUnavailable) {
+    liveBrowserUnavailable.textContent = 'ライブビューを初期化しています...';
+    liveBrowserUnavailable.setAttribute('aria-busy', 'true');
+  }
+
+  function cleanupLiveListeners() {
+    liveBrowserContainer.classList.remove('is-loading');
+    liveBrowserFrame.removeEventListener('load', handleLiveLoad);
+    liveBrowserFrame.removeEventListener('error', handleLiveError);
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+  }
+
+  function handleLiveLoad() {
+    cleanupLiveListeners();
+    state.liveViewLoaded = true;
+    liveBrowserContainer.classList.add('is-ready');
+  }
+
+  function handleLiveError() {
+    cleanupLiveListeners();
+    state.liveViewInitialised = false;
+    state.liveViewLoaded = false;
+    liveBrowserContainer.classList.remove('is-ready');
+    liveBrowserContainer.classList.add('has-error');
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent =
+        'ライブビューを読み込めませんでした。ネットワーク設定を確認してください。';
+    }
+  }
+
+  liveBrowserFrame.addEventListener('load', handleLiveLoad);
+  liveBrowserFrame.addEventListener('error', handleLiveError);
+  liveBrowserFrame.src = resolvedUrl;
 }
 
 function setPreviewMode(mode) {

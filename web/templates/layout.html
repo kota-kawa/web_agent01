@@ -48,7 +48,12 @@
           </div>
         </div>
         <div id="live-browser-container" class="preview-pane live" hidden>
-          <div id="live-browser-unavailable" class="preview-placeholder">
+          <div
+            id="live-browser-unavailable"
+            class="preview-placeholder"
+            role="status"
+            aria-live="polite"
+          >
             ライブビューを表示するには noVNC エンドポイントを公開してください。
           </div>
           <iframe id="live-browser-frame" title="ライブブラウザビュー" loading="lazy"></iframe>
