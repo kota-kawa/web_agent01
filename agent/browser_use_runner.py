@@ -270,6 +270,9 @@ class BrowserUseSession:
     result: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
+    shared_browser_mode: str = "unknown"
+    shared_browser_endpoint: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
     _task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _agent: Agent | None = field(default=None, init=False, repr=False)
@@ -332,6 +335,32 @@ class BrowserUseSession:
                 log.debug("Error closing agent for session %s: %s", self.session_id, close_exc)
             self._record_history()
 
+    def _set_shared_browser_state(self, mode: str, endpoint: str | None) -> None:
+        normalised = mode if mode in {"local", "remote"} else "unknown"
+        with self._lock:
+            self.shared_browser_mode = normalised
+            self.shared_browser_endpoint = endpoint
+            self.updated_at = _now()
+
+    def _add_warning(self, message: str | None) -> None:
+        if not message:
+            return
+        trimmed = message.strip()
+        if not trimmed:
+            return
+        with self._lock:
+            if trimmed not in self.warnings:
+                self.warnings.append(trimmed)
+                self.updated_at = _now()
+
+    def _record_shared_browser_fallback(self, message: str | None = None) -> None:
+        fallback_message = (
+            message
+            or "ライブビューのブラウザに接続できなかったため、ローカルのヘッドレスブラウザで実行します。ライブビューは利用できません。"
+        )
+        self._set_shared_browser_state("local", None)
+        self._add_warning(fallback_message)
+
     async def request_cancel(self) -> None:
         task = self._task
         if task and not task.done():
@@ -390,6 +419,10 @@ class BrowserUseSession:
                 result["structured_output"] = structured.model_dump()
             except Exception:  # pragma: no cover - defensive
                 result["structured_output"] = str(structured)
+        with self._lock:
+            warnings_copy = copy.deepcopy(self.warnings)
+        if warnings_copy:
+            result["warnings"] = warnings_copy
 
         with self._lock:
             self.result = result
@@ -440,8 +473,9 @@ class BrowserUseSession:
             endpoint = _resolve_cdp_endpoint(candidates=candidates)
         except TypeError:
             endpoint = _resolve_cdp_endpoint()
-        require_shared_browser = _env_flag("REQUIRE_SHARED_BROWSER", default=True)
+        require_shared_browser = _env_flag("REQUIRE_SHARED_BROWSER", default=False)
         remote_error: Exception | None = None
+        self._set_shared_browser_state("unknown", None)
 
         if endpoint:
             try:
@@ -468,12 +502,16 @@ class BrowserUseSession:
                     endpoint,
                     exc,
                 )
+                self._record_shared_browser_fallback(
+                    f"共有ブラウザ {endpoint} への接続に失敗しました（{type(exc).__name__}: {exc}）。"
+                )
             else:
                 log.info(
                     "Session %s: attaching to shared browser at %s",
                     self.session_id,
                     endpoint,
                 )
+                self._set_shared_browser_state("remote", endpoint)
                 return session
         else:
             approx_wait = max(
@@ -494,6 +532,9 @@ class BrowserUseSession:
                 "falling back to local headless browser session",
                 self.session_id,
                 approx_wait,
+            )
+            self._record_shared_browser_fallback(
+                "ライブビューのブラウザに接続できなかったため、ローカルのヘッドレスブラウザで実行します。"
             )
 
         try:
@@ -516,6 +557,7 @@ class BrowserUseSession:
             "Session %s: started local headless browser session",
             self.session_id,
         )
+        self._set_shared_browser_state("local", None)
         return session
 
     def _set_status(self, status: str, error: Optional[str] = None) -> None:
@@ -569,6 +611,9 @@ class BrowserUseSession:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "complete": self.status == "completed",
+                "warnings": copy.deepcopy(self.warnings),
+                "shared_browser_mode": self.shared_browser_mode,
+                "shared_browser_endpoint": self.shared_browser_endpoint,
             }
 
 

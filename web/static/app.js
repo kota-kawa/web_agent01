@@ -13,6 +13,10 @@ const state = {
   liveViewAwaitingLibrary: !window.__NOVNC_READY__,
   latestStep: null,
   lastPreviewImage: null,
+  displayedWarnings: new Set(),
+  sharedBrowserMode: 'unknown',
+  liveViewDisabled: false,
+  liveViewDisabledMessage: '',
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -86,17 +90,20 @@ function showSharedBrowserError(detailMessage) {
   clearLiveViewWatchdog();
   disconnectLiveView(true);
 
+  const fallbackText =
+    typeof detailMessage === 'string' && detailMessage.trim().length
+      ? detailMessage.trim()
+      : 'ライブビューのブラウザに接続できないため実行できません。';
+  state.liveViewDisabled = true;
+  state.liveViewDisabledMessage = fallbackText;
+
   if (liveBrowserContainer) {
     liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
   }
 
   if (liveBrowserUnavailable) {
-    const text =
-      typeof detailMessage === 'string' && detailMessage.trim().length
-        ? detailMessage
-        : 'ライブビューのブラウザに接続できないため実行できません。';
-    liveBrowserUnavailable.textContent = text;
+    liveBrowserUnavailable.textContent = fallbackText;
     liveBrowserUnavailable.removeAttribute('aria-busy');
   }
 }
@@ -261,6 +268,26 @@ function initialiseLiveView(forceReload = false) {
 
   clearLiveViewRetry();
   clearLiveViewWatchdog();
+
+  if (state.liveViewDisabled) {
+    disconnectLiveView();
+    state.liveViewInitialised = false;
+    state.liveViewLoaded = false;
+    if (liveBrowserContainer) {
+      liveBrowserContainer.classList.remove('is-loading', 'is-ready');
+      liveBrowserContainer.classList.add('has-error');
+    }
+    if (liveBrowserUnavailable) {
+      const text =
+        typeof state.liveViewDisabledMessage === 'string' &&
+        state.liveViewDisabledMessage.trim().length
+          ? state.liveViewDisabledMessage
+          : 'ライブビューは現在利用できません。';
+      liveBrowserUnavailable.textContent = text;
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+    return;
+  }
 
   if (window.__NOVNC_LOAD_FAILED__) {
     disconnectLiveView();
@@ -712,6 +739,38 @@ async function pollSession() {
       throw new Error(`status ${response.status}`);
     }
     const data = await response.json();
+    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    for (const warning of warnings) {
+      const text = typeof warning === 'string' ? warning.trim() : String(warning || '').trim();
+      if (!text || state.displayedWarnings.has(text)) {
+        continue;
+      }
+      state.displayedWarnings.add(text);
+      appendMessage('system', `⚠️ ${escapeHtml(text)}`);
+    }
+
+    const sharedMode =
+      typeof data.shared_browser_mode === 'string' ? data.shared_browser_mode.trim().toLowerCase() : 'unknown';
+    if (sharedMode === 'local' && state.sharedBrowserMode !== 'local') {
+      state.sharedBrowserMode = 'local';
+      state.liveViewDisabled = true;
+      const message =
+        warnings.length && typeof warnings[warnings.length - 1] === 'string'
+          ? warnings[warnings.length - 1]
+          : 'ライブビューのブラウザに接続できなかったため、スクリーンショットのみ表示されます。';
+      state.liveViewDisabledMessage = message;
+      if (state.previewMode === 'live') {
+        showSharedBrowserError(message);
+      }
+    } else if (sharedMode === 'remote' && state.sharedBrowserMode !== 'remote') {
+      state.sharedBrowserMode = 'remote';
+      state.liveViewDisabled = false;
+      state.liveViewDisabledMessage = '';
+      if (state.previewMode === 'live') {
+        initialiseLiveView(true);
+      }
+    }
+
     const steps = Array.isArray(data.steps) ? data.steps : [];
 
     while (state.renderedSteps < steps.length) {
@@ -760,6 +819,16 @@ function handleCompletion(payload) {
       const list = result.errors.map((err) => `<li>${escapeHtml(String(err))}</li>`).join('');
       appendMessage('system', `⚠️ 実行中に警告が発生しました:<ul>${list}</ul>`);
     }
+    if (Array.isArray(result.warnings) && result.warnings.length) {
+      for (const warning of result.warnings) {
+        const text = typeof warning === 'string' ? warning.trim() : String(warning || '').trim();
+        if (!text || state.displayedWarnings.has(text)) {
+          continue;
+        }
+        state.displayedWarnings.add(text);
+        appendMessage('system', `⚠️ ${escapeHtml(text)}`);
+      }
+    }
     if (Array.isArray(result.urls) && result.urls.length) {
       previewStatus.innerHTML += `<div><strong>訪問URL:</strong> ${escapeHtml(result.urls[result.urls.length - 1])}</div>`;
     }
@@ -781,6 +850,13 @@ async function startSession(command) {
   const placeholder = appendMessage('system', 'AI が応答中... <span class="spinner"></span>');
   setExecuting(true);
   state.renderedSteps = 0;
+  state.displayedWarnings = new Set();
+  state.sharedBrowserMode = 'unknown';
+  state.liveViewDisabled = false;
+  state.liveViewDisabledMessage = '';
+  if (state.previewMode === 'live') {
+    initialiseLiveView(true);
+  }
 
   try {
     const response = await fetch('/execute', {
