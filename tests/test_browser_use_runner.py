@@ -171,3 +171,67 @@ def test_finalise_result_includes_structured_output_when_present() -> None:
 
     assert session.result is not None
     assert session.result["structured_output"] == {"foo": "bar"}
+
+
+def test_create_browser_session_falls_back_to_local_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
+
+    calls: list[dict[str, object]] = []
+
+    class DummyBrowserSession:
+        def __init__(
+            self,
+            *,
+            cdp_url: str | None = None,
+            is_local: bool = False,
+            **_: object,
+        ) -> None:
+            calls.append({"cdp_url": cdp_url, "is_local": is_local})
+            self.cdp_url = cdp_url
+            self.is_local = is_local
+
+    monkeypatch.setattr(browser_use_runner, "BrowserSession", DummyBrowserSession)
+
+    result = session._create_browser_session()
+
+    assert isinstance(result, DummyBrowserSession)
+    assert calls == [{"cdp_url": None, "is_local": True}]
+
+
+def test_create_browser_session_falls_back_after_remote_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    monkeypatch.setattr(
+        browser_use_runner,
+        "_resolve_cdp_endpoint",
+        lambda: "http://vnc:9222",
+    )
+
+    calls: list[tuple[str | None, bool]] = []
+
+    class DummyBrowserSession:
+        def __init__(
+            self,
+            *,
+            cdp_url: str | None = None,
+            is_local: bool = False,
+            **_: object,
+        ) -> None:
+            calls.append((cdp_url, is_local))
+            if cdp_url:
+                raise RuntimeError("remote boom")
+            self.cdp_url = cdp_url
+            self.is_local = is_local
+
+    monkeypatch.setattr(browser_use_runner, "BrowserSession", DummyBrowserSession)
+
+    result = session._create_browser_session()
+
+    assert isinstance(result, DummyBrowserSession)
+    assert calls == [("http://vnc:9222", False), (None, True)]

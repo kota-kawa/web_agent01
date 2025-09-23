@@ -377,24 +377,52 @@ class BrowserUseSession:
             return ChatGroq(model=requested, api_key=groq_key)
         raise ValueError(f"Unsupported model '{requested}'")
 
-    def _create_browser_session(self) -> BrowserSession | None:
+    def _create_browser_session(self) -> BrowserSession:
         endpoint = _resolve_cdp_endpoint()
-        if not endpoint:
-            raise RuntimeError(
-                "Remote VNC browser is not reachable; ensure the automation service is running."
+        remote_error: Exception | None = None
+
+        if endpoint:
+            try:
+                session = BrowserSession(cdp_url=endpoint, is_local=False)
+            except Exception as exc:  # pragma: no cover - defensive
+                remote_error = exc
+                log.warning(
+                    "Session %s: failed to attach to shared browser at %s: %s; "
+                    "falling back to local headless browser",
+                    self.session_id,
+                    endpoint,
+                    exc,
+                )
+            else:
+                log.info(
+                    "Session %s: attaching to shared browser at %s",
+                    self.session_id,
+                    endpoint,
+                )
+                return session
+        else:
+            log.warning(
+                "Session %s: remote browser is not reachable; falling back to local headless browser session",
+                self.session_id,
             )
 
         try:
-            session = BrowserSession(cdp_url=endpoint, is_local=False)
+            session = BrowserSession(is_local=True)
         except Exception as exc:  # pragma: no cover - defensive
+            if endpoint:
+                remote_details = remote_error if remote_error is not None else "unknown error"
+                raise RuntimeError(
+                    "Failed to connect to remote browser at "
+                    f"{endpoint} ({remote_details}) and local fallback session failed to start: {exc}"
+                ) from exc
             raise RuntimeError(
-                f"Failed to connect to remote browser at {endpoint}: {exc}"
+                "Remote VNC browser is not reachable and local fallback session failed to start: "
+                f"{exc}"
             ) from exc
 
         log.info(
-            "Session %s: attaching to shared browser at %s",
+            "Session %s: started local headless browser session",
             self.session_id,
-            endpoint,
         )
         return session
 
