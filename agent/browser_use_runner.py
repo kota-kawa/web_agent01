@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from browser_use.agent.service import Agent, AgentHistoryList
@@ -64,21 +65,63 @@ def _candidate_cdp_endpoints() -> list[str]:
 
 
 def _json_version_url(base: str) -> str:
-    if base.lower().startswith(("ws://", "wss://")):
-        return base
-    trimmed = base.rstrip("/")
-    if trimmed.endswith("/json/version"):
-        return trimmed
-    return f"{trimmed}/json/version"
+    base = (base or "").strip()
+    if not base:
+        return ""
+
+    try:
+        parsed = urlsplit(base)
+    except ValueError:
+        return ""
+
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path or ""
+
+    if scheme and not netloc and not path:
+        # ``urlsplit('foo')`` treats ``foo`` as a scheme.  Fall back to HTTP.
+        return _json_version_url(f"http://{base}")
+
+    if not scheme:
+        if base.startswith("//"):
+            return _json_version_url(f"http:{base}")
+        return _json_version_url(f"http://{base}")
+
+    if not netloc and path:
+        # Handles values like ``localhost:9222``.
+        return _json_version_url(f"{scheme}://{path}")
+
+    if scheme not in {"http", "https", "ws", "wss"}:
+        return ""
+
+    if scheme in {"ws", "wss"}:
+        scheme = "http" if scheme == "ws" else "https"
+
+    trimmed_path = path.rstrip("/")
+    lowered = trimmed_path.lower()
+
+    if "/devtools/browser" in lowered:
+        index = lowered.rfind("/devtools/browser")
+        trimmed_path = trimmed_path[:index]
+        lowered = trimmed_path.lower()
+
+    if lowered.endswith("/json/version"):
+        final_path = trimmed_path
+    elif trimmed_path:
+        final_path = f"{trimmed_path}/json/version"
+    else:
+        final_path = "/json/version"
+
+    return urlunsplit((scheme, netloc, final_path, "", ""))
 
 
 def _probe_cdp_endpoint(endpoint: str, timeout: float = 1.5) -> bool:
     if not endpoint:
         return False
-    if endpoint.lower().startswith(("ws://", "wss://")):
-        return True
 
     url = _json_version_url(endpoint)
+    if not url:
+        return False
     try:
         response = requests.get(url, timeout=timeout)
     except Exception as exc:
