@@ -13,12 +13,25 @@ def _clear_cdp_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_resolve_cdp_endpoint_prefers_ws_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "BROWSER_USE_CDP_URL",
-        "ws://example.devtools/browser/abcdef",
+        "ws://example.devtools/devtools/browser/abcdef",
     )
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+
+    def fake_get(url: str, timeout: float) -> _Response:
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", fake_get)
 
     result = browser_use_runner._resolve_cdp_endpoint()
 
-    assert result == "ws://example.devtools/browser/abcdef"
+    assert result == "ws://example.devtools/devtools/browser/abcdef"
+    assert captured["url"] == "http://example.devtools/json/version"
 
 
 def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,6 +93,27 @@ def test_resolve_cdp_endpoint_returns_none_when_unreachable(
     )
 
     assert result is None
+
+
+def test_resolve_cdp_endpoint_rejects_unreachable_ws(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_get(url: str, timeout: float):  # type: ignore[override]
+        calls.append(url)
+        raise browser_use_runner.requests.RequestException("boom")
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", fake_get)
+
+    result = browser_use_runner._resolve_cdp_endpoint(
+        candidates=("ws://example.devtools/devtools/browser/abcdef",),
+        retries=1,
+        delay=0.0,
+    )
+
+    assert result is None
+    assert calls == ["http://example.devtools/json/version"]
 
 
 class DummyStructured:
