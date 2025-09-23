@@ -99,7 +99,7 @@ def _probe_cdp_endpoint(endpoint: str, timeout: float = 1.5) -> bool:
 def _resolve_cdp_endpoint(
     *,
     candidates: Iterable[str] | None = None,
-    retries: int = 5,
+    retries: int = 20,
     delay: float = 1.0,
 ) -> str | None:
     candidate_list = (
@@ -112,8 +112,9 @@ def _resolve_cdp_endpoint(
         return None
 
     first_viable: str | None = None
+    max_attempts = max(retries, 1)
 
-    for attempt in range(1, max(retries, 1) + 1):
+    for attempt in range(1, max_attempts + 1):
         for candidate in candidate_list:
             normalised = _normalise_cdp_candidate(candidate)
             if not normalised:
@@ -126,29 +127,37 @@ def _resolve_cdp_endpoint(
                         "CDP endpoint %s became reachable on retry %d/%d",
                         normalised,
                         attempt,
-                        retries,
+                        max_attempts,
                     )
                 return normalised
 
-        if attempt < retries:
-            log.debug(
-                "CDP endpoint probe attempt %d/%d failed; retrying in %.1fs",
-                attempt,
-                retries,
-                delay,
-            )
-            time.sleep(delay)
+        if attempt < max_attempts:
+            wait_time = delay if delay > 0 else 0.0
+            if wait_time > 0:
+                log.debug(
+                    "CDP endpoint probe attempt %d/%d failed; retrying in %.1fs",
+                    attempt,
+                    max_attempts,
+                    wait_time,
+                )
+                time.sleep(wait_time)
+            else:
+                log.debug(
+                    "CDP endpoint probe attempt %d/%d failed; retrying immediately",
+                    attempt,
+                    max_attempts,
+                )
 
     if first_viable is not None:
         log.warning(
             "Could not verify CDP endpoint connectivity after %d attempts; last candidate was %s",
-            retries,
+            max_attempts,
             first_viable,
         )
     else:
         log.warning(
             "Could not verify CDP endpoint connectivity after %d attempts; no candidates available",
-            retries,
+            max_attempts,
         )
 
     return None
