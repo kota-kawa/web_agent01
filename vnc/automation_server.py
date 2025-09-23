@@ -1349,7 +1349,7 @@ async def _init_browser():
             if connection_errors
             else "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
         )
-        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=True)
+        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=False)
         message = format_shared_browser_error(reason, candidates=candidates)
         if require_shared_browser:
             log.error("Automation server requires shared browser but none is available: %s", message)
