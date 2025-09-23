@@ -2,7 +2,7 @@ const state = {
   activeSession: null,
   pollTimer: null,
   renderedSteps: 0,
-  previewMode: 'screenshot',
+  previewMode: 'live',
   liveViewInitialised: false,
   liveViewLoaded: false,
   liveViewTimeoutId: null,
@@ -539,7 +539,7 @@ previewModeButtons.forEach((button) => {
   });
 });
 
-syncPreviewModeUI();
+setPreviewMode('live');
 
 sendButton.addEventListener('click', () => {
   const command = userInput.value.trim();

@@ -32,29 +32,30 @@
       <header class="preview-header">
         <span class="preview-title">ブラウザビュー</span>
         <div class="preview-mode-toggle" role="group" aria-label="プレビュー表示の切り替え">
-          <button type="button" class="preview-mode-button active" data-preview-mode="screenshot" aria-pressed="true">
+          <button type="button" class="preview-mode-button" data-preview-mode="screenshot" aria-pressed="false">
             スクリーンショット
           </button>
-          <button type="button" class="preview-mode-button" data-preview-mode="live" aria-pressed="false">
+          <button type="button" class="preview-mode-button active" data-preview-mode="live" aria-pressed="true">
             ライブビュー
           </button>
         </div>
       </header>
       <div id="preview-body" class="preview-body">
-        <div id="screenshot-container" class="preview-pane">
+        <div id="screenshot-container" class="preview-pane" hidden>
           <img id="preview-image" alt="最新のブラウザ状態" />
           <div id="preview-placeholder" class="preview-placeholder">
             実行中の操作がここに表示されます。
           </div>
         </div>
-        <div id="live-browser-container" class="preview-pane live" hidden>
+        <div id="live-browser-container" class="preview-pane live">
           <div
             id="live-browser-unavailable"
             class="preview-placeholder"
             role="status"
             aria-live="polite"
+            aria-busy="true"
           >
-            ライブビューを表示するには noVNC エンドポイントを公開してください。
+            ライブビューを初期化しています...
           </div>
           <iframe id="live-browser-frame" title="ライブブラウザビュー" loading="lazy"></iframe>
         </div>
