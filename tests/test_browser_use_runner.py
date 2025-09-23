@@ -41,6 +41,32 @@ def test_resolve_cdp_endpoint_prefers_ws_env(monkeypatch: pytest.MonkeyPatch) ->
     assert captured["timeout"] == browser_use_runner._CDP_PROBE_TIMEOUT
 
 
+def test_resolve_cdp_endpoint_accepts_host_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BROWSER_USE_CDP_URL", "localhost:9222")
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"webSocketDebuggerUrl": "ws://localhost:9222/devtools/browser/test"}
+
+    def fake_get(url: str, timeout: float) -> _Response:
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", fake_get)
+
+    result = browser_use_runner._resolve_cdp_endpoint()
+
+    assert result == "ws://localhost:9222/devtools/browser/test"
+    assert captured["url"] == "http://localhost:9222/json/version"
+    assert captured["timeout"] == browser_use_runner._CDP_PROBE_TIMEOUT
+
+
 def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BROWSER_USE_CDP_URL", "http://custom-host:9222")
 
