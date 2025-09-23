@@ -96,12 +96,7 @@
       true
     );
   </script>
-  <script type="module">
-    import RFB from "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js";
-    window.__NOVNC_RFB__ = RFB;
-    window.__NOVNC_READY__ = true;
-    document.dispatchEvent(new CustomEvent("novnc:ready"));
-  </script>
+  <script type="module" src="/static/novnc-loader.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
