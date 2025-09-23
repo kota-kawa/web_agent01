@@ -4,6 +4,7 @@ services:
       context: .           # ← ルートをコンテキストに
       dockerfile: vnc/Dockerfile
     ports:
+      # Publish 6901 so the noVNC client is reachable (see README.md#live-browser-view)
       - "6901:6901"     # noVNC
       - "9222:9222"     # Chrome DevTools
       - "7000:7000"     # Playwright API
