@@ -32,6 +32,9 @@ _CDP_DEFAULT_ENDPOINTS = (
     "http://127.0.0.1:9222",
     "http://localhost:9222",
 )
+_CDP_PROBE_TIMEOUT = 3.0
+_CDP_PROBE_RETRIES = 25
+_CDP_PROBE_DELAY = 2.0
 
 
 def _normalise_cdp_candidate(value: str | None) -> str:
@@ -115,7 +118,7 @@ def _json_version_url(base: str) -> str:
     return urlunsplit((scheme, netloc, final_path, "", ""))
 
 
-def _probe_cdp_endpoint(endpoint: str, timeout: float = 1.5) -> bool:
+def _probe_cdp_endpoint(endpoint: str, timeout: float = _CDP_PROBE_TIMEOUT) -> bool:
     if not endpoint:
         return False
 
@@ -142,8 +145,9 @@ def _probe_cdp_endpoint(endpoint: str, timeout: float = 1.5) -> bool:
 def _resolve_cdp_endpoint(
     *,
     candidates: Iterable[str] | None = None,
-    retries: int = 20,
-    delay: float = 1.0,
+    retries: int = _CDP_PROBE_RETRIES,
+    delay: float = _CDP_PROBE_DELAY,
+    request_timeout: float = _CDP_PROBE_TIMEOUT,
 ) -> str | None:
     candidate_list = (
         list(candidates)
@@ -164,7 +168,7 @@ def _resolve_cdp_endpoint(
                 continue
             if first_viable is None:
                 first_viable = normalised
-            if _probe_cdp_endpoint(normalised):
+            if _probe_cdp_endpoint(normalised, timeout=request_timeout):
                 if attempt > 1:
                     log.info(
                         "CDP endpoint %s became reachable on retry %d/%d",
@@ -191,16 +195,20 @@ def _resolve_cdp_endpoint(
                     max_attempts,
                 )
 
+    total_wait = max(0.0, (max_attempts - 1) * max(delay, 0.0))
+
     if first_viable is not None:
         log.warning(
-            "Could not verify CDP endpoint connectivity after %d attempts; last candidate was %s",
+            "Could not verify CDP endpoint connectivity after %d attempts and %.1fs total wait; last candidate was %s",
             max_attempts,
+            total_wait,
             first_viable,
         )
     else:
         log.warning(
-            "Could not verify CDP endpoint connectivity after %d attempts; no candidates available",
+            "Could not verify CDP endpoint connectivity after %d attempts and %.1fs total wait; no candidates available",
             max_attempts,
+            total_wait,
         )
 
     return None
@@ -401,9 +409,14 @@ class BrowserUseSession:
                 )
                 return session
         else:
+            approx_wait = max(
+                0.0, (_CDP_PROBE_RETRIES - 1) * max(_CDP_PROBE_DELAY, 0.0)
+            )
             log.warning(
-                "Session %s: remote browser is not reachable; falling back to local headless browser session",
+                "Session %s: remote browser is not reachable after waiting up to %.1fs; "
+                "falling back to local headless browser session",
                 self.session_id,
+                approx_wait,
             )
 
         try:
