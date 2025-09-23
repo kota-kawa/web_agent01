@@ -287,22 +287,16 @@ class BrowserUseSession:
     def _create_browser_session(self) -> BrowserSession | None:
         endpoint = _resolve_cdp_endpoint()
         if not endpoint:
-            log.debug(
-                "Session %s: no remote CDP endpoint detected; using local browser",
-                self.session_id,
+            raise RuntimeError(
+                "Remote VNC browser is not reachable; ensure the automation service is running."
             )
-            return None
 
         try:
             session = BrowserSession(cdp_url=endpoint, is_local=False)
         except Exception as exc:  # pragma: no cover - defensive
-            log.warning(
-                "Session %s: failed to configure remote browser session via %s: %s",
-                self.session_id,
-                endpoint,
-                exc,
-            )
-            return None
+            raise RuntimeError(
+                f"Failed to connect to remote browser at {endpoint}: {exc}"
+            ) from exc
 
         log.info(
             "Session %s: attaching to shared browser at %s",
