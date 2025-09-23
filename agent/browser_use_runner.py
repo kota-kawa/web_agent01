@@ -77,27 +77,46 @@ def _json_version_url(base: str) -> str:
     if not base:
         return ""
 
-    try:
-        parsed = urlsplit(base)
-    except ValueError:
+    working = base
+    if working.startswith("//"):
+        working = f"http:{working}"
+    elif "://" not in working:
+        working = f"http://{working}"
+
+    adjustments = 0
+    while True:
+        try:
+            parsed = urlsplit(working)
+        except ValueError:
+            return ""
+
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc
+        path = parsed.path or ""
+
+        if netloc:
+            break
+
+        if adjustments >= 2:
+            return ""
+
+        adjustments += 1
+
+        host_candidate = path.lstrip("/")
+        if host_candidate:
+            replacement_scheme = scheme or "http"
+            working = f"{replacement_scheme}://{host_candidate}"
+            continue
+
+        if scheme and not host_candidate:
+            # ``scheme:`` with no host is not recoverable.
+            return ""
+
+        # No netloc, no usable path – give up.
         return ""
 
-    scheme = parsed.scheme.lower()
-    netloc = parsed.netloc
-    path = parsed.path or ""
-
-    if scheme and not netloc and not path:
-        # ``urlsplit('foo')`` treats ``foo`` as a scheme.  Fall back to HTTP.
-        return _json_version_url(f"http://{base}")
-
     if not scheme:
-        if base.startswith("//"):
-            return _json_version_url(f"http:{base}")
-        return _json_version_url(f"http://{base}")
-
-    if not netloc and path:
-        # Handles values like ``localhost:9222``.
-        return _json_version_url(f"{scheme}://{path}")
+        return ""
 
     if scheme not in {"http", "https", "ws", "wss"}:
         return ""
@@ -105,7 +124,7 @@ def _json_version_url(base: str) -> str:
     if scheme in {"ws", "wss"}:
         scheme = "http" if scheme == "ws" else "https"
 
-    trimmed_path = path.rstrip("/")
+    trimmed_path = parsed.path.rstrip("/")
     lowered = trimmed_path.lower()
 
     if "/devtools/browser" in lowered:
