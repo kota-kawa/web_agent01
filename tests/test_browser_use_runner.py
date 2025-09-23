@@ -271,6 +271,40 @@ def test_snapshot_includes_warnings_and_shared_browser_data() -> None:
     assert data["shared_browser_endpoint"] is None
 
 
+def test_create_browser_session_defaults_to_optional_shared_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
+
+    calls: list[dict[str, object]] = []
+
+    class DummyBrowserSession:
+        def __init__(
+            self,
+            *,
+            cdp_url: str | None = None,
+            is_local: bool = False,
+            **_: object,
+        ) -> None:
+            calls.append({"cdp_url": cdp_url, "is_local": is_local})
+            self.cdp_url = cdp_url
+            self.is_local = is_local
+
+    monkeypatch.setattr(browser_use_runner, "BrowserSession", DummyBrowserSession)
+
+    result = session._create_browser_session()
+
+    assert isinstance(result, DummyBrowserSession)
+    assert calls == [{"cdp_url": None, "is_local": True}]
+    assert session.shared_browser_mode == "local"
+    assert session.shared_browser_endpoint is None
+    assert session.warnings == [
+        "ライブビューのブラウザに接続できなかったため、ローカルのヘッドレスブラウザで実行します。",
+    ]
+
+
 def test_create_browser_session_falls_back_to_local_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

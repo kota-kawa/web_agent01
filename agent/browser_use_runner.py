@@ -462,7 +462,7 @@ class BrowserUseSession:
             endpoint = _resolve_cdp_endpoint(candidates=candidates)
         except TypeError:
             endpoint = _resolve_cdp_endpoint()
-        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=True)
+        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=False)
         remote_error: Exception | None = None
         self._set_shared_browser_state("unknown", None)
 
