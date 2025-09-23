@@ -116,7 +116,7 @@ def get_html() -> str:
 def get_url() -> str:
     """Fetch current page URL from the VNC automation server."""
     try:
-        res = requests.get(_vnc_url("/url"), timeout=5)
+        res = requests.get(_vnc_url("/url"), timeout=(5, 30))
         res.raise_for_status()
         data = res.json()
         return data.get("url", "")
