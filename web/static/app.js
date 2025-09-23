@@ -12,8 +12,7 @@ const state = {
   liveViewRetryCount: 0,
   liveViewAwaitingLibrary: !window.__NOVNC_READY__,
   latestStep: null,
-  lastSyncedUrl: '',
-  liveViewSyncInFlight: false,
+  lastPreviewImage: null,
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -29,28 +28,6 @@ const liveBrowserContainer = document.getElementById('live-browser-container');
 const liveBrowserSurface = document.getElementById('live-browser-canvas');
 const liveBrowserUnavailable = document.getElementById('live-browser-unavailable');
 const previewModeButtons = document.querySelectorAll('[data-preview-mode]');
-const syncLiveViewButton = document.getElementById('sync-live-view-button');
-
-function stripTrailingSlashes(value) {
-  if (typeof value !== 'string' || !value) {
-    return '';
-  }
-
-  let end = value.length;
-  while (end > 0 && value[end - 1] === '/') {
-    end -= 1;
-  }
-
-  if (end === value.length) {
-    return value;
-  }
-
-  if (end === 0) {
-    return '';
-  }
-
-  return value.slice(0, end);
-}
 
 if (!window.__NOVNC_READY__) {
   document.addEventListener(
@@ -104,31 +81,27 @@ function normaliseScreenshot(data) {
   return `data:image/png;base64,${data}`;
 }
 
-function normaliseUrlKey(url) {
-  if (!url || typeof url !== 'string') return '';
-  const trimmed = url.trim();
-  if (!trimmed) return '';
-  try {
-    const parsed = new URL(trimmed, window.location.href);
-    parsed.hash = '';
-    let pathname = parsed.pathname || '/';
-    if (pathname.length > 1) {
-      pathname = stripTrailingSlashes(pathname);
-      if (!pathname.startsWith('/')) {
-        pathname = `/${pathname}`;
-      }
-      if (!pathname) {
-        pathname = '/';
-      }
-    }
-    const protocol = parsed.protocol ? parsed.protocol.toLowerCase() : '';
-    const host = parsed.host ? parsed.host.toLowerCase() : '';
-    const search = parsed.search || '';
-    const normalised = `${protocol}//${host}${pathname}${search}`;
-    return stripTrailingSlashes(normalised);
-  } catch (err) {
-    return stripTrailingSlashes(trimmed);
+function captureLiveViewFrame() {
+  if (!state.liveViewLoaded || !liveBrowserSurface) {
+    return null;
   }
+
+  const canvas = liveBrowserSurface.querySelector('canvas');
+  if (!canvas) {
+    return null;
+  }
+
+  try {
+    const dataUrl = canvas.toDataURL('image/png');
+    if (dataUrl && dataUrl !== 'data:,') {
+      state.lastPreviewImage = dataUrl;
+      return dataUrl;
+    }
+  } catch (err) {
+    // Ignore capture errors; fall back to existing screenshots when needed.
+  }
+
+  return null;
 }
 
 function appendMessage(kind, content) {
@@ -144,162 +117,6 @@ function appendMessage(kind, content) {
   chatArea.appendChild(message);
   chatArea.scrollTop = chatArea.scrollHeight;
   return message;
-}
-
-function updateSyncButtonState() {
-  if (!syncLiveViewButton) return;
-  const defaultLabel =
-    syncLiveViewButton.dataset.defaultLabel ||
-    (syncLiveViewButton.textContent ? syncLiveViewButton.textContent.trim() : 'スクショに同期');
-  if (!syncLiveViewButton.dataset.defaultLabel) {
-    syncLiveViewButton.dataset.defaultLabel = defaultLabel;
-  }
-
-  const hasUrl = Boolean(
-    state.latestStep &&
-      typeof state.latestStep.url === 'string' &&
-      state.latestStep.url.trim(),
-  );
-  const ready = state.previewMode === 'live' && state.liveViewLoaded;
-  const running = Boolean(state.activeSession);
-  const inFlight = state.liveViewSyncInFlight;
-  const disabled = inFlight || !ready || !hasUrl || running;
-
-  syncLiveViewButton.disabled = disabled;
-  syncLiveViewButton.classList.toggle('is-loading', inFlight);
-  syncLiveViewButton.textContent = inFlight
-    ? '同期中...'
-    : syncLiveViewButton.dataset.defaultLabel;
-
-  let titleMessage = 'ライブビューを最新のスクリーンショットに合わせます';
-  if (disabled) {
-    if (inFlight) {
-      titleMessage = 'ライブビューを同期しています...';
-    } else if (!ready) {
-      titleMessage = 'ライブビューが利用可能になると同期できます。';
-    } else if (!hasUrl) {
-      titleMessage = '同期するスクリーンショットのURLがありません。';
-    } else if (running) {
-      titleMessage = '実行中は同期できません。';
-    }
-  }
-  syncLiveViewButton.setAttribute('title', titleMessage);
-}
-
-async function syncLiveViewToLatestStep(options = {}) {
-  const { force = false, silent = true } = options;
-
-  if (state.previewMode !== 'live') {
-    if (!silent && !state.liveViewLoaded) {
-      appendMessage('system', '⚠️ ライブビューがまだ利用できません。');
-    }
-    return false;
-  }
-
-  if (!state.liveViewLoaded) {
-    if (!silent) {
-      appendMessage('system', '⚠️ ライブビューがまだ初期化されていません。');
-    }
-    return false;
-  }
-
-  if (!force && state.activeSession) {
-    return false;
-  }
-
-  const latest = state.latestStep;
-  const desiredUrl =
-    latest && typeof latest.url === 'string' ? latest.url.trim() : '';
-  if (!desiredUrl) {
-    if (!silent) {
-      appendMessage('system', '⚠️ 同期するスクリーンショットのURLが見つかりません。');
-    }
-    return false;
-  }
-
-  const desiredKey = normaliseUrlKey(desiredUrl);
-  if (!force && state.lastSyncedUrl && desiredKey && state.lastSyncedUrl === desiredKey) {
-    return true;
-  }
-
-  if (state.liveViewSyncInFlight) {
-    return false;
-  }
-
-  state.liveViewSyncInFlight = true;
-  updateSyncButtonState();
-
-  try {
-    let currentKey = '';
-    try {
-      const currentResponse = await fetch('/automation/url', { cache: 'no-store' });
-      if (currentResponse.ok) {
-        const currentData = await currentResponse.json();
-        if (currentData && currentData.url) {
-          currentKey = normaliseUrlKey(String(currentData.url));
-        }
-      }
-    } catch (err) {
-      // Ignore current URL fetch errors; we'll attempt navigation regardless.
-    }
-
-    if (!force && currentKey && desiredKey && currentKey === desiredKey) {
-      state.lastSyncedUrl = desiredKey;
-      return true;
-    }
-
-    const response = await fetch('/automation/execute-dsl', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        actions: [
-          { action: 'navigate', target: desiredUrl },
-        ],
-      }),
-    });
-
-    const rawBody = await response.text();
-    let payload = null;
-    if (rawBody) {
-      try {
-        payload = JSON.parse(rawBody);
-      } catch (err) {
-        payload = null;
-      }
-    }
-
-    if (!response.ok) {
-      const errorMessage =
-        (payload && payload.error && (payload.error.message || payload.error)) ||
-        rawBody ||
-        `server returned ${response.status}`;
-      throw new Error(errorMessage);
-    }
-
-    if (payload && Object.prototype.hasOwnProperty.call(payload, 'success') && payload.success === false) {
-      const details =
-        (payload.error && (payload.error.message || payload.error.code)) ||
-        'DSL execution failed';
-      throw new Error(details);
-    }
-
-    state.lastSyncedUrl = desiredKey;
-    if (!silent) {
-      appendMessage('system', '🔄 ライブビューを最新のスクリーンショットに同期しました。');
-    }
-    return true;
-  } catch (err) {
-    if (!silent) {
-      appendMessage(
-        'system',
-        `⚠️ ライブビューの同期に失敗しました: ${escapeHtml(err.message || String(err))}`,
-      );
-    }
-    return false;
-  } finally {
-    state.liveViewSyncInFlight = false;
-    updateSyncButtonState();
-  }
 }
 
 function setExecuting(isExecuting) {
@@ -332,7 +149,6 @@ function syncPreviewModeUI() {
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
 
-  updateSyncButtonState();
 }
 
 function clearLiveViewWatchdog() {
@@ -416,7 +232,6 @@ function disconnectLiveView(manual = false) {
   state.liveViewInstance = null;
   state.liveViewInitialised = manual ? false : state.liveViewInitialised;
   state.liveViewLoaded = false;
-  updateSyncButtonState();
 }
 
 function initialiseLiveView(forceReload = false) {
@@ -438,7 +253,6 @@ function initialiseLiveView(forceReload = false) {
     }
     liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
-    updateSyncButtonState();
     return;
   }
 
@@ -455,7 +269,6 @@ function initialiseLiveView(forceReload = false) {
       liveBrowserUnavailable.textContent = 'ライブビューのライブラリを読み込んでいます...';
       liveBrowserUnavailable.setAttribute('aria-busy', 'true');
     }
-    updateSyncButtonState();
     return;
   }
 
@@ -470,7 +283,6 @@ function initialiseLiveView(forceReload = false) {
     }
     liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
-    updateSyncButtonState();
     return;
   }
 
@@ -524,7 +336,6 @@ function initialiseLiveView(forceReload = false) {
       : 'ライブビューを初期化しています...';
     liveBrowserUnavailable.setAttribute('aria-busy', 'true');
   }
-  updateSyncButtonState();
 
   let urlToConnect = resolvedUrl;
   if (isRetry) {
@@ -563,7 +374,6 @@ function initialiseLiveView(forceReload = false) {
       liveBrowserUnavailable.removeAttribute('aria-busy');
     }
     scheduleLiveViewRetry('error');
-    updateSyncButtonState();
     return;
   }
 
@@ -586,10 +396,6 @@ function initialiseLiveView(forceReload = false) {
     if (liveBrowserSurface) {
       liveBrowserSurface.focus({ preventScroll: true });
     }
-    updateSyncButtonState();
-    if (!state.activeSession) {
-      syncLiveViewToLatestStep({ silent: true });
-    }
   };
 
   const handleLiveDisconnect = (event) => {
@@ -608,7 +414,6 @@ function initialiseLiveView(forceReload = false) {
       liveBrowserUnavailable.removeAttribute('aria-busy');
     }
     scheduleLiveViewRetry('error');
-    updateSyncButtonState();
   };
 
   const handleCredentialsRequired = () => {
@@ -682,8 +487,23 @@ function setPreviewMode(mode, options = {}) {
 }
 
 function updatePreview(step) {
-  const screenshot = normaliseScreenshot(step.screenshot);
+  let screenshot = null;
+  const liveFrame = captureLiveViewFrame();
+
+  if (liveFrame) {
+    screenshot = liveFrame;
+    step.screenshot = liveFrame;
+  } else {
+    const fromStep = normaliseScreenshot(step.screenshot);
+    if (fromStep) {
+      screenshot = fromStep;
+    } else if (state.lastPreviewImage) {
+      screenshot = state.lastPreviewImage;
+    }
+  }
+
   if (screenshot) {
+    state.lastPreviewImage = screenshot;
     previewImage.src = screenshot;
     previewImage.style.display = 'block';
     previewPlaceholder.style.display = 'none';
@@ -854,14 +674,6 @@ function renderStep(step) {
   updatePreview(step);
 
   state.latestStep = step;
-  const desiredKey = normaliseUrlKey(step.url);
-  if (desiredKey && state.lastSyncedUrl && state.lastSyncedUrl !== desiredKey) {
-    state.lastSyncedUrl = '';
-  }
-  updateSyncButtonState();
-  if (state.previewMode === 'live' && !state.activeSession && state.liveViewLoaded) {
-    syncLiveViewToLatestStep({ silent: true });
-  }
 }
 
 function clearPolling() {
@@ -899,7 +711,6 @@ async function pollSession() {
     setExecuting(false);
     clearPolling();
     state.activeSession = null;
-    updateSyncButtonState();
   }
 }
 
@@ -930,10 +741,6 @@ function handleCompletion(payload) {
   }
 
   state.activeSession = null;
-  updateSyncButtonState();
-  if (state.previewMode === 'live' && state.liveViewLoaded) {
-    syncLiveViewToLatestStep({ silent: true });
-  }
 }
 
 async function startSession(command) {
@@ -967,7 +774,6 @@ async function startSession(command) {
     const data = await response.json();
     placeholder.remove();
     state.activeSession = { id: data.session_id };
-    updateSyncButtonState();
     pollSession();
   } catch (err) {
     placeholder.remove();
@@ -993,8 +799,14 @@ async function resetHistory() {
     chatArea.innerHTML = '<p class="bot-message">こんにちは！ご質問はありますか？</p>';
     appendMessage('system', escapeHtml(data.message || '会話履歴がリセットされました。'));
     state.latestStep = null;
-    state.lastSyncedUrl = '';
-    updateSyncButtonState();
+    state.lastPreviewImage = null;
+    if (previewImage) {
+      previewImage.style.display = 'none';
+      previewImage.removeAttribute('src');
+    }
+    if (previewPlaceholder) {
+      previewPlaceholder.style.display = 'block';
+    }
   } catch (err) {
     appendMessage('system', `⚠️ リセットに失敗しました: ${escapeHtml(err.message || String(err))}`);
   }
@@ -1010,15 +822,6 @@ previewModeButtons.forEach((button) => {
     });
   });
 });
-
-if (syncLiveViewButton) {
-  syncLiveViewButton.addEventListener('click', () => {
-    syncLiveViewToLatestStep({ silent: false });
-  });
-}
-
-updateSyncButtonState();
-
 setPreviewMode('live');
 
 sendButton.addEventListener('click', () => {
