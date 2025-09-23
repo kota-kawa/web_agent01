@@ -31,6 +31,27 @@ const liveBrowserUnavailable = document.getElementById('live-browser-unavailable
 const previewModeButtons = document.querySelectorAll('[data-preview-mode]');
 const syncLiveViewButton = document.getElementById('sync-live-view-button');
 
+function stripTrailingSlashes(value) {
+  if (typeof value !== 'string' || !value) {
+    return '';
+  }
+
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') {
+    end -= 1;
+  }
+
+  if (end === value.length) {
+    return value;
+  }
+
+  if (end === 0) {
+    return '';
+  }
+
+  return value.slice(0, end);
+}
+
 if (!window.__NOVNC_READY__) {
   document.addEventListener(
     'novnc:ready',
@@ -92,7 +113,7 @@ function normaliseUrlKey(url) {
     parsed.hash = '';
     let pathname = parsed.pathname || '/';
     if (pathname.length > 1) {
-      pathname = pathname.replace(/\/+$, '');
+      pathname = stripTrailingSlashes(pathname);
       if (!pathname.startsWith('/')) {
         pathname = `/${pathname}`;
       }
@@ -104,9 +125,9 @@ function normaliseUrlKey(url) {
     const host = parsed.host ? parsed.host.toLowerCase() : '';
     const search = parsed.search || '';
     const normalised = `${protocol}//${host}${pathname}${search}`;
-    return normalised.replace(/\/+$, '');
+    return stripTrailingSlashes(normalised);
   } catch (err) {
-    return trimmed.replace(/\/+$, '');
+    return stripTrailingSlashes(trimmed);
   }
 }
 
