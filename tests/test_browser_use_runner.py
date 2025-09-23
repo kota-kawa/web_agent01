@@ -1,13 +1,84 @@
-from __future__ import annotations
+import pytest
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:  # pragma: no cover - defensive for test environment
-    sys.path.insert(0, str(ROOT))
-
+from agent import browser_use_runner
 from agent.browser_use_runner import BrowserUseSession
+
+
+@pytest.fixture(autouse=True)
+def _clear_cdp_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("BROWSER_USE_CDP_URL", "VNC_CDP_URL", "CDP_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_resolve_cdp_endpoint_prefers_ws_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "BROWSER_USE_CDP_URL",
+        "ws://example.devtools/browser/abcdef",
+    )
+
+    result = browser_use_runner._resolve_cdp_endpoint()
+
+    assert result == "ws://example.devtools/browser/abcdef"
+
+
+def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BROWSER_USE_CDP_URL", "http://custom-host:9222")
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+
+    def fake_get(url: str, timeout: float) -> _Response:
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", fake_get)
+
+    result = browser_use_runner._resolve_cdp_endpoint()
+
+    assert result == "http://custom-host:9222"
+    assert captured["url"].endswith("/json/version")
+
+
+def test_resolve_cdp_endpoint_falls_back_to_next_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _Response:
+        status_code = 200
+
+    def fake_get(url: str, timeout: float):  # type: ignore[override]
+        calls.append(url)
+        if "first" in url:
+            raise browser_use_runner.requests.ConnectionError("boom")
+        return _Response()
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", fake_get)
+
+    result = browser_use_runner._resolve_cdp_endpoint(
+        candidates=("http://first:9222", "http://second:9222"),
+    )
+
+    assert result == "http://second:9222"
+    assert len(calls) == 2
+
+
+def test_resolve_cdp_endpoint_returns_none_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(url: str, timeout: float):  # type: ignore[override]
+        raise browser_use_runner.requests.RequestException("nope")
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", fake_get)
+
+    result = browser_use_runner._resolve_cdp_endpoint(
+        candidates=("http://unreachable:9222",),
+    )
+
+    assert result is None
 
 
 class DummyStructured:
