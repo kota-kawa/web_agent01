@@ -1159,20 +1159,41 @@ def _get_page_url_sync() -> str:
     return attr if isinstance(attr, str) else ""
 
 
-async def _wait_cdp(endpoint: str, t: int = 15) -> bool:
+async def _wait_cdp(
+    endpoint: str,
+    timeout: int = 45,
+    poll_interval: float = 1.0,
+) -> bool:
+    """Wait for a DevTools endpoint to become reachable.
+
+    Chromium can take a noticeable amount of time to expose the DevTools
+    protocol socket, especially when the desktop environment is still being
+    initialised.  Extend the wait window and poll at a steady cadence so we do
+    not prematurely fall back to a headless browser.
+    """
+
     version_url = _json_version_url(endpoint)
     if not version_url:
         return False
 
-    deadline = time.time() + t
-    async with httpx.AsyncClient(timeout=2) as c:
+    # Guard against misconfiguration by ensuring we at least wait a fraction
+    # of a second between attempts.  This avoids tight loops if a caller passes
+    # zero or negative values via the environment.
+    poll_interval = max(poll_interval, 0.25)
+
+    deadline = time.time() + max(timeout, 1)
+    async with httpx.AsyncClient(timeout=2) as client:
         while time.time() < deadline:
             try:
-                response = await c.get(version_url)
+                response = await client.get(version_url)
                 if response.status_code == 200:
                     return True
-            except httpx.HTTPError:
-                await asyncio.sleep(0.5)
+            except httpx.HTTPError as exc:
+                log.debug("CDP endpoint %s not ready: %s", version_url, exc)
+
+            await asyncio.sleep(poll_interval)
+
+    log.warning("Timed out waiting for CDP endpoint %s", version_url)
     return False
 
 
