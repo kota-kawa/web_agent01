@@ -21,7 +21,7 @@ ensure_component_dependencies("web", logger=log)
 
 MAX_STEPS = max(1, int(os.getenv("MAX_STEPS", "15")))
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini")
-START_URL = os.getenv("START_URL", "https://www.yahoo.co.jp/")
+START_URL = os.getenv("START_URL", "https://yahoo.cp.jp/")
 HIST_FILE = history_utils.HIST_FILE
 
 _NOVNC_DEFAULTS = (
