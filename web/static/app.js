@@ -5,6 +5,8 @@ const state = {
   previewMode: 'screenshot',
   liveViewInitialised: false,
   liveViewLoaded: false,
+  liveViewTimeoutId: null,
+  liveViewListeners: null,
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -83,16 +85,44 @@ function syncPreviewModeUI() {
   });
 }
 
-function initialiseLiveView() {
-  if (state.liveViewInitialised || !liveBrowserContainer || !liveBrowserFrame) {
+function clearLiveViewWatchdog() {
+  if (state.liveViewTimeoutId) {
+    clearTimeout(state.liveViewTimeoutId);
+    state.liveViewTimeoutId = null;
+  }
+}
+
+function removeLiveViewListeners() {
+  if (!state.liveViewListeners || !liveBrowserFrame) {
+    return;
+  }
+
+  const { loadHandler, errorHandler } = state.liveViewListeners;
+  if (loadHandler) {
+    liveBrowserFrame.removeEventListener('load', loadHandler);
+  }
+  if (errorHandler) {
+    liveBrowserFrame.removeEventListener('error', errorHandler);
+  }
+  state.liveViewListeners = null;
+}
+
+function initialiseLiveView(forceReload = false) {
+  if (!liveBrowserContainer || !liveBrowserFrame) {
     return;
   }
 
   const configuredUrl = typeof window.NOVNC_URL === 'string' ? window.NOVNC_URL.trim() : '';
   if (!configuredUrl) {
+    clearLiveViewWatchdog();
+    removeLiveViewListeners();
+    state.liveViewInitialised = false;
+    state.liveViewLoaded = false;
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.textContent = 'ライブビューの URL が設定されていません。';
+      liveBrowserUnavailable.removeAttribute('aria-busy');
     }
+    liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
     return;
   }
@@ -105,55 +135,96 @@ function initialiseLiveView() {
     // Ignore resolution failures so scheme-relative URLs remain usable.
   }
 
+  if (state.liveViewInitialised && state.liveViewLoaded && !forceReload) {
+    return;
+  }
+
+  const isRetry = forceReload || (state.liveViewInitialised && !state.liveViewLoaded);
+
   state.liveViewInitialised = true;
   state.liveViewLoaded = false;
 
-  liveBrowserContainer.classList.remove('has-error');
+  clearLiveViewWatchdog();
+  removeLiveViewListeners();
+
+  liveBrowserContainer.classList.remove('has-error', 'is-ready');
   liveBrowserContainer.classList.add('is-loading');
   if (liveBrowserUnavailable) {
-    liveBrowserUnavailable.textContent = 'ライブビューを初期化しています...';
+    liveBrowserUnavailable.textContent = isRetry
+      ? 'ライブビューを再接続しています...'
+      : 'ライブビューを初期化しています...';
     liveBrowserUnavailable.setAttribute('aria-busy', 'true');
   }
 
-  function cleanupLiveListeners() {
-    liveBrowserContainer.classList.remove('is-loading');
-    liveBrowserFrame.removeEventListener('load', handleLiveLoad);
-    liveBrowserFrame.removeEventListener('error', handleLiveError);
+  let urlToLoad = resolvedUrl;
+  if (isRetry) {
+    const separator = resolvedUrl.includes('?') ? '&' : '?';
+    urlToLoad = `${resolvedUrl}${separator}_ts=${Date.now()}`;
+    liveBrowserFrame.src = 'about:blank';
+  }
+
+  const handleLiveLoad = () => {
+    clearLiveViewWatchdog();
+    removeLiveViewListeners();
+    state.liveViewLoaded = true;
+    liveBrowserContainer.classList.remove('is-loading', 'has-error');
+    liveBrowserContainer.classList.add('is-ready');
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.removeAttribute('aria-busy');
     }
-  }
+  };
 
-  function handleLiveLoad() {
-    cleanupLiveListeners();
-    state.liveViewLoaded = true;
-    liveBrowserContainer.classList.add('is-ready');
-  }
-
-  function handleLiveError() {
-    cleanupLiveListeners();
+  const handleLiveError = () => {
+    clearLiveViewWatchdog();
+    removeLiveViewListeners();
     state.liveViewInitialised = false;
     state.liveViewLoaded = false;
-    liveBrowserContainer.classList.remove('is-ready');
+    liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.textContent =
         'ライブビューを読み込めませんでした。ネットワーク設定を確認してください。';
+      liveBrowserUnavailable.removeAttribute('aria-busy');
     }
-  }
+  };
 
   liveBrowserFrame.addEventListener('load', handleLiveLoad);
   liveBrowserFrame.addEventListener('error', handleLiveError);
-  liveBrowserFrame.src = resolvedUrl;
+  state.liveViewListeners = {
+    loadHandler: handleLiveLoad,
+    errorHandler: handleLiveError,
+  };
+
+  liveBrowserFrame.src = urlToLoad;
+
+  state.liveViewTimeoutId = window.setTimeout(() => {
+    if (state.liveViewLoaded) {
+      state.liveViewTimeoutId = null;
+      return;
+    }
+    removeLiveViewListeners();
+    state.liveViewInitialised = false;
+    liveBrowserContainer.classList.remove('is-loading', 'is-ready');
+    liveBrowserContainer.classList.add('has-error');
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent =
+        'ライブビューの応答がありません。数秒後にもう一度お試しください。';
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+    state.liveViewTimeoutId = null;
+  }, 10000);
 }
 
-function setPreviewMode(mode) {
+function setPreviewMode(mode, options = {}) {
   const resolvedMode = mode === 'live' ? 'live' : 'screenshot';
+  const { forceReload = false } = options;
   state.previewMode = resolvedMode;
   syncPreviewModeUI();
 
   if (resolvedMode === 'live') {
-    initialiseLiveView();
+    initialiseLiveView(forceReload);
+  } else {
+    clearLiveViewWatchdog();
   }
 }
 
@@ -459,7 +530,12 @@ async function resetHistory() {
 
 previewModeButtons.forEach((button) => {
   button.addEventListener('click', () => {
-    setPreviewMode(button.dataset.previewMode);
+    const desiredMode = button.dataset.previewMode;
+    const alreadyLive = state.previewMode === 'live';
+    const wantsLive = desiredMode === 'live';
+    setPreviewMode(desiredMode, {
+      forceReload: alreadyLive && wantsLive,
+    });
   });
 });
 
