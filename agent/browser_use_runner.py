@@ -8,11 +8,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
+import requests
 from browser_use.agent.service import Agent, AgentHistoryList
-from browser_use.browser.views import BrowserStateSummary
 from browser_use.agent.views import AgentOutput
+from browser_use.browser import BrowserSession
+from browser_use.browser.views import BrowserStateSummary
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.google.chat import ChatGoogle
 from browser_use.llm.groq.chat import ChatGroq
@@ -22,6 +24,93 @@ from agent.utils.history import append_history_entry
 
 log = logging.getLogger(__name__)
 apply_browser_use_patches(log)
+
+_CDP_ENV_VARS = ("BROWSER_USE_CDP_URL", "VNC_CDP_URL", "CDP_URL")
+_CDP_DEFAULT_ENDPOINTS = (
+    "http://vnc:9222",
+    "http://127.0.0.1:9222",
+    "http://localhost:9222",
+)
+
+
+def _normalise_cdp_candidate(value: str | None) -> str:
+    if not value:
+        return ""
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+    if trimmed.lower().startswith(("ws://", "wss://")):
+        return trimmed
+    return trimmed.rstrip("/")
+
+
+def _candidate_cdp_endpoints() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for env_name in _CDP_ENV_VARS:
+        normalised = _normalise_cdp_candidate(os.getenv(env_name))
+        if normalised and normalised not in seen:
+            candidates.append(normalised)
+            seen.add(normalised)
+
+    for default in _CDP_DEFAULT_ENDPOINTS:
+        normalised = _normalise_cdp_candidate(default)
+        if normalised and normalised not in seen:
+            candidates.append(normalised)
+            seen.add(normalised)
+
+    return candidates
+
+
+def _json_version_url(base: str) -> str:
+    if base.lower().startswith(("ws://", "wss://")):
+        return base
+    trimmed = base.rstrip("/")
+    if trimmed.endswith("/json/version"):
+        return trimmed
+    return f"{trimmed}/json/version"
+
+
+def _probe_cdp_endpoint(endpoint: str, timeout: float = 1.5) -> bool:
+    if not endpoint:
+        return False
+    if endpoint.lower().startswith(("ws://", "wss://")):
+        return True
+
+    url = _json_version_url(endpoint)
+    try:
+        response = requests.get(url, timeout=timeout)
+    except Exception as exc:
+        log.debug("CDP endpoint probe failed for %s: %s", endpoint, exc)
+        return False
+
+    if response.status_code == 200:
+        return True
+
+    log.debug(
+        "CDP endpoint probe for %s returned unexpected status %s",
+        endpoint,
+        response.status_code,
+    )
+    return False
+
+
+def _resolve_cdp_endpoint(*, candidates: Iterable[str] | None = None) -> str | None:
+    candidate_list = (
+        list(candidates)
+        if candidates is not None
+        else _candidate_cdp_endpoints()
+    )
+
+    for candidate in candidate_list:
+        normalised = _normalise_cdp_candidate(candidate)
+        if not normalised:
+            continue
+        if _probe_cdp_endpoint(normalised):
+            return normalised
+
+    return None
 
 
 def _now() -> float:
@@ -66,9 +155,11 @@ class BrowserUseSession:
 
         try:
             self._set_status("running")
+            browser_session = self._create_browser_session()
             self._agent = Agent(
                 task=self.command,
                 llm=llm,
+                browser_session=browser_session,
                 register_new_step_callback=self._on_step,
                 generate_gif=False,
                 use_vision=True,
@@ -192,6 +283,33 @@ class BrowserUseSession:
         if groq_key:
             return ChatGroq(model=requested, api_key=groq_key)
         raise ValueError(f"Unsupported model '{requested}'")
+
+    def _create_browser_session(self) -> BrowserSession | None:
+        endpoint = _resolve_cdp_endpoint()
+        if not endpoint:
+            log.debug(
+                "Session %s: no remote CDP endpoint detected; using local browser",
+                self.session_id,
+            )
+            return None
+
+        try:
+            session = BrowserSession(cdp_url=endpoint, is_local=False)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(
+                "Session %s: failed to configure remote browser session via %s: %s",
+                self.session_id,
+                endpoint,
+                exc,
+            )
+            return None
+
+        log.info(
+            "Session %s: attaching to shared browser at %s",
+            self.session_id,
+            endpoint,
+        )
+        return session
 
     def _set_status(self, status: str, error: Optional[str] = None) -> None:
         with self._lock:
