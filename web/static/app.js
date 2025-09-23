@@ -751,23 +751,41 @@ async function pollSession() {
 
     const sharedMode =
       typeof data.shared_browser_mode === 'string' ? data.shared_browser_mode.trim().toLowerCase() : 'unknown';
-    if (sharedMode === 'local' && state.sharedBrowserMode !== 'local') {
-      state.sharedBrowserMode = 'local';
-      state.liveViewDisabled = true;
-      const message =
-        warnings.length && typeof warnings[warnings.length - 1] === 'string'
-          ? warnings[warnings.length - 1]
-          : 'ライブビューのブラウザに接続できなかったため、スクリーンショットのみ表示されます。';
-      state.liveViewDisabledMessage = message;
-      if (state.previewMode === 'live') {
-        showSharedBrowserError(message);
-      }
-    } else if (sharedMode === 'remote' && state.sharedBrowserMode !== 'remote') {
+    if (sharedMode === 'remote' && state.sharedBrowserMode !== 'remote') {
       state.sharedBrowserMode = 'remote';
       state.liveViewDisabled = false;
       state.liveViewDisabledMessage = '';
       if (state.previewMode === 'live') {
         initialiseLiveView(true);
+      }
+    } else if (sharedMode !== 'remote' && sharedMode !== state.sharedBrowserMode) {
+      state.sharedBrowserMode = sharedMode;
+      state.liveViewDisabled = true;
+      const serverMessage = (() => {
+        for (let i = warnings.length - 1; i >= 0; i -= 1) {
+          const warning = warnings[i];
+          if (typeof warning === 'string') {
+            const trimmed = warning.trim();
+            if (trimmed.length) {
+              return trimmed;
+            }
+          }
+        }
+        if (typeof data.error === 'string') {
+          const trimmed = data.error.trim();
+          if (trimmed.length) {
+            return trimmed;
+          }
+        }
+        return '';
+      })();
+      const message =
+        typeof serverMessage === 'string' && serverMessage.length
+          ? serverMessage
+          : 'ライブビューのブラウザに接続できないため実行を開始できません。';
+      state.liveViewDisabledMessage = message;
+      if (state.previewMode === 'live') {
+        showSharedBrowserError(message);
       }
     }
 
