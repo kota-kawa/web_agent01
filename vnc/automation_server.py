@@ -47,7 +47,7 @@ from vnc.page_actions import (
 )
 from vnc.dependency_check import ensure_component_dependencies
 
-from agent.utils.shared_browser import env_flag, format_shared_browser_error
+from agent.utils.shared_browser import format_shared_browser_error
 
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
@@ -1320,6 +1320,7 @@ async def _init_browser():
             log.debug("CDP endpoint %s not reachable", candidate)
             connection_errors.append(f"共有ブラウザ {candidate} が応答しませんでした")
             continue
+        browser = None
         try:
             browser = await PW.chromium.connect_over_cdp(candidate)
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
@@ -1330,12 +1331,22 @@ async def _init_browser():
             connection_errors.append(
                 f"共有ブラウザ {candidate} への接続に失敗しました（{type(exc).__name__}: {exc}）"
             )
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
             continue
         except Exception as exc:
             log.warning("Unexpected error attaching to browser via %s: %s", candidate, exc)
             connection_errors.append(
                 f"共有ブラウザ {candidate} への接続に失敗しました（{type(exc).__name__}: {exc}）"
             )
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
             continue
 
         BROWSER = browser
@@ -1349,18 +1360,21 @@ async def _init_browser():
             if connection_errors
             else "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
         )
-        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=False)
         message = format_shared_browser_error(reason, candidates=candidates)
-        if require_shared_browser:
-            log.error("Automation server requires shared browser but none is available: %s", message)
-            raise RuntimeError(message)
-
-        log.warning(
-            "Falling back to headless Chromium instance; live view will not reflect automation actions (%s)",
-            reason,
+        log.error(
+            "Automation server could not connect to a shared browser: %s",
+            message,
         )
-        BROWSER = await PW.chromium.launch(headless=True)
-        PAGE = await BROWSER.new_page()
+        try:
+            if PW:
+                await PW.stop()
+        except Exception as stop_exc:
+            log.debug("Failed to stop Playwright after connection failure: %s", stop_exc)
+        finally:
+            PW = None
+            BROWSER = None
+            PAGE = None
+        raise RuntimeError(message)
     else:
         CDP_URL = connected_endpoint or CDP_URL
         if connected_endpoint:
@@ -2343,7 +2357,7 @@ def source():
         return Response(_run(_safe_get_page_content()), mimetype="text/plain")
     except Exception as e:
         log.error("source error: %s", e)
-        return Response("", mimetype="text/plain")
+        return Response(str(e), mimetype="text/plain")
 
 
 @app.get("/url")
@@ -2356,7 +2370,7 @@ def current_url():
         return jsonify({"url": url})
     except Exception as e:
         log.error("url error: %s", e)
-        return jsonify({"url": ""})
+        return jsonify({"url": "", "error": str(e)})
 
 
 @app.get("/screenshot")
@@ -2369,7 +2383,7 @@ def screenshot():
         return Response(base64.b64encode(img), mimetype="text/plain")
     except Exception as e:
         log.error("screenshot error: %s", e)
-        return Response("", mimetype="text/plain")
+        return Response(str(e), mimetype="text/plain", status=500)
 
 
 @app.get("/elements")
