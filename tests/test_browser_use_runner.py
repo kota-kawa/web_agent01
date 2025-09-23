@@ -180,6 +180,8 @@ def test_create_browser_session_falls_back_to_local_when_unavailable(
 ) -> None:
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
 
+    monkeypatch.setenv("REQUIRE_SHARED_BROWSER", "0")
+
     monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
 
     calls: list[dict[str, object]] = []
@@ -209,6 +211,8 @@ def test_create_browser_session_falls_back_after_remote_failure(
 ) -> None:
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
 
+    monkeypatch.setenv("REQUIRE_SHARED_BROWSER", "0")
+
     monkeypatch.setattr(
         browser_use_runner,
         "_resolve_cdp_endpoint",
@@ -237,3 +241,57 @@ def test_create_browser_session_falls_back_after_remote_failure(
 
     assert isinstance(result, DummyBrowserSession)
     assert calls == [("http://vnc:9222", False), (None, True)]
+
+
+def test_create_browser_session_requires_shared_browser_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    monkeypatch.delenv("REQUIRE_SHARED_BROWSER", raising=False)
+    monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        session._create_browser_session()
+
+    message = str(excinfo.value)
+    assert "ライブビューのブラウザに接続できないため実行できません" in message
+    assert "http://vnc:9222" in message
+
+
+def test_create_browser_session_requires_shared_browser_when_remote_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    monkeypatch.delenv("REQUIRE_SHARED_BROWSER", raising=False)
+    monkeypatch.setattr(
+        browser_use_runner,
+        "_resolve_cdp_endpoint",
+        lambda: "http://vnc:9222",
+    )
+
+    calls: list[tuple[str | None, bool]] = []
+
+    class DummyBrowserSession:
+        def __init__(
+            self,
+            *,
+            cdp_url: str | None = None,
+            is_local: bool = False,
+            **_: object,
+        ) -> None:
+            calls.append((cdp_url, is_local))
+            if not is_local:
+                raise RuntimeError("remote boom")
+            self.cdp_url = cdp_url
+            self.is_local = is_local
+
+    monkeypatch.setattr(browser_use_runner, "BrowserSession", DummyBrowserSession)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        session._create_browser_session()
+
+    message = str(excinfo.value)
+    assert "remote boom" in message
+    assert calls == [("http://vnc:9222", False)]

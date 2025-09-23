@@ -67,6 +67,38 @@ def _candidate_cdp_endpoints() -> list[str]:
     return candidates
 
 
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    trimmed = value.strip().lower()
+    if not trimmed:
+        return default
+
+    if trimmed in {"1", "true", "yes", "on"}:
+        return True
+    if trimmed in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _format_shared_browser_error(reason: str, *, candidates: Iterable[str]) -> str:
+    candidate_list = [candidate for candidate in candidates if candidate]
+    candidate_hint = (
+        "、".join(candidate_list) if candidate_list else "http://vnc:9222 (デフォルト)"
+    )
+    guidance = (
+        "VNC サービス (例: http://vnc:9222) が起動し `/json/version` にアクセスできるか確認してください。"
+        "Docker Compose を利用している場合は `docker compose ps vnc` で稼働状況を確認し、必要に応じて `docker compose up -d vnc` で再起動してください。"
+        "接続先を変更する場合は BROWSER_USE_CDP_URL / VNC_CDP_URL / CDP_URL を設定してください。"
+    )
+    return (
+        "ライブビューのブラウザに接続できないため実行できません。"
+        f"{reason}。試行した CDP エンドポイント: {candidate_hint}。{guidance}"
+    )
+
+
 def _json_version_url(base: str) -> str:
     base = (base or "").strip()
     if not base:
@@ -241,8 +273,21 @@ class BrowserUseSession:
 
     _task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _agent: Agent | None = field(default=None, init=False, repr=False)
+    _prepared_browser_session: BrowserSession | None = field(
+        default=None, init=False, repr=False
+    )
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _history_recorded: bool = field(default=False, init=False, repr=False)
+
+    async def prepare(self) -> None:
+        if self._prepared_browser_session is not None:
+            return
+
+        try:
+            self._prepared_browser_session = self._create_browser_session()
+        except Exception:
+            self._prepared_browser_session = None
+            raise
 
     async def run(self) -> None:
         self._task = asyncio.current_task()
@@ -256,7 +301,11 @@ class BrowserUseSession:
 
         try:
             self._set_status("running")
-            browser_session = self._create_browser_session()
+            if self._prepared_browser_session is not None:
+                browser_session = self._prepared_browser_session
+                self._prepared_browser_session = None
+            else:
+                browser_session = self._create_browser_session()
             self._agent = Agent(
                 task=self.command,
                 llm=llm,
@@ -386,13 +435,31 @@ class BrowserUseSession:
         raise ValueError(f"Unsupported model '{requested}'")
 
     def _create_browser_session(self) -> BrowserSession:
-        endpoint = _resolve_cdp_endpoint()
+        candidates = _candidate_cdp_endpoints()
+        try:
+            endpoint = _resolve_cdp_endpoint(candidates=candidates)
+        except TypeError:
+            endpoint = _resolve_cdp_endpoint()
+        require_shared_browser = _env_flag("REQUIRE_SHARED_BROWSER", default=True)
         remote_error: Exception | None = None
 
         if endpoint:
             try:
                 session = BrowserSession(cdp_url=endpoint, is_local=False)
             except Exception as exc:  # pragma: no cover - defensive
+                if require_shared_browser:
+                    detail = f"{type(exc).__name__}: {exc}"
+                    message = _format_shared_browser_error(
+                        f"共有ブラウザ {endpoint} への接続に失敗しました（{detail}）",
+                        candidates=candidates or [endpoint],
+                    )
+                    log.error(
+                        "Session %s: %s",
+                        self.session_id,
+                        message,
+                        exc_info=True,
+                    )
+                    raise RuntimeError(message) from exc
                 remote_error = exc
                 log.warning(
                     "Session %s: failed to attach to shared browser at %s: %s; "
@@ -412,6 +479,16 @@ class BrowserUseSession:
             approx_wait = max(
                 0.0, (_CDP_PROBE_RETRIES - 1) * max(_CDP_PROBE_DELAY, 0.0)
             )
+            if require_shared_browser:
+                reason = "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
+                if approx_wait:
+                    reason += f"（待機時間: 約{approx_wait:.1f}秒）"
+                message = _format_shared_browser_error(
+                    reason,
+                    candidates=candidates,
+                )
+                log.error("Session %s: %s", self.session_id, message)
+                raise RuntimeError(message)
             log.warning(
                 "Session %s: remote browser is not reachable after waiting up to %.1fs; "
                 "falling back to local headless browser session",
@@ -423,7 +500,9 @@ class BrowserUseSession:
             session = BrowserSession(is_local=True)
         except Exception as exc:  # pragma: no cover - defensive
             if endpoint:
-                remote_details = remote_error if remote_error is not None else "unknown error"
+                remote_details = (
+                    remote_error if remote_error is not None else "unknown error"
+                )
                 raise RuntimeError(
                     "Failed to connect to remote browser at "
                     f"{endpoint} ({remote_details}) and local fallback session failed to start: {exc}"
@@ -509,6 +588,15 @@ class BrowserUseManager:
         session = BrowserUseSession(command=command, model_name=model, max_steps=max_steps)
         with self._lock:
             self._sessions[session.session_id] = session
+        try:
+            prepare_future = asyncio.run_coroutine_threadsafe(
+                session.prepare(), self._loop
+            )
+            prepare_future.result()
+        except Exception:
+            with self._lock:
+                self._sessions.pop(session.session_id, None)
+            raise
         asyncio.run_coroutine_threadsafe(session.run(), self._loop)
         log.info("Started browser-use session %s for command: %s", session.session_id, command)
         return session.session_id
