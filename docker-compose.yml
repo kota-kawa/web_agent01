@@ -27,6 +27,11 @@ services:
       - PYTHONPATH=/app
       # Ensure front-end matches initial Yahoo start page
       - START_URL=https://www.yahoo.co.jp/
+      # Configure the live browser iframe (noVNC). Override NOVNC_PORT when the
+      # service is published on a different host port, or use NOVNC_URL to point
+      # at an externally reachable endpoint when running behind a proxy.
+      - NOVNC_PORT=6901
+      # - NOVNC_URL=https://example.com/novnc/
     env_file:
       - .env
     ports:
