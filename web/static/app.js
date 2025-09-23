@@ -23,7 +23,7 @@ const previewPlaceholder = document.getElementById('preview-placeholder');
 const previewStatus = document.getElementById('preview-status');
 const screenshotContainer = document.getElementById('screenshot-container');
 const liveBrowserContainer = document.getElementById('live-browser-container');
-const liveBrowserCanvas = document.getElementById('live-browser-canvas');
+const liveBrowserSurface = document.getElementById('live-browser-canvas');
 const liveBrowserUnavailable = document.getElementById('live-browser-unavailable');
 const previewModeButtons = document.querySelectorAll('[data-preview-mode]');
 
@@ -209,7 +209,7 @@ function disconnectLiveView(manual = false) {
 }
 
 function initialiseLiveView(forceReload = false) {
-  if (!liveBrowserContainer || !liveBrowserCanvas) {
+  if (!liveBrowserContainer || !liveBrowserSurface) {
     return;
   }
 
@@ -326,7 +326,7 @@ function initialiseLiveView(forceReload = false) {
   let rfbInstance;
   try {
     const RFBConstructor = window.__NOVNC_RFB__;
-    rfbInstance = new RFBConstructor(liveBrowserCanvas, urlToConnect, { shared: true });
+    rfbInstance = new RFBConstructor(liveBrowserSurface, urlToConnect, { shared: true });
     rfbInstance.viewOnly = true;
     rfbInstance.scaleViewport = true;
     rfbInstance.focusOnClick = false;
