@@ -169,10 +169,25 @@ def test_finalise_result_includes_structured_output_when_present() -> None:
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
     history = DummyHistory(structured=DummyStructured({"foo": "bar"}))
 
+    session.warnings.append("warn message")
     session._finalise_result(history)
 
     assert session.result is not None
     assert session.result["structured_output"] == {"foo": "bar"}
+    assert session.result["warnings"] == ["warn message"]
+
+
+def test_snapshot_includes_warnings_and_shared_browser_data() -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+    session.warnings.append("notice")
+    session.shared_browser_mode = "local"
+    session.shared_browser_endpoint = None
+
+    data = session.snapshot()
+
+    assert data["warnings"] == ["notice"]
+    assert data["shared_browser_mode"] == "local"
+    assert data["shared_browser_endpoint"] is None
 
 
 def test_create_browser_session_falls_back_to_local_when_unavailable(
@@ -204,6 +219,11 @@ def test_create_browser_session_falls_back_to_local_when_unavailable(
 
     assert isinstance(result, DummyBrowserSession)
     assert calls == [{"cdp_url": None, "is_local": True}]
+    assert session.shared_browser_mode == "local"
+    assert session.shared_browser_endpoint is None
+    assert session.warnings == [
+        "ライブビューのブラウザに接続できなかったため、ローカルのヘッドレスブラウザで実行します。"
+    ]
 
 
 def test_create_browser_session_falls_back_after_remote_failure(
@@ -241,6 +261,47 @@ def test_create_browser_session_falls_back_after_remote_failure(
 
     assert isinstance(result, DummyBrowserSession)
     assert calls == [("http://vnc:9222", False), (None, True)]
+    assert session.shared_browser_mode == "local"
+    assert session.shared_browser_endpoint is None
+    assert session.warnings == [
+        "共有ブラウザ http://vnc:9222 への接続に失敗しました（RuntimeError: remote boom）。"
+    ]
+
+
+def test_create_browser_session_records_remote_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    monkeypatch.setattr(
+        browser_use_runner,
+        "_resolve_cdp_endpoint",
+        lambda: "http://vnc:9222",
+    )
+
+    calls: list[tuple[str | None, bool]] = []
+
+    class DummyBrowserSession:
+        def __init__(
+            self,
+            *,
+            cdp_url: str | None = None,
+            is_local: bool = False,
+            **_: object,
+        ) -> None:
+            calls.append((cdp_url, is_local))
+            self.cdp_url = cdp_url
+            self.is_local = is_local
+
+    monkeypatch.setattr(browser_use_runner, "BrowserSession", DummyBrowserSession)
+
+    result = session._create_browser_session()
+
+    assert isinstance(result, DummyBrowserSession)
+    assert calls == [("http://vnc:9222", False)]
+    assert session.shared_browser_mode == "remote"
+    assert session.shared_browser_endpoint == "http://vnc:9222"
+    assert session.warnings == []
 
 
 def test_create_browser_session_requires_shared_browser_when_unavailable(
@@ -248,7 +309,7 @@ def test_create_browser_session_requires_shared_browser_when_unavailable(
 ) -> None:
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
 
-    monkeypatch.delenv("REQUIRE_SHARED_BROWSER", raising=False)
+    monkeypatch.setenv("REQUIRE_SHARED_BROWSER", "1")
     monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -264,7 +325,7 @@ def test_create_browser_session_requires_shared_browser_when_remote_fails(
 ) -> None:
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
 
-    monkeypatch.delenv("REQUIRE_SHARED_BROWSER", raising=False)
+    monkeypatch.setenv("REQUIRE_SHARED_BROWSER", "1")
     monkeypatch.setattr(
         browser_use_runner,
         "_resolve_cdp_endpoint",
