@@ -47,6 +47,8 @@ from vnc.page_actions import (
 )
 from vnc.dependency_check import ensure_component_dependencies
 
+from agent.utils.shared_browser import env_flag, format_shared_browser_error
+
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -1308,12 +1310,15 @@ async def _init_browser():
 
     PW = await async_playwright().start()
 
+    candidates = _candidate_cdp_endpoints()
+    connection_errors: List[str] = []
     connected_endpoint = None
-    for candidate in _candidate_cdp_endpoints():
+    for candidate in candidates:
         if not candidate:
             continue
         if not await _wait_cdp(candidate):
             log.debug("CDP endpoint %s not reachable", candidate)
+            connection_errors.append(f"共有ブラウザ {candidate} が応答しませんでした")
             continue
         try:
             browser = await PW.chromium.connect_over_cdp(candidate)
@@ -1322,9 +1327,15 @@ async def _init_browser():
             await page.bring_to_front()
         except PwError as exc:
             log.warning("Failed to attach to browser via %s: %s", candidate, exc)
+            connection_errors.append(
+                f"共有ブラウザ {candidate} への接続に失敗しました（{type(exc).__name__}: {exc}）"
+            )
             continue
         except Exception as exc:
             log.warning("Unexpected error attaching to browser via %s: %s", candidate, exc)
+            connection_errors.append(
+                f"共有ブラウザ {candidate} への接続に失敗しました（{type(exc).__name__}: {exc}）"
+            )
             continue
 
         BROWSER = browser
@@ -1333,8 +1344,20 @@ async def _init_browser():
         break
 
     if PAGE is None:
+        reason = (
+            connection_errors[-1]
+            if connection_errors
+            else "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
+        )
+        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=True)
+        message = format_shared_browser_error(reason, candidates=candidates)
+        if require_shared_browser:
+            log.error("Automation server requires shared browser but none is available: %s", message)
+            raise RuntimeError(message)
+
         log.warning(
-            "Falling back to headless Chromium instance; live view will not reflect automation actions"
+            "Falling back to headless Chromium instance; live view will not reflect automation actions (%s)",
+            reason,
         )
         BROWSER = await PW.chromium.launch(headless=True)
         PAGE = await BROWSER.new_page()
