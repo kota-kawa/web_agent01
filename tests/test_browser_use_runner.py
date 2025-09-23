@@ -19,7 +19,13 @@ def test_resolve_cdp_endpoint_prefers_ws_env(monkeypatch: pytest.MonkeyPatch) ->
     captured: dict[str, object] = {}
 
     class _Response:
-        status_code = 200
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {
+                "webSocketDebuggerUrl": "ws://example.devtools/devtools/browser/abcdef"
+            }
 
     def fake_get(url: str, timeout: float) -> _Response:
         captured["url"] = url
@@ -41,7 +47,13 @@ def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.Monkey
     captured: dict[str, object] = {}
 
     class _Response:
-        status_code = 200
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/test"
+            }
 
     def fake_get(url: str, timeout: float) -> _Response:
         captured["url"] = url
@@ -52,7 +64,7 @@ def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.Monkey
 
     result = browser_use_runner._resolve_cdp_endpoint()
 
-    assert result == "http://custom-host:9222"
+    assert result == "ws://custom-host:9222/devtools/browser/test"
     assert captured["url"].endswith("/json/version")
     assert captured["timeout"] == browser_use_runner._CDP_PROBE_TIMEOUT
 
@@ -63,7 +75,13 @@ def test_resolve_cdp_endpoint_falls_back_to_next_candidate(
     calls: list[str] = []
 
     class _Response:
-        status_code = 200
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {
+                "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/abc"
+            }
 
     def fake_get(url: str, timeout: float):  # type: ignore[override]
         calls.append(url)
@@ -77,7 +95,7 @@ def test_resolve_cdp_endpoint_falls_back_to_next_candidate(
         candidates=("http://first:9222", "http://second:9222"),
     )
 
-    assert result == "http://second:9222"
+    assert result == "ws://second:9222/devtools/browser/abc"
     assert len(calls) == 2
 
 
@@ -116,6 +134,69 @@ def test_resolve_cdp_endpoint_rejects_unreachable_ws(
 
     assert result is None
     assert calls == ["http://example.devtools/json/version"]
+
+
+def test_resolve_cdp_endpoint_uses_candidate_when_websocket_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {}
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", lambda url, timeout: _Response())
+
+    result = browser_use_runner._resolve_cdp_endpoint(
+        candidates=("http://vnc:9222",),
+        retries=1,
+        delay=0.0,
+    )
+
+    assert result == "http://vnc:9222"
+
+
+def test_resolve_cdp_endpoint_rewrites_relative_websocket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"webSocketDebuggerUrl": "devtools/browser/xyz"}
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", lambda url, timeout: _Response())
+
+    result = browser_use_runner._resolve_cdp_endpoint(
+        candidates=("http://vnc:9222",),
+        retries=1,
+        delay=0.0,
+    )
+
+    assert result == "ws://vnc:9222/devtools/browser/xyz"
+
+
+def test_resolve_cdp_endpoint_rewrites_loopback_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"webSocketDebuggerUrl": "ws://0.0.0.0:9222/devtools/browser/loop"}
+
+    monkeypatch.setattr(browser_use_runner.requests, "get", lambda url, timeout: _Response())
+
+    result = browser_use_runner._resolve_cdp_endpoint(
+        candidates=("http://vnc:9222",),
+        retries=1,
+        delay=0.0,
+    )
+
+    assert result == "ws://vnc:9222/devtools/browser/loop"
 
 
 class DummyStructured:
