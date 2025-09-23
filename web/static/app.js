@@ -327,12 +327,15 @@ function initialiseLiveView(forceReload = false) {
   try {
     const RFBConstructor = window.__NOVNC_RFB__;
     rfbInstance = new RFBConstructor(liveBrowserSurface, urlToConnect, { shared: true });
-    rfbInstance.viewOnly = true;
+    rfbInstance.viewOnly = false;
     rfbInstance.scaleViewport = true;
-    rfbInstance.focusOnClick = false;
+    rfbInstance.focusOnClick = true;
     rfbInstance.background = '#0b1120';
     if ('resizeSession' in rfbInstance) {
       rfbInstance.resizeSession = true;
+    }
+    if ('clipViewport' in rfbInstance) {
+      rfbInstance.clipViewport = true;
     }
   } catch (err) {
     state.liveViewInitialised = false;
@@ -350,6 +353,10 @@ function initialiseLiveView(forceReload = false) {
 
   state.liveViewInstance = rfbInstance;
 
+  if (liveBrowserSurface && !liveBrowserSurface.hasAttribute('tabindex')) {
+    liveBrowserSurface.setAttribute('tabindex', '0');
+  }
+
   const handleLiveConnect = () => {
     clearLiveViewWatchdog();
     clearLiveViewRetry();
@@ -359,6 +366,9 @@ function initialiseLiveView(forceReload = false) {
     liveBrowserContainer.classList.add('is-ready');
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+    if (liveBrowserSurface) {
+      liveBrowserSurface.focus({ preventScroll: true });
     }
   };
 

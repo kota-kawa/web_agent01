@@ -13,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 
 import httpx
@@ -90,7 +90,107 @@ NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT", "30000"))  # ms  ナビ
 WAIT_FOR_SELECTOR_TIMEOUT = int(os.getenv("WAIT_FOR_SELECTOR_TIMEOUT", "5000"))  # ms  セレクタ待機
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 LOCATOR_RETRIES = int(os.getenv("LOCATOR_RETRIES", "3"))
-CDP_URL = "http://localhost:9222"
+# CDP detection helpers ensure the automation server attaches to the browser
+# instance that backs the live VNC view.  This avoids launching a separate
+# headless instance when a shared Chromium with remote debugging is already
+# running.
+_CDP_ENV_VARS = ("VNC_CDP_URL", "BROWSER_USE_CDP_URL", "CDP_URL")
+_CDP_DEFAULT_ENDPOINTS = (
+    "http://127.0.0.1:9222",
+    "http://localhost:9222",
+    "http://vnc:9222",
+)
+_CDP_FALLBACK = "http://127.0.0.1:9222"
+
+
+def _normalise_cdp_candidate(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+    lowered = trimmed.lower()
+    if lowered.startswith(("http://", "https://", "ws://", "wss://")):
+        return trimmed.rstrip("/")
+    if trimmed.startswith("//"):
+        return f"http:{trimmed}".rstrip("/")
+    if ":" in trimmed:
+        return f"http://{trimmed}".rstrip("/")
+    return trimmed
+
+
+def _initial_cdp_endpoint() -> str:
+    for env_name in _CDP_ENV_VARS:
+        candidate = _normalise_cdp_candidate(os.getenv(env_name))
+        if candidate:
+            return candidate
+    return _CDP_FALLBACK
+
+
+def _candidate_cdp_endpoints() -> List[str]:
+    candidates: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Optional[str]) -> None:
+        normalised = _normalise_cdp_candidate(value)
+        if normalised and normalised not in seen:
+            candidates.append(normalised)
+            seen.add(normalised)
+
+    _add(_initial_cdp_endpoint())
+    for env_name in _CDP_ENV_VARS:
+        _add(os.getenv(env_name))
+    for default in _CDP_DEFAULT_ENDPOINTS:
+        _add(default)
+    return candidates
+
+
+def _json_version_url(endpoint: str) -> str:
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return ""
+
+    parsed = urlsplit(endpoint)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path or ""
+
+    if not scheme:
+        return _json_version_url(f"http://{endpoint}")
+
+    if not netloc and path:
+        netloc = path
+        path = ""
+
+    if scheme in {"ws", "wss"}:
+        http_scheme = "http" if scheme == "ws" else "https"
+        trimmed = path.rstrip("/")
+        lowered = trimmed.lower()
+        if lowered.endswith("/devtools/browser"):
+            trimmed = trimmed[: lowered.rfind("/devtools/browser")]
+        if lowered.endswith("/json/version"):
+            final_path = trimmed
+        elif trimmed:
+            final_path = f"{trimmed}/json/version"
+        else:
+            final_path = "/json/version"
+        return urlunsplit((http_scheme, netloc, final_path, "", ""))
+
+    if scheme in {"http", "https"}:
+        trimmed = path.rstrip("/")
+        lowered = trimmed.lower()
+        if lowered.endswith("/json/version"):
+            final_path = trimmed
+        elif trimmed:
+            final_path = f"{trimmed}/json/version"
+        else:
+            final_path = "/json/version"
+        return urlunsplit((scheme, netloc, final_path, "", ""))
+
+    return _json_version_url(f"http://{endpoint}")
+
+
+CDP_URL = _initial_cdp_endpoint()
 # Use Yahoo! JAPAN as the default start page for immediate usability
 DEFAULT_URL = os.getenv("START_URL", "https://www.yahoo.co.jp/")
 SPA_STABILIZE_TIMEOUT = int(
@@ -1059,13 +1159,18 @@ def _get_page_url_sync() -> str:
     return attr if isinstance(attr, str) else ""
 
 
-async def _wait_cdp(t: int = 15) -> bool:
+async def _wait_cdp(endpoint: str, t: int = 15) -> bool:
+    version_url = _json_version_url(endpoint)
+    if not version_url:
+        return False
+
     deadline = time.time() + t
     async with httpx.AsyncClient(timeout=2) as c:
         while time.time() < deadline:
             try:
-                await c.get(f"{CDP_URL}/json/version")
-                return True
+                response = await c.get(version_url)
+                if response.status_code == 200:
+                    return True
             except httpx.HTTPError:
                 await asyncio.sleep(0.5)
     return False
@@ -1176,26 +1281,46 @@ async def _recreate_browser():
             # Do NOT navigate to DEFAULT_URL as fallback - stay where we are
             log.info("Browser recreation complete - remaining on current page instead of falling back to default URL")
 async def _init_browser():
-    global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT
+    global PW, BROWSER, PAGE, _BROWSER_FIRST_INIT, CDP_URL
     if PAGE and await _check_browser_health():
         return
-        
+
     PW = await async_playwright().start()
 
-    if await _wait_cdp():
+    connected_endpoint = None
+    for candidate in _candidate_cdp_endpoints():
+        if not candidate:
+            continue
+        if not await _wait_cdp(candidate):
+            log.debug("CDP endpoint %s not reachable", candidate)
+            continue
         try:
-            BROWSER = await PW.chromium.connect_over_cdp(CDP_URL)
-            ctx = (
-                BROWSER.contexts[0] if BROWSER.contexts else await BROWSER.new_context()
-            )
-            PAGE = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            await PAGE.bring_to_front()
-        except PwError:
-            pass
+            browser = await PW.chromium.connect_over_cdp(candidate)
+            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.bring_to_front()
+        except PwError as exc:
+            log.warning("Failed to attach to browser via %s: %s", candidate, exc)
+            continue
+        except Exception as exc:
+            log.warning("Unexpected error attaching to browser via %s: %s", candidate, exc)
+            continue
+
+        BROWSER = browser
+        PAGE = page
+        connected_endpoint = candidate
+        break
 
     if PAGE is None:
+        log.warning(
+            "Falling back to headless Chromium instance; live view will not reflect automation actions"
+        )
         BROWSER = await PW.chromium.launch(headless=True)
         PAGE = await BROWSER.new_page()
+    else:
+        CDP_URL = connected_endpoint or CDP_URL
+        if connected_endpoint:
+            log.info("Connected to shared browser via %s", connected_endpoint)
 
     # Inject event listener tracking script on every navigation
     global _WATCHER_SCRIPT
