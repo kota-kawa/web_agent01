@@ -18,6 +18,11 @@ log = logging.getLogger("agent")
 log.setLevel(logging.INFO)
 
 ensure_component_dependencies("web", logger=log)
+# Validate the automation stack dependencies as well so the live browser view can
+# surface missing packages early.  ``strict`` is disabled to avoid blocking the
+# web UI when optional components are not installed locally; warnings are logged
+# instead so operators can address them.
+ensure_component_dependencies("vnc", logger=log, strict=False)
 
 MAX_STEPS = max(1, int(os.getenv("MAX_STEPS", "15")))
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini")

@@ -7,6 +7,8 @@ const state = {
   liveViewLoaded: false,
   liveViewTimeoutId: null,
   liveViewListeners: null,
+  liveViewRetryId: null,
+  liveViewRetryCount: 0,
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -92,6 +94,43 @@ function clearLiveViewWatchdog() {
   }
 }
 
+function clearLiveViewRetry() {
+  if (state.liveViewRetryId) {
+    clearTimeout(state.liveViewRetryId);
+    state.liveViewRetryId = null;
+  }
+}
+
+function scheduleLiveViewRetry(reason) {
+  if (state.previewMode !== 'live') {
+    return;
+  }
+
+  const attempt = state.liveViewRetryCount + 1;
+  state.liveViewRetryCount = attempt;
+
+  const baseDelay = reason === 'timeout' ? 6000 : 4000;
+  const delay = Math.min(15000, baseDelay + attempt * 1000);
+
+  if (liveBrowserUnavailable) {
+    const prefix =
+      reason === 'timeout'
+        ? 'ライブビューの応答がありません。'
+        : 'ライブビューの読み込みに失敗しました。';
+    const attemptLabel = attempt > 1 ? `（${attempt}回目）` : '';
+    const seconds = Math.max(4, Math.round(delay / 1000));
+    liveBrowserUnavailable.textContent =
+      `${prefix}再接続を試みています...${attemptLabel}（約${seconds}秒後に再試行）`;
+    liveBrowserUnavailable.setAttribute('aria-busy', 'true');
+  }
+
+  clearLiveViewRetry();
+  state.liveViewRetryId = window.setTimeout(() => {
+    state.liveViewRetryId = null;
+    initialiseLiveView(true);
+  }, delay);
+}
+
 function removeLiveViewListeners() {
   if (!state.liveViewListeners || !liveBrowserFrame) {
     return;
@@ -112,12 +151,15 @@ function initialiseLiveView(forceReload = false) {
     return;
   }
 
+  clearLiveViewRetry();
+
   const configuredUrl = typeof window.NOVNC_URL === 'string' ? window.NOVNC_URL.trim() : '';
   if (!configuredUrl) {
     clearLiveViewWatchdog();
     removeLiveViewListeners();
     state.liveViewInitialised = false;
     state.liveViewLoaded = false;
+    state.liveViewRetryCount = 0;
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.textContent = 'ライブビューの URL が設定されていません。';
       liveBrowserUnavailable.removeAttribute('aria-busy');
@@ -165,6 +207,8 @@ function initialiseLiveView(forceReload = false) {
 
   const handleLiveLoad = () => {
     clearLiveViewWatchdog();
+    clearLiveViewRetry();
+    state.liveViewRetryCount = 0;
     removeLiveViewListeners();
     state.liveViewLoaded = true;
     liveBrowserContainer.classList.remove('is-loading', 'has-error');
@@ -181,11 +225,7 @@ function initialiseLiveView(forceReload = false) {
     state.liveViewLoaded = false;
     liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
-    if (liveBrowserUnavailable) {
-      liveBrowserUnavailable.textContent =
-        'ライブビューを読み込めませんでした。ネットワーク設定を確認してください。';
-      liveBrowserUnavailable.removeAttribute('aria-busy');
-    }
+    scheduleLiveViewRetry('error');
   };
 
   liveBrowserFrame.addEventListener('load', handleLiveLoad);
@@ -212,6 +252,7 @@ function initialiseLiveView(forceReload = false) {
       liveBrowserUnavailable.removeAttribute('aria-busy');
     }
     state.liveViewTimeoutId = null;
+    scheduleLiveViewRetry('timeout');
   }, 10000);
 }
 
@@ -225,6 +266,8 @@ function setPreviewMode(mode, options = {}) {
     initialiseLiveView(forceReload);
   } else {
     clearLiveViewWatchdog();
+    clearLiveViewRetry();
+    state.liveViewRetryCount = 0;
   }
 }
 
