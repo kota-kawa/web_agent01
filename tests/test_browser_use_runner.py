@@ -32,6 +32,7 @@ def test_resolve_cdp_endpoint_prefers_ws_env(monkeypatch: pytest.MonkeyPatch) ->
 
     assert result == "ws://example.devtools/devtools/browser/abcdef"
     assert captured["url"] == "http://example.devtools/json/version"
+    assert captured["timeout"] == browser_use_runner._CDP_PROBE_TIMEOUT
 
 
 def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,6 +54,7 @@ def test_resolve_cdp_endpoint_prefers_configured_http(monkeypatch: pytest.Monkey
 
     assert result == "http://custom-host:9222"
     assert captured["url"].endswith("/json/version")
+    assert captured["timeout"] == browser_use_runner._CDP_PROBE_TIMEOUT
 
 
 def test_resolve_cdp_endpoint_falls_back_to_next_candidate(
