@@ -14,8 +14,8 @@ const sleep = ms => new Promise(resolve => {
 const chatArea   = document.getElementById("chat-area");
 let stopRequested   = false;
 window.stopRequested = false;  // Make it globally accessible
-// Default to a blank page to avoid unexpected navigation
-const START_URL = window.START_URL || "about:blank";
+// Default to Yahoo! JAPAN when no explicit start URL is provided
+const START_URL = window.START_URL || "https://www.yahoo.co.jp/";
 
 // screenshot helper
 async function captureScreenshot() {

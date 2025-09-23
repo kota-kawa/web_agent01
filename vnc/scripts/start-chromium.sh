@@ -22,8 +22,8 @@ else
   echo "[chromium] warning: could not configure xset (X server not ready)"
 fi
 
-# 既定の起動 URL を about:blank にして予期せぬ外部ページへの遷移を防ぐ
-URL="${START_URL:-about:blank}"
+# 既定の起動 URL を Yahoo! JAPAN にして、すぐに利用できる状態にする
+URL="${START_URL:-https://www.yahoo.co.jp/}"
 
 if ! pgrep -f "--remote-debugging-port=9222" >/dev/null; then
   echo "[chromium] launching chromium..."
