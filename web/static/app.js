@@ -2,6 +2,8 @@ const state = {
   activeSession: null,
   pollTimer: null,
   renderedSteps: 0,
+  previewMode: 'screenshot',
+  liveViewLoaded: false,
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -12,6 +14,11 @@ const resetButton = document.getElementById('reset-button');
 const previewImage = document.getElementById('preview-image');
 const previewPlaceholder = document.getElementById('preview-placeholder');
 const previewStatus = document.getElementById('preview-status');
+const screenshotContainer = document.getElementById('screenshot-container');
+const liveBrowserContainer = document.getElementById('live-browser-container');
+const liveBrowserFrame = document.getElementById('live-browser-frame');
+const liveBrowserUnavailable = document.getElementById('live-browser-unavailable');
+const previewModeButtons = document.querySelectorAll('[data-preview-mode]');
 
 function escapeHtml(value) {
   if (typeof value !== 'string') return '';
@@ -53,6 +60,53 @@ function setExecuting(isExecuting) {
     sendButton.disabled = false;
     sendButton.textContent = '送信';
     stopButton.disabled = true;
+  }
+}
+
+function syncPreviewModeUI() {
+  const isLive = state.previewMode === 'live';
+
+  if (screenshotContainer) {
+    screenshotContainer.hidden = isLive;
+  }
+
+  if (liveBrowserContainer) {
+    liveBrowserContainer.hidden = !isLive;
+  }
+
+  previewModeButtons.forEach((button) => {
+    const mode = button.dataset.previewMode === 'live' ? 'live' : 'screenshot';
+    const active = mode === state.previewMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function initialiseLiveView() {
+  if (state.liveViewLoaded || !liveBrowserContainer || !liveBrowserFrame) {
+    return;
+  }
+
+  const configuredUrl = typeof window.NOVNC_URL === 'string' ? window.NOVNC_URL.trim() : '';
+  if (!configuredUrl) {
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent = 'ライブビューの URL が設定されていません。';
+    }
+    return;
+  }
+
+  liveBrowserFrame.src = configuredUrl;
+  liveBrowserContainer.classList.add('is-ready');
+  state.liveViewLoaded = true;
+}
+
+function setPreviewMode(mode) {
+  const resolvedMode = mode === 'live' ? 'live' : 'screenshot';
+  state.previewMode = resolvedMode;
+  syncPreviewModeUI();
+
+  if (resolvedMode === 'live') {
+    initialiseLiveView();
   }
 }
 
@@ -355,6 +409,14 @@ async function resetHistory() {
     appendMessage('system', `⚠️ リセットに失敗しました: ${escapeHtml(err.message || String(err))}`);
   }
 }
+
+previewModeButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    setPreviewMode(button.dataset.previewMode);
+  });
+});
+
+syncPreviewModeUI();
 
 sendButton.addEventListener('click', () => {
   const command = userInput.value.trim();

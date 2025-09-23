@@ -30,12 +30,28 @@
 
     <section id="preview-panel" class="preview-panel">
       <header class="preview-header">
-        <span>最新スクリーンショット</span>
+        <span class="preview-title">ブラウザビュー</span>
+        <div class="preview-mode-toggle" role="group" aria-label="プレビュー表示の切り替え">
+          <button type="button" class="preview-mode-button active" data-preview-mode="screenshot" aria-pressed="true">
+            スクリーンショット
+          </button>
+          <button type="button" class="preview-mode-button" data-preview-mode="live" aria-pressed="false">
+            ライブビュー
+          </button>
+        </div>
       </header>
       <div id="preview-body" class="preview-body">
-        <img id="preview-image" alt="最新のブラウザ状態" />
-        <div id="preview-placeholder" class="preview-placeholder">
-          実行中の操作がここに表示されます。
+        <div id="screenshot-container" class="preview-pane">
+          <img id="preview-image" alt="最新のブラウザ状態" />
+          <div id="preview-placeholder" class="preview-placeholder">
+            実行中の操作がここに表示されます。
+          </div>
+        </div>
+        <div id="live-browser-container" class="preview-pane live" hidden>
+          <div id="live-browser-unavailable" class="preview-placeholder">
+            ライブビューを表示するには noVNC エンドポイントを公開してください。
+          </div>
+          <iframe id="live-browser-frame" title="ライブブラウザビュー" loading="lazy"></iframe>
         </div>
       </div>
       <div id="preview-meta" class="preview-meta">
@@ -47,9 +63,10 @@
   </main>
 
   <script>
-    window.DEFAULT_MODEL = "{{ default_model }}";
-    window.MAX_STEPS = {{ max_steps }};
-    window.START_URL = "{{ start_url }}";
+    window.DEFAULT_MODEL = {{ default_model | tojson }};
+    window.MAX_STEPS = {{ max_steps | tojson }};
+    window.START_URL = {{ start_url | tojson }};
+    window.NOVNC_URL = {{ novnc_url | tojson }};
   </script>
   <script src="/static/app.js"></script>
 </body>

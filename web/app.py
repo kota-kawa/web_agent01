@@ -4,6 +4,7 @@ import atexit
 import logging
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
@@ -35,13 +36,48 @@ def handle_exception(error: Exception):  # pragma: no cover - defensive handler
     return jsonify({"error": "internal server error"}), 500
 
 
+def _compute_novnc_url() -> str:
+    configured_url = (os.getenv("NOVNC_URL") or "").strip()
+    if configured_url:
+        return configured_url
+
+    configured_port = (os.getenv("NOVNC_PORT") or "").strip()
+    port_value = "6901"
+    if configured_port:
+        try:
+            port_int = int(configured_port)
+            if port_int > 0:
+                port_value = str(port_int)
+        except (TypeError, ValueError):
+            log.debug("Ignoring invalid NOVNC_PORT value: %s", configured_port)
+
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "")
+    scheme = (forwarded_proto.split(",")[0].strip() if forwarded_proto else None) or request.scheme or "http"
+
+    forwarded_host = request.headers.get("X-Forwarded-Host", "")
+    host_reference = forwarded_host.split(",")[0].strip() if forwarded_host else request.host
+
+    try:
+        parsed = urlsplit(f"{scheme}://{host_reference}")
+    except ValueError:
+        parsed = urlsplit(request.host_url)
+
+    hostname = parsed.hostname or "localhost"
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+
+    return f"{scheme}://{hostname}:{port_value}"
+
+
 @app.route("/")
 def index():
+    novnc_url = _compute_novnc_url()
     return render_template(
         "layout.html",
         default_model=DEFAULT_MODEL,
         max_steps=MAX_STEPS,
         start_url=START_URL,
+        novnc_url=novnc_url,
     )
 
 
