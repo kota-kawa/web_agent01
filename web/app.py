@@ -239,6 +239,21 @@ def execute():
         session_id = manager.start_session(command, model=model, max_steps=max_steps)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        message = str(exc)
+        if "ライブビューのブラウザに接続できないため実行できません" in message:
+            log.error("Failed to start automation run: %s", message)
+            return (
+                jsonify(
+                    {
+                        "error": message,
+                        "code": "shared_browser_unavailable",
+                    }
+                ),
+                503,
+            )
+        log.exception("Failed to start automation run")
+        return jsonify({"error": "failed to start automation"}), 500
     except Exception as exc:  # pragma: no cover - runtime failure path
         log.exception("Failed to start automation run")
         return jsonify({"error": "failed to start automation"}), 500

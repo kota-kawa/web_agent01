@@ -81,6 +81,26 @@ function normaliseScreenshot(data) {
   return `data:image/png;base64,${data}`;
 }
 
+function showSharedBrowserError(detailMessage) {
+  clearLiveViewRetry();
+  clearLiveViewWatchdog();
+  disconnectLiveView(true);
+
+  if (liveBrowserContainer) {
+    liveBrowserContainer.classList.remove('is-loading', 'is-ready');
+    liveBrowserContainer.classList.add('has-error');
+  }
+
+  if (liveBrowserUnavailable) {
+    const text =
+      typeof detailMessage === 'string' && detailMessage.trim().length
+        ? detailMessage
+        : 'ライブビューのブラウザに接続できないため実行できません。';
+    liveBrowserUnavailable.textContent = text;
+    liveBrowserUnavailable.removeAttribute('aria-busy');
+  }
+}
+
 function captureLiveViewFrame() {
   if (!state.liveViewLoaded || !liveBrowserSurface) {
     return null;
@@ -721,7 +741,14 @@ function handleCompletion(payload) {
   const finalStatus = status || 'completed';
 
   if (finalStatus === 'failed') {
-    appendMessage('system', `❌ 実行に失敗しました: ${escapeHtml(error || '原因不明のエラー')}`);
+    const failureMessage =
+      typeof error === 'string' && error.trim().length
+        ? error
+        : '原因不明のエラー';
+    appendMessage('system', `❌ 実行に失敗しました: ${escapeHtml(failureMessage)}`);
+    if (failureMessage.includes('ライブビューのブラウザに接続できないため実行できません')) {
+      showSharedBrowserError(failureMessage);
+    }
   } else if (finalStatus === 'cancelled') {
     appendMessage('system', '⏹ 実行をキャンセルしました。');
   } else if (result) {
@@ -768,7 +795,13 @@ async function startSession(command) {
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `server returned ${response.status}`);
+      const error = new Error(data.error || `server returned ${response.status}`);
+      if (data && typeof data.code === 'string') {
+        error.code = data.code;
+      }
+      error.status = response.status;
+      error.details = data;
+      throw error;
     }
 
     const data = await response.json();
@@ -777,7 +810,13 @@ async function startSession(command) {
     pollSession();
   } catch (err) {
     placeholder.remove();
-    appendMessage('system', `❌ 実行開始に失敗しました: ${escapeHtml(err.message || String(err))}`);
+    const message = err && typeof err.message === 'string' ? err.message : String(err);
+    if (err && err.code === 'shared_browser_unavailable') {
+      appendMessage('system', `❌ ${escapeHtml(message)}`);
+      showSharedBrowserError(message);
+    } else {
+      appendMessage('system', `❌ 実行開始に失敗しました: ${escapeHtml(message)}`);
+    }
     setExecuting(false);
   }
 }
