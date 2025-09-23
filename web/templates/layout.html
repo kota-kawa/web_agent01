@@ -57,7 +57,7 @@
           >
             ライブビューを初期化しています...
           </div>
-          <iframe id="live-browser-frame" title="ライブブラウザビュー" loading="lazy"></iframe>
+          <canvas id="live-browser-canvas" title="ライブブラウザビュー"></canvas>
         </div>
       </div>
       <div id="preview-meta" class="preview-meta">
@@ -73,6 +73,34 @@
     window.MAX_STEPS = {{ max_steps | tojson }};
     window.START_URL = {{ start_url | tojson }};
     window.NOVNC_URL = {{ novnc_url | tojson }};
+  </script>
+  <script>
+    window.__NOVNC_READY__ = false;
+    window.__NOVNC_LOAD_FAILED__ = false;
+    window.addEventListener(
+      "error",
+      function (event) {
+        if (
+          event &&
+          typeof event.filename === "string" &&
+          event.filename.includes("@novnc/novnc")
+        ) {
+          window.__NOVNC_LOAD_FAILED__ = true;
+          document.dispatchEvent(
+            new CustomEvent("novnc:error", {
+              detail: event.message || "failed to load noVNC library",
+            })
+          );
+        }
+      },
+      true
+    );
+  </script>
+  <script type="module">
+    import RFB from "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js";
+    window.__NOVNC_RFB__ = RFB;
+    window.__NOVNC_READY__ = true;
+    document.dispatchEvent(new CustomEvent("novnc:ready"));
   </script>
   <script src="/static/app.js"></script>
 </body>

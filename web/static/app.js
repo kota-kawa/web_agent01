@@ -7,8 +7,10 @@ const state = {
   liveViewLoaded: false,
   liveViewTimeoutId: null,
   liveViewListeners: null,
+  liveViewInstance: null,
   liveViewRetryId: null,
   liveViewRetryCount: 0,
+  liveViewAwaitingLibrary: !window.__NOVNC_READY__,
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -21,9 +23,45 @@ const previewPlaceholder = document.getElementById('preview-placeholder');
 const previewStatus = document.getElementById('preview-status');
 const screenshotContainer = document.getElementById('screenshot-container');
 const liveBrowserContainer = document.getElementById('live-browser-container');
-const liveBrowserFrame = document.getElementById('live-browser-frame');
+const liveBrowserCanvas = document.getElementById('live-browser-canvas');
 const liveBrowserUnavailable = document.getElementById('live-browser-unavailable');
 const previewModeButtons = document.querySelectorAll('[data-preview-mode]');
+
+if (!window.__NOVNC_READY__) {
+  document.addEventListener(
+    'novnc:ready',
+    () => {
+      state.liveViewAwaitingLibrary = false;
+      if (state.previewMode === 'live') {
+        initialiseLiveView(true);
+      }
+    },
+    { once: true },
+  );
+} else {
+  state.liveViewAwaitingLibrary = false;
+}
+
+document.addEventListener('novnc:error', (event) => {
+  state.liveViewAwaitingLibrary = false;
+  if (state.previewMode !== 'live') {
+    return;
+  }
+  clearLiveViewRetry();
+  clearLiveViewWatchdog();
+  disconnectLiveView(true);
+  if (liveBrowserContainer) {
+    liveBrowserContainer.classList.remove('is-loading', 'is-ready');
+    liveBrowserContainer.classList.add('has-error');
+  }
+  if (liveBrowserUnavailable) {
+    const detail = event && event.detail ? String(event.detail) : '';
+    liveBrowserUnavailable.textContent = detail
+      ? `ライブビューのライブラリ読み込みに失敗しました（${detail}）。`
+      : 'ライブビューのライブラリ読み込みに失敗しました。';
+    liveBrowserUnavailable.removeAttribute('aria-busy');
+  }
+});
 
 function escapeHtml(value) {
   if (typeof value !== 'string') return '';
@@ -116,7 +154,7 @@ function scheduleLiveViewRetry(reason) {
     const prefix =
       reason === 'timeout'
         ? 'ライブビューの応答がありません。'
-        : 'ライブビューの読み込みに失敗しました。';
+        : 'ライブビューの接続に失敗しました。';
     const attemptLabel = attempt > 1 ? `（${attempt}回目）` : '';
     const seconds = Math.max(4, Math.round(delay / 1000));
     liveBrowserUnavailable.textContent =
@@ -132,34 +170,87 @@ function scheduleLiveViewRetry(reason) {
 }
 
 function removeLiveViewListeners() {
-  if (!state.liveViewListeners || !liveBrowserFrame) {
+  if (!state.liveViewListeners || !state.liveViewInstance) {
     return;
   }
 
-  const { loadHandler, errorHandler } = state.liveViewListeners;
-  if (loadHandler) {
-    liveBrowserFrame.removeEventListener('load', loadHandler);
+  const { connectHandler, disconnectHandler, credentialsHandler } = state.liveViewListeners;
+  const instance = state.liveViewInstance;
+
+  if (connectHandler) {
+    instance.removeEventListener('connect', connectHandler);
   }
-  if (errorHandler) {
-    liveBrowserFrame.removeEventListener('error', errorHandler);
+  if (disconnectHandler) {
+    instance.removeEventListener('disconnect', disconnectHandler);
   }
+  if (credentialsHandler) {
+    instance.removeEventListener('credentialsrequired', credentialsHandler);
+  }
+
   state.liveViewListeners = null;
 }
 
+function disconnectLiveView(manual = false) {
+  clearLiveViewWatchdog();
+  removeLiveViewListeners();
+
+  const instance = state.liveViewInstance;
+  if (instance && typeof instance.disconnect === 'function') {
+    try {
+      instance.disconnect();
+    } catch (err) {
+      // Ignore disconnect errors
+    }
+  }
+
+  state.liveViewInstance = null;
+  state.liveViewInitialised = manual ? false : state.liveViewInitialised;
+  state.liveViewLoaded = false;
+}
+
 function initialiseLiveView(forceReload = false) {
-  if (!liveBrowserContainer || !liveBrowserFrame) {
+  if (!liveBrowserContainer || !liveBrowserCanvas) {
     return;
   }
 
   clearLiveViewRetry();
+  clearLiveViewWatchdog();
+
+  if (window.__NOVNC_LOAD_FAILED__) {
+    disconnectLiveView();
+    state.liveViewInitialised = false;
+    state.liveViewLoaded = false;
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent =
+        'ライブビューのライブラリ読み込みに失敗しました。ページを再読み込みしてください。';
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+    liveBrowserContainer.classList.remove('is-loading', 'is-ready');
+    liveBrowserContainer.classList.add('has-error');
+    return;
+  }
+
+  if (state.liveViewAwaitingLibrary || typeof window.__NOVNC_RFB__ !== 'function') {
+    disconnectLiveView();
+    state.liveViewAwaitingLibrary = true;
+    state.liveViewInitialised = false;
+    state.liveViewLoaded = false;
+    if (liveBrowserContainer) {
+      liveBrowserContainer.classList.remove('has-error', 'is-ready');
+      liveBrowserContainer.classList.add('is-loading');
+    }
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent = 'ライブビューのライブラリを読み込んでいます...';
+      liveBrowserUnavailable.setAttribute('aria-busy', 'true');
+    }
+    return;
+  }
 
   const configuredUrl = typeof window.NOVNC_URL === 'string' ? window.NOVNC_URL.trim() : '';
   if (!configuredUrl) {
-    clearLiveViewWatchdog();
-    removeLiveViewListeners();
+    disconnectLiveView();
     state.liveViewInitialised = false;
     state.liveViewLoaded = false;
-    state.liveViewRetryCount = 0;
     if (liveBrowserUnavailable) {
       liveBrowserUnavailable.textContent = 'ライブビューの URL が設定されていません。';
       liveBrowserUnavailable.removeAttribute('aria-busy');
@@ -169,13 +260,34 @@ function initialiseLiveView(forceReload = false) {
     return;
   }
 
-  let resolvedUrl = configuredUrl;
-  try {
-    // Allow relative URLs by resolving against the current location.
-    resolvedUrl = new URL(configuredUrl, window.location.href).toString();
-  } catch (err) {
-    // Ignore resolution failures so scheme-relative URLs remain usable.
-  }
+  const resolveUrl = (url) => {
+    if (url.startsWith('ws://') || url.startsWith('wss://')) {
+      return url;
+    }
+    if (url.startsWith('//')) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}${url}`;
+    }
+    if (url.startsWith('/')) {
+      const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+      return `${protocol}${window.location.host}${url}`;
+    }
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') {
+        return parsed.toString();
+      }
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${protocol}//${parsed.host}${parsed.pathname}${parsed.search}`;
+      }
+      return parsed.toString();
+    } catch (err) {
+      return url;
+    }
+  };
+
+  const resolvedUrl = resolveUrl(configuredUrl);
 
   if (state.liveViewInitialised && state.liveViewLoaded && !forceReload) {
     return;
@@ -185,9 +297,10 @@ function initialiseLiveView(forceReload = false) {
 
   state.liveViewInitialised = true;
   state.liveViewLoaded = false;
+  state.liveViewAwaitingLibrary = false;
 
-  clearLiveViewWatchdog();
-  removeLiveViewListeners();
+  disconnectLiveView();
+  state.liveViewRetryCount = isRetry ? state.liveViewRetryCount : 0;
 
   liveBrowserContainer.classList.remove('has-error', 'is-ready');
   liveBrowserContainer.classList.add('is-loading');
@@ -198,18 +311,49 @@ function initialiseLiveView(forceReload = false) {
     liveBrowserUnavailable.setAttribute('aria-busy', 'true');
   }
 
-  let urlToLoad = resolvedUrl;
+  let urlToConnect = resolvedUrl;
   if (isRetry) {
-    const separator = resolvedUrl.includes('?') ? '&' : '?';
-    urlToLoad = `${resolvedUrl}${separator}_ts=${Date.now()}`;
-    liveBrowserFrame.src = 'about:blank';
+    try {
+      const parsed = new URL(resolvedUrl);
+      parsed.searchParams.set('_ts', Date.now().toString());
+      urlToConnect = parsed.toString();
+    } catch (err) {
+      const separator = resolvedUrl.includes('?') ? '&' : '?';
+      urlToConnect = `${resolvedUrl}${separator}_ts=${Date.now()}`;
+    }
   }
 
-  const handleLiveLoad = () => {
+  let rfbInstance;
+  try {
+    const RFBConstructor = window.__NOVNC_RFB__;
+    rfbInstance = new RFBConstructor(liveBrowserCanvas, urlToConnect, { shared: true });
+    rfbInstance.viewOnly = true;
+    rfbInstance.scaleViewport = true;
+    rfbInstance.focusOnClick = false;
+    rfbInstance.background = '#0b1120';
+    if ('resizeSession' in rfbInstance) {
+      rfbInstance.resizeSession = true;
+    }
+  } catch (err) {
+    state.liveViewInitialised = false;
+    if (liveBrowserContainer) {
+      liveBrowserContainer.classList.remove('is-loading', 'is-ready');
+      liveBrowserContainer.classList.add('has-error');
+    }
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent = `ライブビューの初期化に失敗しました: ${err.message || err}`;
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+    scheduleLiveViewRetry('error');
+    return;
+  }
+
+  state.liveViewInstance = rfbInstance;
+
+  const handleLiveConnect = () => {
     clearLiveViewWatchdog();
     clearLiveViewRetry();
     state.liveViewRetryCount = 0;
-    removeLiveViewListeners();
     state.liveViewLoaded = true;
     liveBrowserContainer.classList.remove('is-loading', 'has-error');
     liveBrowserContainer.classList.add('is-ready');
@@ -218,24 +362,44 @@ function initialiseLiveView(forceReload = false) {
     }
   };
 
-  const handleLiveError = () => {
+  const handleLiveDisconnect = (event) => {
     clearLiveViewWatchdog();
-    removeLiveViewListeners();
-    state.liveViewInitialised = false;
     state.liveViewLoaded = false;
+    removeLiveViewListeners();
+    state.liveViewInstance = null;
     liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
+    if (liveBrowserUnavailable) {
+      const reason =
+        event && event.detail && event.detail.reason
+          ? String(event.detail.reason)
+          : 'ライブビューの接続が終了しました。';
+      liveBrowserUnavailable.textContent = `${reason} 再接続を試みています...`;
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
     scheduleLiveViewRetry('error');
   };
 
-  liveBrowserFrame.addEventListener('load', handleLiveLoad);
-  liveBrowserFrame.addEventListener('error', handleLiveError);
-  state.liveViewListeners = {
-    loadHandler: handleLiveLoad,
-    errorHandler: handleLiveError,
+  const handleCredentialsRequired = () => {
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent = 'ライブビューの認証情報が必要です。';
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
+    try {
+      rfbInstance.sendCredentials({ password: '' });
+    } catch (err) {
+      // Ignore credential submission errors
+    }
   };
 
-  liveBrowserFrame.src = urlToLoad;
+  rfbInstance.addEventListener('connect', handleLiveConnect);
+  rfbInstance.addEventListener('disconnect', handleLiveDisconnect);
+  rfbInstance.addEventListener('credentialsrequired', handleCredentialsRequired);
+  state.liveViewListeners = {
+    connectHandler: handleLiveConnect,
+    disconnectHandler: handleLiveDisconnect,
+    credentialsHandler: handleCredentialsRequired,
+  };
 
   state.liveViewTimeoutId = window.setTimeout(() => {
     if (state.liveViewLoaded) {
@@ -243,6 +407,12 @@ function initialiseLiveView(forceReload = false) {
       return;
     }
     removeLiveViewListeners();
+    try {
+      rfbInstance.disconnect();
+    } catch (err) {
+      // Ignore disconnect errors during timeout handling
+    }
+    state.liveViewInstance = null;
     state.liveViewInitialised = false;
     liveBrowserContainer.classList.remove('is-loading', 'is-ready');
     liveBrowserContainer.classList.add('has-error');
@@ -268,6 +438,15 @@ function setPreviewMode(mode, options = {}) {
     clearLiveViewWatchdog();
     clearLiveViewRetry();
     state.liveViewRetryCount = 0;
+    disconnectLiveView(true);
+    if (liveBrowserContainer) {
+      liveBrowserContainer.classList.remove('is-loading', 'is-ready', 'has-error');
+    }
+    if (liveBrowserUnavailable) {
+      liveBrowserUnavailable.textContent =
+        'ライブビューは停止中です。ライブビューに切り替えると再接続されます。';
+      liveBrowserUnavailable.removeAttribute('aria-busy');
+    }
   }
 }
 
