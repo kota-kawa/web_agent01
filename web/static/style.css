@@ -279,7 +279,7 @@ button:disabled {
 }
 
 #live-browser-container.is-ready #live-browser-canvas {
-  display: block;
+  display: flex;
 }
 
 #live-browser-container.is-ready #live-browser-unavailable {
@@ -292,14 +292,27 @@ button:disabled {
 
 #live-browser-canvas {
   display: none;
+  position: relative;
   flex: 1 1 auto;
   width: 100%;
   height: 100%;
-  border: none;
   border-radius: 12px;
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.45);
   background: #0b1120;
+  overflow: hidden;
   cursor: default;
+  align-items: stretch;
+  justify-content: center;
+}
+
+#live-browser-canvas > div {
+  width: 100%;
+  height: 100%;
+}
+
+#live-browser-canvas canvas {
+  display: block;
+  border-radius: inherit;
 }
 
 #preview-image {
