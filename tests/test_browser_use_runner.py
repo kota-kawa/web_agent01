@@ -76,6 +76,7 @@ def test_resolve_cdp_endpoint_returns_none_when_unreachable(
 
     result = browser_use_runner._resolve_cdp_endpoint(
         candidates=("http://unreachable:9222",),
+        delay=0.0,
     )
 
     assert result is None
