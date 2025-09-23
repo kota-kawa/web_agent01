@@ -27,8 +27,11 @@ URL="${START_URL:-https://www.yahoo.co.jp/}"
 
 if ! pgrep -f "--remote-debugging-port=9222" >/dev/null; then
   echo "[chromium] launching chromium..."
+  # ``--remote-allow-origins=*`` is required so other containers (for example the
+  # web UI that drives the LLM) can attach to the CDP endpoint exposed on 9222.
   chromium --no-sandbox --disable-dev-shm-usage \
            --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 \
+           --remote-allow-origins="*" \
            --window-size=1280,800 "$URL" &
 fi
 
