@@ -22,6 +22,7 @@ from browser_use.llm.groq.chat import ChatGroq
 
 from agent.browser.patches import apply_browser_use_patches
 from agent.utils.history import append_history_entry
+from agent.utils.shared_browser import env_flag, format_shared_browser_error
 
 log = logging.getLogger(__name__)
 apply_browser_use_patches(log)
@@ -66,37 +67,6 @@ def _candidate_cdp_endpoints() -> list[str]:
 
     return candidates
 
-
-def _env_flag(name: str, *, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-
-    trimmed = value.strip().lower()
-    if not trimmed:
-        return default
-
-    if trimmed in {"1", "true", "yes", "on"}:
-        return True
-    if trimmed in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _format_shared_browser_error(reason: str, *, candidates: Iterable[str]) -> str:
-    candidate_list = [candidate for candidate in candidates if candidate]
-    candidate_hint = (
-        "、".join(candidate_list) if candidate_list else "http://vnc:9222 (デフォルト)"
-    )
-    guidance = (
-        "VNC サービス (例: http://vnc:9222) が起動し `/json/version` にアクセスできるか確認してください。"
-        "Docker Compose を利用している場合は `docker compose ps vnc` で稼働状況を確認し、必要に応じて `docker compose up -d vnc` で再起動してください。"
-        "接続先を変更する場合は BROWSER_USE_CDP_URL / VNC_CDP_URL / CDP_URL を設定してください。"
-    )
-    return (
-        "ライブビューのブラウザに接続できないため実行できません。"
-        f"{reason}。試行した CDP エンドポイント: {candidate_hint}。{guidance}"
-    )
 
 
 def _json_version_url(base: str) -> str:
@@ -473,7 +443,7 @@ class BrowserUseSession:
             endpoint = _resolve_cdp_endpoint(candidates=candidates)
         except TypeError:
             endpoint = _resolve_cdp_endpoint()
-        require_shared_browser = _env_flag("REQUIRE_SHARED_BROWSER", default=False)
+        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=True)
         remote_error: Exception | None = None
         self._set_shared_browser_state("unknown", None)
 
@@ -483,7 +453,7 @@ class BrowserUseSession:
             except Exception as exc:  # pragma: no cover - defensive
                 if require_shared_browser:
                     detail = f"{type(exc).__name__}: {exc}"
-                    message = _format_shared_browser_error(
+                    message = format_shared_browser_error(
                         f"共有ブラウザ {endpoint} への接続に失敗しました（{detail}）",
                         candidates=candidates or [endpoint],
                     )
@@ -521,7 +491,7 @@ class BrowserUseSession:
                 reason = "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
                 if approx_wait:
                     reason += f"（待機時間: 約{approx_wait:.1f}秒）"
-                message = _format_shared_browser_error(
+                message = format_shared_browser_error(
                     reason,
                     candidates=candidates,
                 )
