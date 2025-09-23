@@ -22,7 +22,11 @@ from browser_use.llm.groq.chat import ChatGroq
 
 from agent.browser.patches import apply_browser_use_patches
 from agent.utils.history import append_history_entry
-from agent.utils.shared_browser import env_flag, format_shared_browser_error
+from agent.utils.shared_browser import (
+    env_flag,
+    format_shared_browser_error,
+    normalise_cdp_websocket,
+)
 
 log = logging.getLogger(__name__)
 apply_browser_use_patches(log)
@@ -120,28 +124,40 @@ def _json_version_url(base: str) -> str:
     return urlunsplit((scheme, netloc, final_path, "", ""))
 
 
-def _probe_cdp_endpoint(endpoint: str, timeout: float = _CDP_PROBE_TIMEOUT) -> bool:
+def _probe_cdp_endpoint(
+    endpoint: str, timeout: float = _CDP_PROBE_TIMEOUT
+) -> tuple[bool, str | None]:
     if not endpoint:
-        return False
+        return False, None
 
     url = _json_version_url(endpoint)
     if not url:
-        return False
+        return False, None
     try:
         response = requests.get(url, timeout=timeout)
     except Exception as exc:
         log.debug("CDP endpoint probe failed for %s: %s", endpoint, exc)
-        return False
+        return False, None
 
-    if response.status_code == 200:
-        return True
+    if response.status_code != 200:
+        log.debug(
+            "CDP endpoint probe for %s returned unexpected status %s",
+            endpoint,
+            response.status_code,
+        )
+        return False, None
 
-    log.debug(
-        "CDP endpoint probe for %s returned unexpected status %s",
-        endpoint,
-        response.status_code,
-    )
-    return False
+    websocket_url: str | None = None
+    try:
+        payload = response.json()
+    except ValueError:
+        log.debug("CDP version endpoint %s returned non-JSON response", url)
+    else:
+        raw_ws = payload.get("webSocketDebuggerUrl")
+        if isinstance(raw_ws, str):
+            websocket_url = normalise_cdp_websocket(endpoint, raw_ws)
+
+    return True, websocket_url or endpoint
 
 
 def _resolve_cdp_endpoint(
@@ -170,15 +186,18 @@ def _resolve_cdp_endpoint(
                 continue
             if first_viable is None:
                 first_viable = normalised
-            if _probe_cdp_endpoint(normalised, timeout=request_timeout):
+            success, resolved_endpoint = _probe_cdp_endpoint(
+                normalised, timeout=request_timeout
+            )
+            if success:
                 if attempt > 1:
                     log.info(
                         "CDP endpoint %s became reachable on retry %d/%d",
-                        normalised,
+                        resolved_endpoint or normalised,
                         attempt,
                         max_attempts,
                     )
-                return normalised
+                return resolved_endpoint or normalised
 
         if attempt < max_attempts:
             wait_time = delay if delay > 0 else 0.0

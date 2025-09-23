@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from typing import Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 
 def env_flag(name: str, *, default: bool = False) -> bool:
@@ -44,3 +45,68 @@ def format_shared_browser_error(reason: str, *, candidates: Iterable[str]) -> st
         "ライブビューのブラウザに接続できないため実行できません。"
         f"{reason}。試行した CDP エンドポイント: {candidate_hint}。{guidance}"
     )
+
+
+_LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _candidate_host(candidate: str) -> str:
+    """Return the host:port portion of *candidate* if available."""
+
+    candidate = (candidate or "").strip()
+    if not candidate:
+        return ""
+
+    parsed = urlsplit(candidate if "://" in candidate else f"http://{candidate}")
+    if parsed.netloc:
+        return parsed.netloc
+    return parsed.path or ""
+
+
+def normalise_cdp_websocket(candidate: str, websocket_url: str) -> str:
+    """Return a websocket endpoint reachable from the current environment.
+
+    Chromium typically reports DevTools websocket URLs that point at
+    ``127.0.0.1`` even when the browser is exposed on a different host.  When
+    automation runs in another container this loopback address becomes
+    unreachable.  This helper rewrites such URLs so the host portion matches
+    *candidate*, preserving the original port and path components.
+    """
+
+    base = (candidate or "").strip()
+    websocket_url = (websocket_url or "").strip()
+    if not websocket_url:
+        return base
+
+    try:
+        parsed = urlsplit(websocket_url)
+    except ValueError:
+        return base or websocket_url
+
+    scheme = parsed.scheme.lower()
+    if not scheme:
+        scheme = "ws"
+    elif scheme == "http":
+        scheme = "ws"
+    elif scheme == "https":
+        scheme = "wss"
+    elif scheme not in {"ws", "wss"}:
+        return base or websocket_url
+
+    host = parsed.netloc
+    hostname = parsed.hostname or ""
+    if not host or hostname in _LOCAL_HOSTNAMES:
+        replacement = _candidate_host(base)
+        if replacement:
+            host = replacement
+
+    if not host:
+        host = parsed.netloc
+
+    if not host:
+        return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)) if parsed.netloc else (base or websocket_url)
+
+    path = parsed.path or ""
+    query = parsed.query or ""
+    fragment = parsed.fragment or ""
+    return urlunsplit((scheme, host, path, query, fragment))
