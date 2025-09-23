@@ -23,7 +23,6 @@ from browser_use.llm.groq.chat import ChatGroq
 from agent.browser.patches import apply_browser_use_patches
 from agent.utils.history import append_history_entry
 from agent.utils.shared_browser import (
-    env_flag,
     format_shared_browser_error,
     normalise_cdp_websocket,
 )
@@ -342,14 +341,6 @@ class BrowserUseSession:
                 self.warnings.append(trimmed)
                 self.updated_at = _now()
 
-    def _record_shared_browser_fallback(self, message: str | None = None) -> None:
-        fallback_message = (
-            message
-            or "ライブビューのブラウザに接続できなかったため、ローカルのヘッドレスブラウザで実行します。ライブビューは利用できません。"
-        )
-        self._set_shared_browser_state("local", None)
-        self._add_warning(fallback_message)
-
     async def request_cancel(self) -> None:
         task = self._task
         if task and not task.done():
@@ -462,38 +453,24 @@ class BrowserUseSession:
             endpoint = _resolve_cdp_endpoint(candidates=candidates)
         except TypeError:
             endpoint = _resolve_cdp_endpoint()
-        require_shared_browser = env_flag("REQUIRE_SHARED_BROWSER", default=False)
-        remote_error: Exception | None = None
         self._set_shared_browser_state("unknown", None)
 
         if endpoint:
             try:
                 session = BrowserSession(cdp_url=endpoint, is_local=False)
             except Exception as exc:  # pragma: no cover - defensive
-                if require_shared_browser:
-                    detail = f"{type(exc).__name__}: {exc}"
-                    message = format_shared_browser_error(
-                        f"共有ブラウザ {endpoint} への接続に失敗しました（{detail}）",
-                        candidates=candidates or [endpoint],
-                    )
-                    log.error(
-                        "Session %s: %s",
-                        self.session_id,
-                        message,
-                        exc_info=True,
-                    )
-                    raise RuntimeError(message) from exc
-                remote_error = exc
-                log.warning(
-                    "Session %s: failed to attach to shared browser at %s: %s; "
-                    "falling back to local headless browser",
+                detail = f"{type(exc).__name__}: {exc}"
+                message = format_shared_browser_error(
+                    f"共有ブラウザ {endpoint} への接続に失敗しました（{detail}）",
+                    candidates=candidates or [endpoint],
+                )
+                log.error(
+                    "Session %s: %s",
                     self.session_id,
-                    endpoint,
-                    exc,
+                    message,
+                    exc_info=True,
                 )
-                self._record_shared_browser_fallback(
-                    f"共有ブラウザ {endpoint} への接続に失敗しました（{type(exc).__name__}: {exc}）。"
-                )
+                raise RuntimeError(message) from exc
             else:
                 log.info(
                     "Session %s: attaching to shared browser at %s",
@@ -502,52 +479,19 @@ class BrowserUseSession:
                 )
                 self._set_shared_browser_state("remote", endpoint)
                 return session
-        else:
-            approx_wait = max(
-                0.0, (_CDP_PROBE_RETRIES - 1) * max(_CDP_PROBE_DELAY, 0.0)
-            )
-            if require_shared_browser:
-                reason = "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
-                if approx_wait:
-                    reason += f"（待機時間: 約{approx_wait:.1f}秒）"
-                message = format_shared_browser_error(
-                    reason,
-                    candidates=candidates,
-                )
-                log.error("Session %s: %s", self.session_id, message)
-                raise RuntimeError(message)
-            log.warning(
-                "Session %s: remote browser is not reachable after waiting up to %.1fs; "
-                "falling back to local headless browser session",
-                self.session_id,
-                approx_wait,
-            )
-            self._record_shared_browser_fallback(
-                "ライブビューのブラウザに接続できなかったため、ローカルのヘッドレスブラウザで実行します。"
-            )
 
-        try:
-            session = BrowserSession(is_local=True)
-        except Exception as exc:  # pragma: no cover - defensive
-            if endpoint:
-                remote_details = (
-                    remote_error if remote_error is not None else "unknown error"
-                )
-                raise RuntimeError(
-                    "Failed to connect to remote browser at "
-                    f"{endpoint} ({remote_details}) and local fallback session failed to start: {exc}"
-                ) from exc
-            raise RuntimeError(
-                "Remote VNC browser is not reachable and local fallback session failed to start: "
-                f"{exc}"
-            ) from exc
-
-        log.info(
-            "Session %s: started local headless browser session",
-            self.session_id,
+        approx_wait = max(
+            0.0, (_CDP_PROBE_RETRIES - 1) * max(_CDP_PROBE_DELAY, 0.0)
         )
-        self._set_shared_browser_state("local", None)
-        return session
+        reason = "共有ブラウザの CDP エンドポイントが見つからないか応答しませんでした"
+        if approx_wait:
+            reason += f"（待機時間: 約{approx_wait:.1f}秒）"
+        message = format_shared_browser_error(
+            reason,
+            candidates=candidates,
+        )
+        log.error("Session %s: %s", self.session_id, message)
+        raise RuntimeError(message)
 
     def _set_status(self, status: str, error: Optional[str] = None) -> None:
         with self._lock:
