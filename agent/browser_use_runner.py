@@ -7,8 +7,9 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -391,6 +392,7 @@ class BrowserUseSession:
     shared_browser_mode: str = "unknown"
     shared_browser_endpoint: str | None = None
     warnings: list[str] = field(default_factory=list)
+    extra_commands: list[str] = field(default_factory=list)
 
     _task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _agent: Agent | None = field(default=None, init=False, repr=False)
@@ -400,6 +402,13 @@ class BrowserUseSession:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _history_recorded: bool = field(default=False, init=False, repr=False)
     _history_extension: str | None = field(default=None, init=False, repr=False)
+    _instruction_delivery_future: Future | None = field(
+        default=None, init=False, repr=False
+    )
+    _delivered_instruction_count: int = field(default=0, init=False, repr=False)
+    _agent_ready: asyncio.Event = field(
+        default_factory=asyncio.Event, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         context = (self.history_context or "").strip()
@@ -414,6 +423,108 @@ class BrowserUseSession:
             "過去の操作で入力した内容や遷移したページを再利用し、必要に応じて現在のページからそのまま作業を再開します。",
         ]
         self._history_extension = "\n".join(part for part in instructions if part)
+
+    def _combined_command(self) -> str:
+        with self._lock:
+            return self._combined_command_locked()
+
+    def _combined_command_locked(self) -> str:
+        base = (self.command or "").strip()
+        extras = list(self.extra_commands)
+
+        if not extras:
+            return base
+
+        parts: list[str] = []
+        if base:
+            parts.append(base)
+
+        for index, item in enumerate(extras, start=1):
+            trimmed = item.strip()
+            if not trimmed:
+                continue
+            parts.append(f"[追加指示 {index}] {trimmed}")
+
+        return "\n\n".join(parts) if parts else ""
+
+    def add_instruction(self, instruction: str) -> Literal["accepted", "not_running", "invalid"]:
+        text = (instruction or "").strip()
+        if not text:
+            return "invalid"
+
+        with self._lock:
+            if self.status in {"completed", "failed", "cancelled"}:
+                return "not_running"
+            self.extra_commands.append(text)
+            self.updated_at = _now()
+
+        log.info("Session %s: queued additional instruction", self.session_id)
+        return "accepted"
+
+    def ensure_instruction_delivery(self, loop: asyncio.AbstractEventLoop) -> None:
+        with self._lock:
+            future = self._instruction_delivery_future
+            if future and not future.done():
+                return
+
+        coroutine = self._deliver_instructions()
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+
+        with self._lock:
+            self._instruction_delivery_future = future
+
+    async def _deliver_instructions(self) -> None:
+        try:
+            # Wait until the agent is ready or the session terminates.
+            while self._agent is None and self.status not in {"failed", "cancelled"}:
+                if self._agent_ready.is_set():
+                    break
+                await asyncio.sleep(0.05)
+
+            await asyncio.sleep(0)
+
+            while True:
+                with self._lock:
+                    if self.status in {"completed", "failed", "cancelled"}:
+                        self._instruction_delivery_future = None
+                        return
+
+                    if self._delivered_instruction_count >= len(self.extra_commands):
+                        self._instruction_delivery_future = None
+                        return
+
+                    index = self._delivered_instruction_count
+                    instruction = self.extra_commands[index]
+                    agent = self._agent
+                    self._delivered_instruction_count += 1
+
+                if agent is None:
+                    # Agent still not ready; wait briefly and retry without losing progress.
+                    await asyncio.sleep(0.05)
+                    with self._lock:
+                        self._delivered_instruction_count = index
+                    continue
+
+                try:
+                    agent.add_new_task(instruction)
+                except Exception as exc:  # pragma: no cover - defensive safeguard
+                    log.error(
+                        "Session %s: failed to apply additional instruction: %s",
+                        self.session_id,
+                        exc,
+                    )
+                    self._add_warning(
+                        f"追加の指示を適用できませんでした（{type(exc).__name__}: {exc}）"
+                    )
+                    with self._lock:
+                        self._delivered_instruction_count = index
+                        self._instruction_delivery_future = None
+                    return
+        finally:
+            with self._lock:
+                if self._instruction_delivery_future and self._instruction_delivery_future.done():
+                    # Clear reference so new instructions trigger a fresh task.
+                    self._instruction_delivery_future = None
 
     async def prepare(self) -> None:
         if self._prepared_browser_session is not None:
@@ -433,6 +544,7 @@ class BrowserUseSession:
             log.error("Failed to create LLM for session %s: %s", self.session_id, exc)
             self._set_status("failed", str(exc))
             self._record_history()
+            self._agent_ready.set()
             return
 
         try:
@@ -452,6 +564,7 @@ class BrowserUseSession:
                 max_actions_per_step=10,
                 extend_system_message=self._history_extension,
             )
+            self._agent_ready.set()
             history: AgentHistoryList = await self._agent.run(max_steps=self.max_steps)
             self._finalise_result(history)
             self._set_status("completed")
@@ -468,6 +581,7 @@ class BrowserUseSession:
             except Exception as close_exc:  # pragma: no cover - defensive
                 log.debug("Error closing agent for session %s: %s", self.session_id, close_exc)
             self._record_history()
+            self._agent_ready.set()
 
     def _set_shared_browser_state(self, mode: str, endpoint: str | None) -> None:
         normalised = mode if mode in {"local", "remote"} else "unknown"
@@ -782,8 +896,9 @@ class BrowserUseSession:
             }
             final_url = self._final_url_locked(payload)
             self._history_recorded = True
+        combined_command = self._combined_command()
         try:
-            append_history_entry(self.command, payload, final_url)
+            append_history_entry(combined_command, payload, final_url)
         except Exception as exc:  # pragma: no cover - IO failure path
             log.error("Failed to persist history for session %s: %s", self.session_id, exc)
 
@@ -804,6 +919,7 @@ class BrowserUseSession:
             return {
                 "session_id": self.session_id,
                 "command": self.command,
+                "full_command": self._combined_command_locked(),
                 "model": self.model_name,
                 "status": self.status,
                 "error": self.error,
@@ -813,6 +929,7 @@ class BrowserUseSession:
                 "updated_at": self.updated_at,
                 "complete": self.status == "completed",
                 "warnings": copy.deepcopy(self.warnings),
+                "additional_instructions": copy.deepcopy(self.extra_commands),
                 "shared_browser_mode": self.shared_browser_mode,
                 "shared_browser_endpoint": self.shared_browser_endpoint,
             }
@@ -864,6 +981,20 @@ class BrowserUseManager:
         if not session:
             return None
         return session.snapshot()
+
+    def add_instruction(
+        self, session_id: str, instruction: str
+    ) -> Literal["accepted", "not_found", "not_running", "invalid"]:
+        session = self._sessions.get(session_id)
+        if not session:
+            return "not_found"
+
+        outcome = session.add_instruction(instruction)
+        if outcome != "accepted":
+            return outcome
+
+        session.ensure_instruction_delivery(self._loop)
+        return "accepted"
 
     def cancel_session(self, session_id: str) -> bool:
         session = self._sessions.get(session_id)
@@ -1006,6 +1137,29 @@ class RemoteBrowserUseManager:
 
         if response.status_code == 404:
             return None
+
+        message, _ = self._error_details(response)
+        raise RuntimeError(message)
+
+    def add_instruction(
+        self, session_id: str, instruction: str
+    ) -> Literal["accepted", "not_found", "not_running", "invalid"]:
+        payload = {"instruction": instruction}
+        response = self._request(
+            "post",
+            f"/session/{session_id}/instruction",
+            json_payload=payload,
+            timeout=15.0,
+        )
+
+        if response.status_code == 200:
+            return "accepted"
+        if response.status_code == 404:
+            return "not_found"
+        if response.status_code == 409:
+            return "not_running"
+        if response.status_code == 400:
+            return "invalid"
 
         message, _ = self._error_details(response)
         raise RuntimeError(message)

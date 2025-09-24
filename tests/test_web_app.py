@@ -1,5 +1,7 @@
 import pytest
 
+import pytest
+
 from web.app import app as flask_app
 from web.app import _compute_novnc_url, _normalise_novnc_url, _normalise_novnc_ws_url
 
@@ -66,3 +68,71 @@ def test_compute_novnc_url_prefers_configured_value(monkeypatch: pytest.MonkeyPa
         url = _compute_novnc_url()
 
     assert url == "wss://proxy.example.com/no-vnc/websockify"
+
+
+def test_add_instruction_endpoint_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = flask_app.test_client()
+
+    captured: dict[str, str] = {}
+
+    class DummyManager:
+        def add_instruction(self, session_id: str, instruction: str) -> str:
+            captured["session_id"] = session_id
+            captured["instruction"] = instruction
+            return "accepted"
+
+    monkeypatch.setattr("web.app.get_browser_use_manager", lambda: DummyManager())
+
+    response = client.post(
+        "/session/demo/instruction",
+        json={"instruction": "次の作業を続けて"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload == {"status": "accepted"}
+    assert captured == {"session_id": "demo", "instruction": "次の作業を続けて"}
+
+
+def test_add_instruction_endpoint_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = flask_app.test_client()
+
+    class DummyManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+            self.responses = ["not_found", "not_running", "invalid"]
+
+        def add_instruction(self, session_id: str, instruction: str) -> str:
+            self.calls.append((session_id, instruction))
+            return self.responses.pop(0)
+
+    manager = DummyManager()
+    monkeypatch.setattr("web.app.get_browser_use_manager", lambda: manager)
+
+    not_found = client.post(
+        "/session/missing/instruction", json={"instruction": "A"}
+    )
+    assert not_found.status_code == 404
+
+    conflict = client.post(
+        "/session/missing/instruction", json={"instruction": "B"}
+    )
+    assert conflict.status_code == 409
+    assert conflict.get_json()["status"] == "not_running"
+
+    invalid = client.post(
+        "/session/missing/instruction", json={"instruction": "C"}
+    )
+    assert invalid.status_code == 400
+    assert manager.calls == [
+        ("missing", "A"),
+        ("missing", "B"),
+        ("missing", "C"),
+    ]
+
+
+def test_add_instruction_endpoint_requires_text() -> None:
+    client = flask_app.test_client()
+
+    response = client.post("/session/demo/instruction", json={})
+    assert response.status_code == 400

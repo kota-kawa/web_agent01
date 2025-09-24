@@ -1,5 +1,9 @@
-import pytest
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
+
+import pytest
 
 from browser_use.browser.views import BrowserStateSummary, TabInfo
 from browser_use.tools.service import Tools
@@ -304,6 +308,9 @@ def test_snapshot_includes_warnings_and_shared_browser_data() -> None:
     data = session.snapshot()
 
     assert data["warnings"] == ["notice"]
+    assert data["command"] == "cmd"
+    assert data["full_command"] == "cmd"
+    assert data["additional_instructions"] == []
     assert data["shared_browser_mode"] == "local"
     assert data["shared_browser_endpoint"] is None
 
@@ -318,6 +325,90 @@ def test_history_context_creates_extension() -> None:
 
     assert session._history_extension is not None
     assert "これまでの会話履歴" in session._history_extension
+
+
+def test_add_instruction_requires_running_session() -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+    session.status = "completed"
+
+    assert session.add_instruction("追加入力") == "not_running"
+    assert session.extra_commands == []
+
+
+def test_add_instruction_rejects_empty_text() -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+    session.status = "running"
+
+    assert session.add_instruction("   ") == "invalid"
+    assert session.extra_commands == []
+
+
+def test_record_history_includes_additional_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="最初の指示", model_name="model", max_steps=1)
+    session.status = "running"
+    assert session.add_instruction("後続の作業を続けて") == "accepted"
+    session.status = "completed"
+
+    captured: dict[str, object] = {}
+
+    def fake_append(user, bot, url=None):  # type: ignore[override]
+        captured["user"] = user
+        captured["bot"] = bot
+        captured["url"] = url
+
+    monkeypatch.setattr(browser_use_runner, "append_history_entry", fake_append)
+
+    session._record_history()
+
+    user_text = captured.get("user")
+    assert isinstance(user_text, str)
+    assert "最初の指示" in user_text
+    assert "[追加指示 1] 後続の作業を続けて" in user_text
+
+
+def test_add_instruction_triggers_delivery() -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+    session.status = "running"
+    received: list[str] = []
+
+    class DummyAgent:
+        def add_new_task(self, text: str) -> None:
+            received.append(text)
+
+    session._agent = DummyAgent()
+    session._agent_ready.set()
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    try:
+        assert session.add_instruction("ブラウザの状態をまとめて") == "accepted"
+        session.ensure_instruction_delivery(loop)
+
+        deadline = time.time() + 1.0
+        future = None
+        while time.time() < deadline:
+            with session._lock:
+                future = session._instruction_delivery_future
+            if future is None:
+                break
+            if future.done():
+                break
+            time.sleep(0.01)
+
+        if future is not None and not future.done():
+            future.result(timeout=1)
+
+        assert received == ["ブラウザの状態をまとめて"]
+        with session._lock:
+            assert session._delivered_instruction_count == 1
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1)
+        loop.close()
 
 
 def test_create_browser_session_raises_when_shared_browser_unavailable(
@@ -589,6 +680,55 @@ def test_create_browser_session_requires_shared_browser_when_remote_fails(
     assert session.warnings == []
 
 
+def test_browser_use_manager_add_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.BrowserUseManager()
+    try:
+        session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+        manager._sessions[session.session_id] = session
+
+        recorded: dict[str, object] = {}
+
+        def fake_add(text: str) -> str:
+            recorded["instruction"] = text
+            return "accepted"
+
+        def fake_schedule(loop) -> None:  # type: ignore[override]
+            recorded["loop"] = loop
+
+        monkeypatch.setattr(session, "add_instruction", fake_add)
+        monkeypatch.setattr(session, "ensure_instruction_delivery", fake_schedule)
+
+        result = manager.add_instruction(session.session_id, "資料を確認して")
+        assert result == "accepted"
+        assert recorded["instruction"] == "資料を確認して"
+        assert recorded["loop"] is manager._loop
+    finally:
+        manager.shutdown()
+
+
+def test_browser_use_manager_add_instruction_respects_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.BrowserUseManager()
+    try:
+        session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+        manager._sessions[session.session_id] = session
+
+        monkeypatch.setattr(session, "add_instruction", lambda _: "invalid")
+
+        called = {"delivery": False}
+
+        def fake_schedule(loop) -> None:  # type: ignore[override]
+            called["delivery"] = True
+
+        monkeypatch.setattr(session, "ensure_instruction_delivery", fake_schedule)
+
+        result = manager.add_instruction(session.session_id, "まとめて")
+        assert result == "invalid"
+        assert called["delivery"] is False
+        assert manager.add_instruction("missing", "test") == "not_found"
+    finally:
+        manager.shutdown()
+
+
 def test_get_browser_use_manager_remote(monkeypatch: pytest.MonkeyPatch) -> None:
     dummy_instance = object()
 
@@ -714,6 +854,45 @@ def test_remote_manager_get_status(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(manager, "_request", lambda *_, **__: _Missing())
     assert manager.get_status("abc") is None
+
+
+def test_remote_manager_add_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    class _Ok:
+        status_code = 200
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Ok())
+    assert manager.add_instruction("abc", "追加入力") == "accepted"
+
+    class _Missing:
+        status_code = 404
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Missing())
+    assert manager.add_instruction("abc", "追加入力") == "not_found"
+
+    class _Conflict:
+        status_code = 409
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Conflict())
+    assert manager.add_instruction("abc", "追加入力") == "not_running"
+
+    class _BadRequest:
+        status_code = 400
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _BadRequest())
+    assert manager.add_instruction("abc", "追加入力") == "invalid"
+
+    class _Error:
+        status_code = 500
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"error": "boom"}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Error())
+    with pytest.raises(RuntimeError):
+        manager.add_instruction("abc", "追加入力")
 
 
 def test_remote_manager_cancel_session(monkeypatch: pytest.MonkeyPatch) -> None:
