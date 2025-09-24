@@ -21,6 +21,7 @@ from browser_use.llm.google.chat import ChatGoogle
 from browser_use.llm.groq.chat import ChatGroq
 
 from agent.browser.patches import apply_browser_use_patches
+from agent.browser.vnc import get_vnc_api_base
 from agent.utils.history import append_history_entry
 from agent.utils.shared_browser import (
     format_shared_browser_error,
@@ -39,6 +40,27 @@ _CDP_DEFAULT_ENDPOINTS = (
 _CDP_PROBE_TIMEOUT = 3.0
 _CDP_PROBE_RETRIES = 25
 _CDP_PROBE_DELAY = 2.0
+_CDP_WARMUP_TIMEOUT = max(
+    5.0,
+    float(os.getenv("BROWSER_USE_CDP_WARMUP_TIMEOUT", "12")),
+)
+
+
+def _merge_candidates(*groups: Iterable[str | None]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for group in groups:
+        if not group:
+            continue
+        for candidate in group:
+            normalised = _normalise_cdp_candidate(candidate)
+            if not normalised or normalised in seen:
+                continue
+            merged.append(normalised)
+            seen.add(normalised)
+
+    return merged
 
 
 def _normalise_cdp_candidate(value: str | None) -> str:
@@ -69,6 +91,92 @@ def _candidate_cdp_endpoints() -> list[str]:
             seen.add(normalised)
 
     return candidates
+
+
+def _warm_shared_browser(
+    candidates: Iterable[str],
+) -> tuple[list[str], str | None]:
+    """Request the automation server to prepare the shared browser."""
+
+    candidate_list = _merge_candidates(candidates)
+    base_url = get_vnc_api_base()
+
+    connect_timeout = min(6.0, _CDP_WARMUP_TIMEOUT)
+    request_timeout = (connect_timeout, _CDP_WARMUP_TIMEOUT)
+
+    try:
+        response = requests.post(
+            f"{base_url}/shared-browser/ensure",
+            json={"candidates": candidate_list},
+            timeout=request_timeout,
+        )
+    except Exception as exc:  # pragma: no cover - network failure path
+        log.debug("Shared browser warmup request to %s failed: %s", base_url, exc)
+        return [], None
+
+    if response.status_code != 200:
+        log.warning(
+            "Shared browser warmup request to %s returned status %s",
+            base_url,
+            response.status_code,
+        )
+        return [], None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        log.warning(
+            "Shared browser warmup response from %s was not valid JSON", base_url
+        )
+        return [], None
+
+    reported_candidates: list[str] = []
+    websocket: str | None = None
+
+    raw_ws = None
+    for key in ("public_websocket", "websocket", "active_websocket"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            raw_ws = value.strip()
+            break
+
+    if raw_ws:
+        websocket = raw_ws
+
+    for key in ("public_endpoint", "active_endpoint"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            reported_candidates.append(value)
+
+    extra = payload.get("candidates")
+    if isinstance(extra, list):
+        for item in extra:
+            if isinstance(item, str):
+                reported_candidates.append(item)
+
+    merged_candidates = _merge_candidates(
+        [websocket] if websocket else [],
+        reported_candidates,
+        candidate_list,
+    )
+
+    status = payload.get("status")
+    ready = payload.get("cdp_ready")
+    if status:
+        log.info(
+            "Shared browser warmup status from %s: %s (cdp_ready=%s)",
+            base_url,
+            status,
+            ready,
+        )
+    else:
+        log.debug(
+            "Shared browser warmup from %s returned candidates: %s",
+            base_url,
+            merged_candidates,
+        )
+
+    return merged_candidates, websocket
 
 
 
@@ -467,11 +575,30 @@ class BrowserUseSession:
         raise ValueError(f"Unsupported model '{requested}'")
 
     def _create_browser_session(self) -> BrowserSession:
-        candidates = _candidate_cdp_endpoints()
+        candidates = list(_candidate_cdp_endpoints())
         try:
             endpoint = _resolve_cdp_endpoint(candidates=candidates)
         except TypeError:
             endpoint = _resolve_cdp_endpoint()
+
+        warm_candidates: list[str] = []
+        warm_websocket: str | None = None
+
+        if not endpoint:
+            warm_candidates, warm_websocket = _warm_shared_browser(candidates)
+            candidates = _merge_candidates(
+                [warm_websocket] if warm_websocket else [],
+                warm_candidates,
+                candidates,
+            )
+            if warm_websocket:
+                resolved_ws = _normalise_cdp_candidate(warm_websocket)
+                endpoint = resolved_ws or warm_websocket
+            if not endpoint:
+                endpoint = _resolve_cdp_endpoint(candidates=candidates)
+        else:
+            candidates = _merge_candidates([endpoint], candidates)
+
         self._set_shared_browser_state("unknown", None)
 
         if endpoint:
