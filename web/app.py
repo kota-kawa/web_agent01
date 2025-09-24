@@ -10,7 +10,7 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from agent.browser_use_runner import get_browser_use_manager
 from agent.utils import history as history_utils
-from agent.utils.history import load_hist, save_hist
+from agent.utils.history import load_hist, save_hist, format_history_for_prompt
 from vnc.dependency_check import ensure_component_dependencies
 
 app = Flask(__name__)
@@ -234,9 +234,16 @@ def execute():
         if max_steps <= 0:
             return jsonify({"error": "max_steps must be positive"}), 400
 
+    history_snapshot = load_hist()
+    conversation_context = (format_history_for_prompt(history_snapshot) or "").strip()
     manager = get_browser_use_manager()
     try:
-        session_id = manager.start_session(command, model=model, max_steps=max_steps)
+        session_id = manager.start_session(
+            command,
+            model=model,
+            max_steps=max_steps,
+            conversation_context=conversation_context or None,
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:

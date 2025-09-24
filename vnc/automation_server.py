@@ -16,6 +16,7 @@ from flask import Flask, Response, jsonify, request
 from playwright.async_api import Error as PwError, async_playwright
 
 from agent.browser_use_runner import BrowserUseManager
+from agent.utils.history import format_history_for_prompt, load_hist
 from agent.utils.shared_browser import format_shared_browser_error, normalise_cdp_websocket
 from vnc.dependency_check import ensure_component_dependencies
 
@@ -407,9 +408,27 @@ def start_browser_use_session():
         if max_steps <= 0:
             return jsonify({"error": "max_steps must be positive"}), 400
 
+    context_value = data.get("conversation_context")
+    if isinstance(context_value, str):
+        conversation_context = context_value.strip()
+    else:
+        conversation_context = ""
+
+    if not conversation_context:
+        try:
+            conversation_context = format_history_for_prompt(load_hist())
+        except Exception as exc:  # pragma: no cover - best effort only
+            log.debug("[%s] Failed to prepare conversation history: %s", correlation_id, exc)
+            conversation_context = ""
+
     manager = _get_browser_use_manager()
     try:
-        session_id = manager.start_session(command, model=model, max_steps=max_steps)
+        session_id = manager.start_session(
+            command,
+            model=model,
+            max_steps=max_steps,
+            conversation_context=conversation_context or None,
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:

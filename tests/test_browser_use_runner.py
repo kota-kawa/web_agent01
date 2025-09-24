@@ -304,6 +304,18 @@ def test_snapshot_includes_warnings_and_shared_browser_data() -> None:
     assert data["shared_browser_endpoint"] is None
 
 
+def test_history_context_creates_extension() -> None:
+    session = BrowserUseSession(
+        command="cmd",
+        model_name="model",
+        max_steps=1,
+        history_context="[1] ユーザー指示: 続きを実行",
+    )
+
+    assert session._history_extension is not None
+    assert "これまでの会話履歴" in session._history_extension
+
+
 def test_create_browser_session_raises_when_shared_browser_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -603,6 +615,37 @@ def test_remote_manager_start_session_success(monkeypatch: pytest.MonkeyPatch) -
     session_id = manager.start_session("command", model="m", max_steps=5)
 
     assert session_id == "abc123"
+
+
+def test_remote_manager_start_session_includes_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    captured: dict[str, dict[str, object] | None] = {"payload": None}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"session_id": "ctx123"}
+
+    def fake_request(method, path, json_payload=None, timeout=None):  # type: ignore[override]
+        captured["payload"] = json_payload
+        return _Response()
+
+    monkeypatch.setattr(manager, "_request", fake_request)
+
+    session_id = manager.start_session(
+        "command",
+        model="m",
+        max_steps=5,
+        conversation_context="履歴要約",
+    )
+
+    assert session_id == "ctx123"
+    assert captured["payload"]["conversation_context"] == "履歴要約"
 
 
 def test_remote_manager_start_session_validation_error(
