@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import hashlib
 import inspect
@@ -47,6 +48,7 @@ from vnc.page_actions import (
 )
 from vnc.dependency_check import ensure_component_dependencies
 
+from agent.browser_use_runner import BrowserUseManager
 from agent.utils.shared_browser import (
     format_shared_browser_error,
     normalise_cdp_websocket,
@@ -61,6 +63,30 @@ log = logging.getLogger("auto")
 # surfaces missing packages (e.g. jsonschema) as a clear error instead of
 # failing later during request handling.
 ensure_component_dependencies("vnc", logger=log)
+
+
+_browser_use_manager: BrowserUseManager | None = None
+
+_DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini")
+_DEFAULT_MAX_STEPS = max(1, int(os.getenv("MAX_STEPS", "15")))
+
+
+def _get_browser_use_manager() -> BrowserUseManager:
+    global _browser_use_manager
+    if _browser_use_manager is None:
+        _browser_use_manager = BrowserUseManager()
+    return _browser_use_manager
+
+
+@atexit.register
+def _shutdown_browser_use_manager() -> None:  # pragma: no cover - shutdown path
+    manager = _browser_use_manager
+    if manager is None:
+        return
+    try:
+        manager.shutdown()
+    except Exception as exc:
+        log.debug("Browser-use manager shutdown failed: %s", exc)
 
 
 @app.errorhandler(500)
@@ -2414,6 +2440,68 @@ def execute_dsl():
         "complete": complete_flag,
     }
     return jsonify(response)
+
+
+@app.post("/browser-use/session")
+def start_browser_use_session():
+    correlation_id = str(uuid.uuid4())[:8]
+    data = request.get_json(force=True) or {}
+
+    command = str(data.get("command", "")).strip()
+    if not command:
+        return jsonify({"error": "command empty"}), 400
+
+    model_value = data.get("model")
+    model = str(model_value).strip() if model_value is not None else _DEFAULT_MODEL
+    if not model:
+        model = _DEFAULT_MODEL
+
+    requested_steps = data.get("max_steps")
+    max_steps = _DEFAULT_MAX_STEPS
+    if requested_steps is not None:
+        try:
+            max_steps = int(requested_steps)
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_steps must be an integer"}), 400
+        if max_steps <= 0:
+            return jsonify({"error": "max_steps must be positive"}), 400
+
+    manager = _get_browser_use_manager()
+    try:
+        session_id = manager.start_session(command, model=model, max_steps=max_steps)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        message = str(exc)
+        payload = {"error": message}
+        status = 500
+        if "ライブビューのブラウザに接続できないため実行できません" in message:
+            payload["code"] = "shared_browser_unavailable"
+            status = 503
+            log.error("[%s] Failed to start browser-use session: %s", correlation_id, message)
+        else:
+            log.exception("[%s] Browser-use session start failed", correlation_id)
+        return jsonify(payload), status
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        log.exception("[%s] Browser-use session start failed unexpectedly", correlation_id)
+        return jsonify({"error": "failed to start automation"}), 500
+
+    return jsonify({"session_id": session_id})
+
+
+@app.get("/browser-use/session/<session_id>")
+def get_browser_use_session(session_id: str):
+    info = _get_browser_use_manager().get_status(session_id)
+    if info is None:
+        return jsonify({"error": "session not found"}), 404
+    return jsonify(info)
+
+
+@app.post("/browser-use/session/<session_id>/cancel")
+def cancel_browser_use_session(session_id: str):
+    if not _get_browser_use_manager().cancel_session(session_id):
+        return jsonify({"error": "session not found"}), 404
+    return jsonify({"status": "cancelled"})
 
 
 @app.post("/shared-browser/ensure")

@@ -3,3 +3,7 @@ httpx
 jsonschema>=4.0
 playwright==1.44.0
 pydantic>=2.5
+requests
+browser-use
+groq
+google-generativeai
