@@ -379,6 +379,7 @@ class BrowserUseSession:
     command: str
     model_name: str
     max_steps: int
+    history_context: str | None = None
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     status: str = "pending"
     error: Optional[str] = None
@@ -397,6 +398,21 @@ class BrowserUseSession:
     )
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _history_recorded: bool = field(default=False, init=False, repr=False)
+    _history_extension: str | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        context = (self.history_context or "").strip()
+        if not context:
+            return
+
+        instructions = [
+            "## これまでの会話履歴（直近）",
+            context,
+            "",
+            "上記の履歴と現在開いているブラウザの状態を踏まえ、デフォルトの開始ページに戻らずに続きのタスクを実行してください。",
+            "過去の操作で入力した内容や遷移したページを再利用し、必要に応じて現在のページからそのまま作業を再開します。",
+        ]
+        self._history_extension = "\n".join(part for part in instructions if part)
 
     async def prepare(self) -> None:
         if self._prepared_browser_session is not None:
@@ -433,6 +449,7 @@ class BrowserUseSession:
                 generate_gif=False,
                 use_vision=True,
                 max_actions_per_step=10,
+                extend_system_message=self._history_extension,
             )
             history: AgentHistoryList = await self._agent.run(max_steps=self.max_steps)
             self._finalise_result(history)
@@ -709,8 +726,20 @@ class BrowserUseManager:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def start_session(self, command: str, *, model: str, max_steps: int) -> str:
-        session = BrowserUseSession(command=command, model_name=model, max_steps=max_steps)
+    def start_session(
+        self,
+        command: str,
+        *,
+        model: str,
+        max_steps: int,
+        conversation_context: str | None = None,
+    ) -> str:
+        session = BrowserUseSession(
+            command=command,
+            model_name=model,
+            max_steps=max_steps,
+            history_context=conversation_context,
+        )
         with self._lock:
             self._sessions[session.session_id] = session
         try:
@@ -815,12 +844,21 @@ class RemoteBrowserUseManager:
             message = f"automation server returned unexpected status {response.status_code}"
         return message, code
 
-    def start_session(self, command: str, *, model: str, max_steps: int) -> str:
+    def start_session(
+        self,
+        command: str,
+        *,
+        model: str,
+        max_steps: int,
+        conversation_context: str | None = None,
+    ) -> str:
         payload = {
             "command": command,
             "model": model,
             "max_steps": max_steps,
         }
+        if conversation_context:
+            payload["conversation_context"] = conversation_context
         response = self._request(
             "post",
             "/session",

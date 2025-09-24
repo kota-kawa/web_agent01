@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from typing import Any, Sequence
 
 log = logging.getLogger(__name__)
 
@@ -89,4 +90,118 @@ def append_history_entry(user, bot, url=None):
         save_hist(history)
     except Exception as e:
         log.error("append_history_entry error: %s", e)
+
+
+def _normalise_text(value: Any, *, max_length: int = 160) -> str:
+    """Return a compact, human-readable string representation."""
+
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        text = value.strip()
+    else:
+        text = str(value).strip()
+
+    if not text:
+        return ""
+
+    # Collapse whitespace to keep the prompt concise
+    compact = " ".join(text.split())
+    if not compact:
+        return ""
+
+    if len(compact) > max_length:
+        return compact[: max_length - 1] + "…"
+    return compact
+
+
+def _first_non_empty(items: Sequence[Any]) -> str:
+    for item in items:
+        text = _normalise_text(item)
+        if text:
+            return text
+    return ""
+
+
+def format_history_for_prompt(
+    history: Sequence[dict[str, Any]] | None, *, limit: int = 5
+) -> str:
+    """Format recent conversation history for use in system prompts."""
+
+    if not history:
+        return ""
+
+    if limit > 0:
+        recent = history[-limit:]
+    else:
+        recent = history
+
+    start_index = len(history) - len(recent) + 1
+    blocks: list[str] = []
+
+    for offset, entry in enumerate(recent):
+        if not isinstance(entry, dict):
+            continue
+
+        user_text = _normalise_text(entry.get("user"))
+        if not user_text:
+            continue
+
+        lines = [f"[{start_index + offset}] ユーザー指示: {user_text}"]
+        details: list[str] = []
+
+        bot = entry.get("bot")
+        if isinstance(bot, dict):
+            status_text = _normalise_text(bot.get("status"))
+            if status_text:
+                details.append(f"ステータス: {status_text}")
+
+            result = bot.get("result")
+            if isinstance(result, dict):
+                success = result.get("success")
+                if success is True:
+                    details.append("完了状態: 成功")
+                elif success is False:
+                    details.append("完了状態: 失敗")
+
+                final_result = _normalise_text(result.get("final_result"))
+                if final_result:
+                    details.append(f"要約: {final_result}")
+
+                error_text = ""
+                errors = result.get("errors")
+                if isinstance(errors, Sequence):
+                    error_text = _first_non_empty(errors)
+                if error_text:
+                    details.append(f"エラー: {error_text}")
+
+                warning_text = ""
+                warnings = result.get("warnings")
+                if isinstance(warnings, Sequence):
+                    warning_text = _first_non_empty(warnings)
+                if warning_text:
+                    details.append(f"警告: {warning_text}")
+
+            top_error = _normalise_text(bot.get("error"))
+            if top_error:
+                details.append(f"エラー: {top_error}")
+
+            steps = bot.get("steps")
+            if isinstance(steps, Sequence) and steps:
+                last_step = steps[-1]
+                if isinstance(last_step, dict):
+                    title_text = _normalise_text(last_step.get("title"))
+                    if title_text:
+                        details.append(f"最終ページタイトル: {title_text}")
+
+        url_text = _normalise_text(entry.get("url"))
+        if url_text:
+            details.append(f"最終URL: {url_text}")
+
+        if details:
+            lines.extend(f"    - {detail}" for detail in details)
+        blocks.append("\n".join(lines))
+
+    return "\n".join(blocks).strip()
 

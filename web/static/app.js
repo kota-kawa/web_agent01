@@ -789,39 +789,63 @@ async function pollSession() {
   }
 }
 
-function handleCompletion(payload) {
-  const { status, error, result } = payload;
-  clearPolling();
-  setExecuting(false);
-  const finalStatus = status || 'completed';
+function renderCompletionMessages(payload, options = {}) {
+  const { applyStateEffects = true } = options;
+  const data = payload && typeof payload === 'object' ? payload : {};
+  const finalStatus =
+    typeof data.status === 'string' && data.status.trim().length
+      ? data.status.trim()
+      : 'completed';
 
   if (finalStatus === 'failed') {
     const failureMessage =
-      typeof error === 'string' && error.trim().length
-        ? error
+      typeof data.error === 'string' && data.error.trim().length
+        ? data.error.trim()
         : '原因不明のエラー';
     appendMessage('system', `❌ 実行に失敗しました: ${escapeHtml(failureMessage)}`);
-    if (failureMessage.includes('ライブビューのブラウザに接続できないため実行できません')) {
+    if (
+      applyStateEffects &&
+      failureMessage.includes('ライブビューのブラウザに接続できないため実行できません')
+    ) {
       showSharedBrowserError(failureMessage);
     }
-  } else if (finalStatus === 'cancelled') {
+    return;
+  }
+
+  if (finalStatus === 'cancelled') {
     appendMessage('system', '⏹ 実行をキャンセルしました。');
-  } else if (result) {
+    return;
+  }
+
+  const result = data.result && typeof data.result === 'object' ? data.result : null;
+  if (result) {
     const success = result.success !== false;
-    const summary = result.final_result || 'ブラウザ操作が完了しました。';
+    const summaryText =
+      typeof result.final_result === 'string' && result.final_result.trim().length
+        ? result.final_result
+        : 'ブラウザ操作が完了しました。';
     const prefix = success ? '✅' : '⚠️';
-    appendMessage('system', `${prefix} ${escapeHtml(summary)}`);
+    appendMessage('system', `${prefix} ${escapeHtml(summaryText)}`);
+
     if (Array.isArray(result.errors) && result.errors.length) {
-      const list = result.errors.map((err) => `<li>${escapeHtml(String(err))}</li>`).join('');
+      const list = result.errors
+        .map((err) => `<li>${escapeHtml(String(err))}</li>`)
+        .join('');
       appendMessage('system', `⚠️ 実行中に警告が発生しました:<ul>${list}</ul>`);
     }
-    if (Array.isArray(result.warnings) && result.warnings.length) {
+
+    if (Array.isArray(result.warnings)) {
       for (const warning of result.warnings) {
         const text = typeof warning === 'string' ? warning.trim() : String(warning || '').trim();
-        if (!text || state.displayedWarnings.has(text)) {
+        if (!text) {
           continue;
         }
-        state.displayedWarnings.add(text);
+        if (applyStateEffects) {
+          if (state.displayedWarnings.has(text)) {
+            continue;
+          }
+          state.displayedWarnings.add(text);
+        }
         appendMessage('system', `⚠️ ${escapeHtml(text)}`);
       }
     }
@@ -829,6 +853,27 @@ function handleCompletion(payload) {
     appendMessage('system', '✅ ブラウザ操作が完了しました。');
   }
 
+  if (Array.isArray(data.warnings)) {
+    for (const warning of data.warnings) {
+      const text = typeof warning === 'string' ? warning.trim() : String(warning || '').trim();
+      if (!text) {
+        continue;
+      }
+      if (applyStateEffects) {
+        if (state.displayedWarnings.has(text)) {
+          continue;
+        }
+        state.displayedWarnings.add(text);
+      }
+      appendMessage('system', `⚠️ ${escapeHtml(text)}`);
+    }
+  }
+}
+
+function handleCompletion(payload) {
+  clearPolling();
+  setExecuting(false);
+  renderCompletionMessages(payload, { applyStateEffects: true });
   state.activeSession = null;
 }
 
@@ -920,6 +965,50 @@ async function resetHistory() {
   }
 }
 
+async function rehydrateHistory() {
+  try {
+    const response = await fetch('/history');
+    if (!response.ok) {
+      throw new Error(`status ${response.status}`);
+    }
+
+    const history = await response.json();
+    if (!Array.isArray(history) || history.length === 0) {
+      return;
+    }
+
+    chatArea.innerHTML = '';
+    appendMessage('system', '🔁 過去の会話履歴を読み込みました。');
+
+    for (const entry of history) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+
+      const userCommand = typeof entry.user === 'string' ? entry.user.trim() : '';
+      if (userCommand) {
+        appendMessage('user', escapeHtml(userCommand));
+      }
+
+      const bot = entry.bot && typeof entry.bot === 'object' ? entry.bot : null;
+      if (!bot) {
+        continue;
+      }
+
+      const steps = Array.isArray(bot.steps) ? bot.steps : [];
+      for (const step of steps) {
+        if (step && typeof step === 'object') {
+          renderStep(step);
+        }
+      }
+
+      renderCompletionMessages(bot, { applyStateEffects: false });
+    }
+  } catch (err) {
+    appendMessage('system', `⚠️ 過去の会話履歴の読み込みに失敗しました: ${escapeHtml(err.message || String(err))}`);
+  }
+}
+
 previewModeButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const desiredMode = button.dataset.previewMode;
@@ -931,6 +1020,7 @@ previewModeButtons.forEach((button) => {
   });
 });
 setPreviewMode('live');
+rehydrateHistory();
 
 sendButton.addEventListener('click', () => {
   const command = userInput.value.trim();
