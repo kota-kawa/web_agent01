@@ -26,7 +26,6 @@ const stopButton = document.getElementById('stop-button');
 const resetButton = document.getElementById('reset-button');
 const previewImage = document.getElementById('preview-image');
 const previewPlaceholder = document.getElementById('preview-placeholder');
-const previewStatus = document.getElementById('preview-status');
 const screenshotContainer = document.getElementById('screenshot-container');
 const liveBrowserContainer = document.getElementById('live-browser-container');
 const liveBrowserSurface = document.getElementById('live-browser-canvas');
@@ -559,25 +558,6 @@ function updatePreview(step) {
     previewPlaceholder.style.display = 'block';
   }
 
-  const url = step.url ? escapeHtml(step.url) : '不明';
-  const actionSummary = (step.actions || []).map((action) => {
-    const [name] = Object.keys(action);
-    return name || 'action';
-  });
-
-  const actionsLabel = actionSummary.length
-    ? escapeHtml(actionSummary.join(', '))
-    : '操作情報なし';
-
-  const timestamp = step.timestamp
-    ? new Date(step.timestamp * 1000).toLocaleString()
-    : '';
-
-  previewStatus.innerHTML = `
-    <div><strong>URL:</strong> ${url}</div>
-    <div><strong>アクション:</strong> ${actionsLabel}</div>
-    ${timestamp ? `<div><strong>時刻:</strong> ${escapeHtml(timestamp)}</div>` : ''}
-  `;
 }
 
 function renderActions(actions) {
@@ -796,11 +776,9 @@ async function pollSession() {
       state.renderedSteps += 1;
     }
 
-    const statusText = escapeHtml(data.status || 'unknown');
     if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
       handleCompletion(data);
     } else {
-      previewStatus.innerHTML += `<div><strong>ステータス:</strong> ${statusText}</div>`;
       state.pollTimer = setTimeout(pollSession, 1200);
     }
   } catch (err) {
@@ -846,9 +824,6 @@ function handleCompletion(payload) {
         state.displayedWarnings.add(text);
         appendMessage('system', `⚠️ ${escapeHtml(text)}`);
       }
-    }
-    if (Array.isArray(result.urls) && result.urls.length) {
-      previewStatus.innerHTML += `<div><strong>訪問URL:</strong> ${escapeHtml(result.urls[result.urls.length - 1])}</div>`;
     }
   } else {
     appendMessage('system', '✅ ブラウザ操作が完了しました。');

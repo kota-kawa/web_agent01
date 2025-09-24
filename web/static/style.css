@@ -363,22 +363,6 @@ button:disabled {
   }
 }
 
-.preview-meta {
-  padding: 16px 20px;
-  background: rgba(15, 23, 42, 0.85);
-  border-top: 1px solid rgba(148, 163, 184, 0.15);
-  font-size: 14px;
-  min-height: 88px;
-  max-height: 35vh;
-  overflow-y: auto;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.preview-meta strong {
-  color: #38bdf8;
-}
-
 .step-message {
   padding: 16px;
   border-radius: 18px;
