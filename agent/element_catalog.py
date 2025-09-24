@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from agent.browser import vnc
 
@@ -158,6 +158,60 @@ def actions_use_catalog_indices(actions: Iterable[Dict[str, Any]]) -> bool:
     return False
 
 
+_STALE_ELEMENT_PATTERNS = (
+    "node is detached",
+    "detached from document",
+    "could not compute box model",
+    "stale element",
+    "not attached to the dom",
+    "execution context was destroyed",
+)
+
+
+def _iter_warning_strings(result: Dict[str, Any]) -> Iterator[str]:
+    for message in (result or {}).get("warnings") or []:
+        if isinstance(message, str):
+            yield message
+
+    error = (result or {}).get("error")
+    if isinstance(error, dict):
+        text = error.get("message")
+        if text:
+            yield str(text)
+    elif isinstance(error, str):
+        yield error
+
+    for item in (result or {}).get("errors") or []:
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, dict):
+            message = item.get("message")
+            if message:
+                yield str(message)
+
+    for entry in (result or {}).get("results") or []:
+        if not isinstance(entry, dict):
+            continue
+        for warning in entry.get("warnings") or []:
+            if isinstance(warning, str):
+                yield warning
+        error_entry = entry.get("error")
+        if isinstance(error_entry, dict):
+            message = error_entry.get("message")
+            if message:
+                yield str(message)
+        elif isinstance(error_entry, str):
+            yield error_entry
+
+
+def _detect_stale_element_message(result: Dict[str, Any]) -> Optional[str]:
+    for message in _iter_warning_strings(result):
+        lowered = message.lower()
+        if any(pattern in lowered for pattern in _STALE_ELEMENT_PATTERNS):
+            return message
+    return None
+
+
 def handle_execution_feedback(actions: Iterable[Dict[str, Any]], result: Dict[str, Any]) -> None:
     """Update catalog bookkeeping based on the last execution result."""
 
@@ -166,6 +220,7 @@ def handle_execution_feedback(actions: Iterable[Dict[str, Any]], result: Dict[st
 
     warnings = [w for w in (result or {}).get("warnings") or [] if isinstance(w, str)]
     observation = (result or {}).get("observation") or {}
+    uses_indices = actions_use_catalog_indices(actions)
 
     nav_detected = bool(observation.get("nav_detected"))
     catalog_version = observation.get("catalog_version")
@@ -191,6 +246,14 @@ def handle_execution_feedback(actions: Iterable[Dict[str, Any]], result: Dict[st
         _queue_prompt_message(
             "CATALOG_OUTDATED: Executor detected catalog version drift. Fetch a fresh catalog and rebuild the plan before using index-based targets."
         )
+
+    stale_message = _detect_stale_element_message(result)
+    if stale_message:
+        mark_catalog_dirty(f"executor reported stale DOM reference: {stale_message}")
+        if uses_indices:
+            _queue_prompt_message(
+                "CATALOG_OUTDATED: The previous step hit a stale element reference (e.g. 'Node is detached from document'). Refresh the element catalog and rebuild the plan before relying on index-based selectors."
+            )
 
     # If the executor produced a new catalog version, remember it for diagnostics.
     if catalog_version and catalog_version != _last_prompt_version:
