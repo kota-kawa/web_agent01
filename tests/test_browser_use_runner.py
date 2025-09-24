@@ -10,6 +10,13 @@ def _clear_cdp_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_managers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BROWSER_USE_REMOTE_API", raising=False)
+    monkeypatch.setattr(browser_use_runner, "_browser_use_manager", None)
+    monkeypatch.setattr(browser_use_runner, "_remote_browser_use_manager", None)
+
+
 def test_resolve_cdp_endpoint_prefers_ws_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "BROWSER_USE_CDP_URL",
@@ -564,3 +571,143 @@ def test_create_browser_session_requires_shared_browser_when_remote_fails(
     assert session.shared_browser_mode == "unknown"
     assert session.shared_browser_endpoint is None
     assert session.warnings == []
+
+
+def test_get_browser_use_manager_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy_instance = object()
+
+    monkeypatch.setenv("BROWSER_USE_REMOTE_API", "1")
+    monkeypatch.setattr(
+        browser_use_runner,
+        "RemoteBrowserUseManager",
+        lambda: dummy_instance,
+    )
+
+    manager = browser_use_runner.get_browser_use_manager()
+    assert manager is dummy_instance
+    assert browser_use_runner.get_browser_use_manager() is dummy_instance
+
+
+def test_remote_manager_start_session_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"session_id": "abc123"}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Response())
+
+    session_id = manager.start_session("command", model="m", max_steps=5)
+
+    assert session_id == "abc123"
+
+
+def test_remote_manager_start_session_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    class _Response:
+        status_code = 400
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"error": "bad request"}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Response())
+
+    with pytest.raises(ValueError) as excinfo:
+        manager.start_session("command", model="m", max_steps=5)
+
+    assert "bad request" in str(excinfo.value)
+
+
+def test_remote_manager_start_session_shared_browser_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    class _Response:
+        status_code = 503
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"error": "shared", "code": "shared_browser_unavailable"}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Response())
+
+    with pytest.raises(RuntimeError) as excinfo:
+        manager.start_session("command", model="m", max_steps=5)
+
+    assert "shared" in str(excinfo.value)
+
+
+def test_remote_manager_get_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    class _Ok:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"status": "running"}
+
+    class _Missing:
+        status_code = 404
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"error": "session not found"}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Ok())
+    assert manager.get_status("abc") == {"status": "running"}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Missing())
+    assert manager.get_status("abc") is None
+
+
+def test_remote_manager_cancel_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    class _Ok:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {}
+
+    class _Missing:
+        status_code = 404
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {}
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Ok())
+    assert manager.cancel_session("abc") is True
+
+    monkeypatch.setattr(manager, "_request", lambda *_, **__: _Missing())
+    assert manager.cancel_session("abc") is False
+
+
+def test_remote_manager_request_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = browser_use_runner.RemoteBrowserUseManager()
+
+    monkeypatch.setattr(
+        browser_use_runner,
+        "get_vnc_api_base",
+        lambda refresh=False: "http://vnc:7000",
+    )
+
+    def fake_request(method, url, json=None, timeout=None):  # type: ignore[override]
+        raise browser_use_runner.requests.RequestException("boom")
+
+    monkeypatch.setattr(browser_use_runner.requests, "request", fake_request)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        manager.start_session("command", model="m", max_steps=1)
+
+    assert "boom" in str(excinfo.value)

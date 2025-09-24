@@ -24,6 +24,7 @@ from agent.browser.patches import apply_browser_use_patches
 from agent.browser.vnc import get_vnc_api_base
 from agent.utils.history import append_history_entry
 from agent.utils.shared_browser import (
+    env_flag,
     format_shared_browser_error,
     normalise_cdp_websocket,
 )
@@ -756,10 +757,151 @@ class BrowserUseManager:
         self._thread.join(timeout=5)
 
 
+class RemoteBrowserUseManager:
+    """Proxy ``BrowserUseManager`` requests to the automation server."""
+
+    _BASE_TIMEOUT = (5.0, 120.0)
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_payload: dict[str, object] | None = None,
+        timeout: float | tuple[float, float] | None = None,
+    ) -> requests.Response:
+        last_exc: requests.RequestException | None = None
+        for refresh in (False, True):
+            base_url = get_vnc_api_base(refresh=refresh) if refresh else get_vnc_api_base()
+            url = f"{base_url}/browser-use{path}"
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    json=json_payload,
+                    timeout=timeout,
+                )
+            except requests.RequestException as exc:  # pragma: no cover - network failure path
+                last_exc = exc
+                log.debug("Remote browser-use request to %s failed: %s", url, exc)
+                continue
+            return response
+
+        assert last_exc is not None
+        raise RuntimeError(f"automation server request failed: {last_exc}") from last_exc
+
+    @staticmethod
+    def _error_details(response: requests.Response) -> tuple[str, str | None]:
+        message = ""
+        code: str | None = None
+        try:
+            payload = response.json()
+        except ValueError:
+            text = response.text.strip()
+            if text:
+                message = text
+        else:
+            raw_message = payload.get("error") or payload.get("message")
+            if isinstance(raw_message, str):
+                message = raw_message
+            raw_code = payload.get("code")
+            if isinstance(raw_code, str) and raw_code:
+                code = raw_code
+
+        if not message:
+            message = f"automation server returned unexpected status {response.status_code}"
+        return message, code
+
+    def start_session(self, command: str, *, model: str, max_steps: int) -> str:
+        payload = {
+            "command": command,
+            "model": model,
+            "max_steps": max_steps,
+        }
+        response = self._request(
+            "post",
+            "/session",
+            json_payload=payload,
+            timeout=self._BASE_TIMEOUT,
+        )
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError("automation server returned malformed response") from exc
+            session_id = data.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise RuntimeError("automation server response missing session identifier")
+            log.info("Started remote browser-use session %s for command: %s", session_id, command)
+            return session_id
+
+        message, code = self._error_details(response)
+        if response.status_code == 400:
+            raise ValueError(message)
+        if response.status_code == 503 and code == "shared_browser_unavailable":
+            raise RuntimeError(message)
+        if response.status_code in {503, 504}:
+            raise RuntimeError(message)
+        raise RuntimeError(message)
+
+    def get_status(self, session_id: str) -> Optional[Dict[str, Any]]:
+        response = self._request(
+            "get",
+            f"/session/{session_id}",
+            timeout=15.0,
+        )
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError("automation server returned malformed status payload") from exc
+            return data
+
+        if response.status_code == 404:
+            return None
+
+        message, _ = self._error_details(response)
+        raise RuntimeError(message)
+
+    def cancel_session(self, session_id: str) -> bool:
+        response = self._request(
+            "post",
+            f"/session/{session_id}/cancel",
+            timeout=15.0,
+        )
+
+        if response.status_code == 200:
+            return True
+        if response.status_code == 404:
+            return False
+
+        message, _ = self._error_details(response)
+        raise RuntimeError(message)
+
+    def shutdown(self) -> None:  # pragma: no cover - remote manager has no local resources
+        return None
+
+
 _browser_use_manager: BrowserUseManager | None = None
+_remote_browser_use_manager: RemoteBrowserUseManager | None = None
 
 
-def get_browser_use_manager() -> BrowserUseManager:
+def _use_remote_manager() -> bool:
+    return env_flag("BROWSER_USE_REMOTE_API", default=False)
+
+
+def get_browser_use_manager() -> BrowserUseManager | RemoteBrowserUseManager:
+    if _use_remote_manager():
+        global _remote_browser_use_manager
+        if _remote_browser_use_manager is None:
+            _remote_browser_use_manager = RemoteBrowserUseManager()
+        return _remote_browser_use_manager
+
     global _browser_use_manager
     if _browser_use_manager is None:
         _browser_use_manager = BrowserUseManager()

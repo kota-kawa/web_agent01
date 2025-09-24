@@ -89,6 +89,10 @@ RUN pip install --no-cache-dir \
       httpx \
       "jsonschema>=4.0" \
       "pydantic>=2.5" \
+      requests \
+      browser-use \
+      groq \
+      google-generativeai \
   && playwright install chromium
   
 
