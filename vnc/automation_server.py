@@ -457,6 +457,41 @@ def get_browser_use_session(session_id: str):
     return jsonify(info)
 
 
+@app.post("/browser-use/session/<session_id>/instruction")
+def add_browser_use_instruction(session_id: str):
+    data = request.get_json(force=True) or {}
+    raw_instruction = data.get("instruction")
+    if raw_instruction is None:
+        raw_instruction = data.get("command")
+
+    instruction = str(raw_instruction or "").strip()
+    if not instruction:
+        return jsonify({"error": "instruction empty"}), 400
+
+    manager = _get_browser_use_manager()
+    status = manager.add_instruction(session_id, instruction)
+
+    if status == "accepted":
+        return jsonify({"status": "accepted"})
+    if status == "not_found":
+        return jsonify({"error": "session not found"}), 404
+    if status == "not_running":
+        return (
+            jsonify(
+                {
+                    "error": "セッションは既に完了または停止しています。",
+                    "status": "not_running",
+                }
+            ),
+            409,
+        )
+    if status == "invalid":
+        return jsonify({"error": "instruction empty"}), 400
+
+    log.warning("[%s] Unexpected add_instruction status: %s", session_id, status)
+    return jsonify({"error": "failed to queue instruction"}), 500
+
+
 @app.post("/browser-use/session/<session_id>/cancel")
 def cancel_browser_use_session(session_id: str):
     if not _get_browser_use_manager().cancel_session(session_id):
