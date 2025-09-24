@@ -17,6 +17,9 @@ const state = {
   sharedBrowserMode: 'unknown',
   liveViewDisabled: false,
   liveViewDisabledMessage: '',
+  liveViewResizeObserver: null,
+  liveViewResizeHandler: null,
+  liveViewViewportSize: { width: 0, height: 0 },
 };
 
 const chatArea = document.getElementById('chat-area');
@@ -31,6 +34,8 @@ const liveBrowserContainer = document.getElementById('live-browser-container');
 const liveBrowserSurface = document.getElementById('live-browser-canvas');
 const liveBrowserUnavailable = document.getElementById('live-browser-unavailable');
 const previewModeButtons = document.querySelectorAll('[data-preview-mode]');
+
+setupLiveViewResizeHandling();
 
 if (!window.__NOVNC_READY__) {
   document.addEventListener(
@@ -82,6 +87,94 @@ function normaliseScreenshot(data) {
   if (!data || typeof data !== 'string') return null;
   if (data.startsWith('data:image')) return data;
   return `data:image/png;base64,${data}`;
+}
+
+function applyLiveViewportDimensions(width, height) {
+  const resolvedWidth = Math.round(Number(width) || 0);
+  const resolvedHeight = Math.round(Number(height) || 0);
+
+  if (resolvedWidth <= 0 || resolvedHeight <= 0) {
+    return;
+  }
+
+  const previous = state.liveViewViewportSize || { width: 0, height: 0 };
+  if (previous.width === resolvedWidth && previous.height === resolvedHeight) {
+    return;
+  }
+
+  state.liveViewViewportSize = {
+    width: resolvedWidth,
+    height: resolvedHeight,
+  };
+
+  const instance = state.liveViewInstance;
+  if (!instance || typeof instance.viewportChangeSize !== 'function') {
+    return;
+  }
+
+  try {
+    instance.viewportChangeSize(resolvedWidth, resolvedHeight);
+  } catch (err) {
+    // Ignore viewport resize errors, the next successful resize will update the view.
+  }
+}
+
+function refreshLiveViewportSize() {
+  if (!liveBrowserSurface) {
+    return;
+  }
+
+  const width = liveBrowserSurface.clientWidth;
+  const height = liveBrowserSurface.clientHeight;
+
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  applyLiveViewportDimensions(width, height);
+}
+
+function setupLiveViewResizeHandling() {
+  if (!liveBrowserSurface) {
+    return;
+  }
+
+  if (typeof ResizeObserver === 'function' && !state.liveViewResizeObserver) {
+    const observer = new ResizeObserver((entries) => {
+      if (!entries || !entries.length) {
+        refreshLiveViewportSize();
+        return;
+      }
+
+      entries.forEach((entry) => {
+        const rect = entry && entry.contentRect ? entry.contentRect : null;
+        if (rect && rect.width > 0 && rect.height > 0) {
+          applyLiveViewportDimensions(rect.width, rect.height);
+        } else {
+          refreshLiveViewportSize();
+        }
+      });
+    });
+
+    try {
+      observer.observe(liveBrowserSurface);
+      state.liveViewResizeObserver = observer;
+    } catch (err) {
+      state.liveViewResizeObserver = null;
+    }
+  }
+
+  if (!state.liveViewResizeHandler) {
+    const handler = () => {
+      refreshLiveViewportSize();
+    };
+
+    window.addEventListener('resize', handler);
+    window.addEventListener('orientationchange', handler);
+    state.liveViewResizeHandler = handler;
+  }
+
+  refreshLiveViewportSize();
 }
 
 function showSharedBrowserError(detailMessage) {
@@ -180,6 +273,10 @@ function syncPreviewModeUI() {
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
 
+  if (isLive) {
+    refreshLiveViewportSize();
+  }
+
 }
 
 function clearLiveViewWatchdog() {
@@ -269,6 +366,8 @@ function initialiseLiveView(forceReload = false) {
   if (!liveBrowserContainer || !liveBrowserSurface) {
     return;
   }
+
+  refreshLiveViewportSize();
 
   clearLiveViewRetry();
   clearLiveViewWatchdog();
@@ -414,6 +513,19 @@ function initialiseLiveView(forceReload = false) {
     if ('clipViewport' in rfbInstance) {
       rfbInstance.clipViewport = true;
     }
+    const storedViewport = state.liveViewViewportSize || { width: 0, height: 0 };
+    if (
+      storedViewport &&
+      storedViewport.width > 0 &&
+      storedViewport.height > 0 &&
+      typeof rfbInstance.viewportChangeSize === 'function'
+    ) {
+      try {
+        rfbInstance.viewportChangeSize(storedViewport.width, storedViewport.height);
+      } catch (err) {
+        // Ignore resize errors during initialisation; subsequent updates will retry.
+      }
+    }
   } catch (err) {
     state.liveViewInitialised = false;
     if (liveBrowserContainer) {
@@ -447,6 +559,7 @@ function initialiseLiveView(forceReload = false) {
     if (liveBrowserSurface) {
       liveBrowserSurface.focus({ preventScroll: true });
     }
+    refreshLiveViewportSize();
   };
 
   const handleLiveDisconnect = (event) => {
