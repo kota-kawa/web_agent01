@@ -1,4 +1,8 @@
 import pytest
+from types import SimpleNamespace
+
+from browser_use.browser.views import BrowserStateSummary, TabInfo
+from browser_use.tools.service import Tools
 
 from agent import browser_use_runner
 from agent.browser_use_runner import BrowserUseSession
@@ -754,3 +758,114 @@ def test_remote_manager_request_failure(monkeypatch: pytest.MonkeyPatch) -> None
         manager.start_session("command", model="m", max_steps=1)
 
     assert "boom" in str(excinfo.value)
+
+
+def _dummy_selector_map() -> dict[int, SimpleNamespace]:
+    button = SimpleNamespace(
+        tag_name="button",
+        node_value="Submit",
+        attributes={"aria-label": "Submit"},
+        frame_id=None,
+        xpath="html/body/button[1]",
+        is_visible=True,
+        ax_node=None,
+    )
+    text_input = SimpleNamespace(
+        tag_name="input",
+        node_value="",
+        attributes={"type": "text", "name": "query"},
+        frame_id=None,
+        xpath="html/body/input[1]",
+        is_visible=True,
+        ax_node=None,
+    )
+    return {1: button, 2: text_input}
+
+
+def _build_browser_state(selector_map: dict[int, SimpleNamespace]) -> BrowserStateSummary:
+    dom_state = SimpleNamespace(
+        selector_map=selector_map,
+        llm_representation=lambda: "<dom />",
+    )
+    tabs = [TabInfo(url="about:blank", title="blank", target_id="tab-0001")]
+    return BrowserStateSummary(
+        dom_state=dom_state,
+        url="https://example.com",
+        title="Example",
+        tabs=tabs,
+        screenshot=None,
+    )
+
+
+def _build_session_with_action_model() -> BrowserUseSession:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+    tools = Tools()
+    session._agent = SimpleNamespace(ActionModel=tools.registry.create_action_model())
+    return session
+
+
+def test_stabilise_model_output_replaces_invalid_index() -> None:
+    selector_map = _dummy_selector_map()
+    browser_state = _build_browser_state(selector_map)
+    session = _build_session_with_action_model()
+
+    invalid_action = session._agent.ActionModel(
+        **{"click_element_by_index": {"index": 99}}
+    )
+    model_output = SimpleNamespace(action=[invalid_action])
+
+    sanitised, warnings, catalog = session._stabilise_model_output(
+        browser_state, model_output
+    )
+
+    assert sanitised is not None
+    assert sanitised[0].model_dump(exclude_none=True) == {"wait": {"seconds": 1}}
+    assert warnings and "target index 99" in warnings[0]
+    assert catalog is not None and "[01]" in catalog.text
+
+
+def test_stabilise_model_output_drops_invalid_frame_index() -> None:
+    selector_map = _dummy_selector_map()
+    browser_state = _build_browser_state(selector_map)
+    session = _build_session_with_action_model()
+
+    scroll_action = session._agent.ActionModel(
+        **{
+            "scroll": {
+                "down": True,
+                "num_pages": 1.0,
+                "frame_element_index": 999,
+            }
+        }
+    )
+    model_output = SimpleNamespace(action=[scroll_action])
+
+    sanitised, warnings, _ = session._stabilise_model_output(browser_state, model_output)
+
+    assert sanitised is not None
+    assert sanitised[0].model_dump(exclude_none=True) == {
+        "scroll": {"down": True, "num_pages": 1.0}
+    }
+    assert warnings and "frame_element_index" in warnings[0]
+
+
+def test_stabilise_model_output_preserves_valid_actions() -> None:
+    selector_map = _dummy_selector_map()
+    browser_state = _build_browser_state(selector_map)
+    session = _build_session_with_action_model()
+
+    valid_action = session._agent.ActionModel(
+        **{"click_element_by_index": {"index": 1}}
+    )
+    model_output = SimpleNamespace(action=[valid_action])
+
+    sanitised, warnings, catalog = session._stabilise_model_output(
+        browser_state, model_output
+    )
+
+    assert sanitised is not None
+    assert sanitised[0].model_dump(exclude_none=True) == {
+        "click_element_by_index": {"index": 1}
+    }
+    assert warnings == []
+    assert catalog.metadata["total"] == len(selector_map)
