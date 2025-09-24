@@ -9,7 +9,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from playwright.async_api import Error as PlaywrightError, Frame, Page
 
@@ -29,6 +29,7 @@ from automation.dsl import (
     ScrollToTextAction,
     ScreenshotAction,
     SelectAction,
+    Selector,
     StopAction,
     SwitchTabAction,
     TypeAction,
@@ -549,6 +550,7 @@ class RunExecutor:
         context = ActionContext(self.page, self.config, logger, log_paths, self.store)
         performer = ActionPerformer(context)
         plan = request.plan.actions
+        plan, augmentation_notes = self._augment_plan(list(plan))
         validation_warnings = self._validate(plan)
         await self._dry_run(performer, plan)
         results: List[Dict[str, Any]] = []
@@ -563,6 +565,7 @@ class RunExecutor:
         success = all(r.get("ok") for r in results)
         warnings: List[str] = []
         warnings.extend(validation_warnings)
+        warnings.extend(augmentation_notes)
         for entry in results:
             warnings.extend(entry.get("warnings", []))
         html = ""
@@ -612,6 +615,61 @@ class RunExecutor:
                     f"WARNING:auto:Click action at position {idx} is not followed by an explicit wait"
                 )
         return warnings
+
+    def _augment_plan(self, plan: Sequence[ActionBase]) -> tuple[List[ActionBase], List[str]]:
+        augmented: List[ActionBase] = []
+        notes: List[str] = []
+        for idx, action in enumerate(plan):
+            augmented.append(action)
+            if self._should_inject_post_index_wait(action, plan[idx + 1 :]):
+                wait_action = self._build_post_index_wait_action(action)
+                if wait_action is not None:
+                    augmented.append(wait_action)
+                    selector = getattr(action, "selector", None)
+                    index_value = getattr(selector, "index", None)
+                    notes.append(
+                        "INFO:auto:Implicit wait added after index-based click at position "
+                        f"{idx + 1} (index={index_value})"
+                    )
+        return augmented, notes
+
+    def _should_inject_post_index_wait(
+        self, action: ActionBase, subsequent: Sequence[ActionBase]
+    ) -> bool:
+        if not isinstance(action, ClickAction):
+            return False
+        selector = getattr(action, "selector", None)
+        if not isinstance(selector, Selector) or selector.index is None:
+            return False
+
+        for candidate in subsequent:
+            if isinstance(candidate, WaitAction):
+                return False
+            if isinstance(candidate, (AssertAction, ExtractAction)):
+                return False
+            if isinstance(candidate, NavigateAction):
+                return False
+            if isinstance(candidate, (ClickAction, TypeAction, SelectAction, PressKeyAction)):
+                break
+        return True
+
+    def _build_post_index_wait_action(self, action: ClickAction) -> WaitAction | None:
+        selector = getattr(action, "selector", None)
+        if not isinstance(selector, Selector):
+            return None
+
+        try:
+            selector_copy = selector.model_copy(deep=True)
+        except Exception:
+            selector_copy = None
+
+        timeout = min(self.config.wait_timeout_ms, self.config.post_interaction_wait_ms)
+
+        if selector_copy is not None:
+            condition = WaitForSelector(selector=selector_copy, state="visible")
+            return WaitAction(for_=condition, timeout_ms=timeout)
+
+        return WaitAction(for_=WaitForTimeout(timeout_ms=timeout), timeout_ms=timeout)
 
     async def _dry_run(self, performer: ActionPerformer, plan: List[ActionBase]) -> None:
         for action in plan:
