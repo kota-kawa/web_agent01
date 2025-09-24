@@ -147,8 +147,13 @@ function appendMessage(kind, content) {
 
 function setExecuting(isExecuting) {
   if (isExecuting) {
-    sendButton.disabled = true;
-    sendButton.textContent = '実行中...';
+    if (state.activeSession) {
+      sendButton.disabled = false;
+      sendButton.textContent = '追加指示を送信';
+    } else {
+      sendButton.disabled = true;
+      sendButton.textContent = '実行中...';
+    }
     stopButton.disabled = false;
   } else {
     sendButton.disabled = false;
@@ -880,7 +885,7 @@ function handleCompletion(payload) {
 async function startSession(command) {
   if (!command) return;
   if (state.activeSession) {
-    appendMessage('system', '⚠️ 現在の実行が完了するまでお待ちください。');
+    appendMessage('system', '⚠️ 実行中です。追加の指示はそのまま送信してください。');
     return;
   }
 
@@ -921,6 +926,7 @@ async function startSession(command) {
     const data = await response.json();
     placeholder.remove();
     state.activeSession = { id: data.session_id };
+    setExecuting(true);
     pollSession();
   } catch (err) {
     placeholder.remove();
@@ -932,6 +938,49 @@ async function startSession(command) {
       appendMessage('system', `❌ 実行開始に失敗しました: ${escapeHtml(message)}`);
     }
     setExecuting(false);
+  }
+}
+
+async function sendFollowUp(instruction) {
+  if (!instruction || !state.activeSession) return;
+
+  appendMessage('user', escapeHtml(instruction));
+  const acknowledgement = appendMessage(
+    'system',
+    '追加の指示を送信中... <span class="spinner"></span>',
+  );
+
+  const sessionId = state.activeSession.id;
+  const previousDisabled = sendButton.disabled;
+  sendButton.disabled = true;
+
+  try {
+    const response = await fetch(`/session/${sessionId}/instruction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      const message =
+        data && typeof data.error === 'string'
+          ? data.error
+          : `server returned ${response.status}`;
+      throw new Error(message);
+    }
+
+    acknowledgement.textContent = '🔁 追加の指示を受け付けました。';
+  } catch (err) {
+    const message = err && typeof err.message === 'string' ? err.message : String(err);
+    acknowledgement.innerHTML = `⚠️ 追加の指示送信に失敗しました: ${escapeHtml(message)}`;
+  } finally {
+    sendButton.disabled = previousDisabled;
+    if (state.activeSession) {
+      setExecuting(true);
+    } else {
+      setExecuting(false);
+    }
   }
 }
 
@@ -1026,7 +1075,11 @@ sendButton.addEventListener('click', () => {
   const command = userInput.value.trim();
   if (!command) return;
   userInput.value = '';
-  startSession(command);
+  if (state.activeSession) {
+    sendFollowUp(command);
+  } else {
+    startSession(command);
+  }
 });
 
 userInput.addEventListener('keydown', (event) => {

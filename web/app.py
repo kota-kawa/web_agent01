@@ -276,6 +276,38 @@ def get_status(session_id: str):
     return jsonify(info)
 
 
+@app.post("/session/<session_id>/instruction")
+def add_instruction(session_id: str):
+    data: dict[str, Any] = request.get_json(force=True) or {}
+    raw_instruction = data.get("instruction")
+    if raw_instruction is None:
+        raw_instruction = data.get("command")
+
+    instruction = str(raw_instruction or "").strip()
+    if not instruction:
+        return jsonify({"error": "instruction empty"}), 400
+
+    manager = get_browser_use_manager()
+    status = manager.add_instruction(session_id, instruction)
+
+    if status == "not_found":
+        return jsonify({"error": "session not found"}), 404
+    if status == "not_running":
+        return (
+            jsonify(
+                {
+                    "error": "セッションは既に完了または停止しています。",
+                    "status": "not_running",
+                }
+            ),
+            409,
+        )
+    if status == "invalid":
+        return jsonify({"error": "instruction empty"}), 400
+
+    return jsonify({"status": "accepted"})
+
+
 @app.post("/cancel/<session_id>")
 def cancel(session_id: str):
     manager = get_browser_use_manager()
