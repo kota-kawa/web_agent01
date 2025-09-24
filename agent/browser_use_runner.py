@@ -13,13 +13,14 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from browser_use.agent.service import Agent, AgentHistoryList
-from browser_use.agent.views import AgentOutput
+from browser_use.agent.views import ActionModel, AgentOutput
 from browser_use.browser import BrowserSession
 from browser_use.browser.views import BrowserStateSummary
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.google.chat import ChatGoogle
 from browser_use.llm.groq.chat import ChatGroq
 
+from agent.browser.catalog import ElementCatalogSnapshot, build_element_catalog
 from agent.browser.patches import apply_browser_use_patches
 from agent.browser.vnc import get_vnc_api_base
 from agent.utils.history import append_history_entry
@@ -502,6 +503,9 @@ class BrowserUseSession:
         step_number: int,
     ) -> None:
         dom_excerpt = ""
+        element_catalog: ElementCatalogSnapshot | None = None
+        action_warnings: list[str] = []
+
         try:
             dom_text = browser_state.dom_state.llm_representation()
             if len(dom_text) > 2000:
@@ -510,6 +514,25 @@ class BrowserUseSession:
                 dom_excerpt = dom_text
         except Exception as exc:  # pragma: no cover - best effort only
             dom_excerpt = f"DOM extraction failed: {exc}"
+
+        if self._agent is not None:
+            try:
+                stabilised_actions, warnings, catalog = self._stabilise_model_output(
+                    browser_state,
+                    model_output,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                log.debug("Session %s: action stabilisation failed: %s", self.session_id, exc)
+                stabilised_actions = None
+                warnings = []
+                catalog = None
+
+            if stabilised_actions is not None:
+                model_output.action = stabilised_actions
+            for warning in warnings:
+                self._add_warning(warning)
+            action_warnings.extend(warnings)
+            element_catalog = catalog
 
         actions = [action.model_dump(exclude_none=True) for action in model_output.action]
         step_payload: Dict[str, Any] = {
@@ -523,11 +546,92 @@ class BrowserUseSession:
             "actions": actions,
             "screenshot": _normalise_screenshot(browser_state.screenshot),
             "dom_excerpt": dom_excerpt,
+            "element_catalog": element_catalog.text if element_catalog else "",
+            "element_catalog_metadata": element_catalog.metadata if element_catalog else {},
+            "action_warnings": action_warnings,
             "timestamp": _now(),
         }
         with self._lock:
             self.steps.append(step_payload)
             self.updated_at = _now()
+
+    def _stabilise_model_output(
+        self,
+        browser_state: BrowserStateSummary,
+        model_output: AgentOutput,
+    ) -> tuple[list[ActionModel] | None, list[str], ElementCatalogSnapshot | None]:
+        selector_map = getattr(browser_state.dom_state, "selector_map", {}) or {}
+        catalog = build_element_catalog(selector_map)
+
+        if not model_output.action:
+            return None, [], catalog
+
+        action_model = getattr(self._agent, "ActionModel", None)
+        if action_model is None:
+            return None, [], catalog
+
+        valid_indices: set[int] = set()
+        for key in selector_map:
+            try:
+                valid_indices.add(int(key))
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                continue
+        sanitised: list[ActionModel] = []
+        warnings: list[str] = []
+
+        index_requirements: dict[str, tuple[str, int]] = {
+            "click_element_by_index": ("index", 1),
+            "input_text": ("index", 0),
+            "select_dropdown_option": ("index", 1),
+            "get_dropdown_options": ("index", 1),
+            "upload_file_to_element": ("index", 1),
+        }
+
+        for original_action in model_output.action:
+            action_data = original_action.model_dump(exclude_unset=True)
+            if not action_data:
+                warnings.append("LLM returned an empty action; converted to wait(1s)")
+                continue
+
+            action_name, params = next(iter(action_data.items()))
+            params = params or {}
+
+            field_requirement = index_requirements.get(action_name)
+            if field_requirement is not None:
+                field_name, min_value = field_requirement
+                index_value = params.get(field_name)
+                if not isinstance(index_value, int):
+                    warnings.append(
+                        f"action '{action_name}' is missing integer '{field_name}'; removed"
+                    )
+                    continue
+                if index_value < min_value:
+                    warnings.append(
+                        f"action '{action_name}' received invalid {field_name}={index_value}; removed"
+                    )
+                    continue
+                if index_value not in valid_indices:
+                    warnings.append(
+                        f"action '{action_name}' target index {index_value} is no longer available; replaced with wait"
+                    )
+                    continue
+
+            if action_name == "scroll":
+                frame_index = params.get("frame_element_index")
+                if frame_index is not None and frame_index not in valid_indices:
+                    params = dict(params)
+                    params.pop("frame_element_index", None)
+                    warnings.append(
+                        "scroll.frame_element_index pointed to a missing element and was ignored"
+                    )
+
+            sanitised.append(action_model(**{action_name: params}))
+
+        if not sanitised:
+            fallback = action_model(**{"wait": {"seconds": 1}})
+            sanitised.append(fallback)
+
+        return sanitised, warnings, catalog
 
     def _finalise_result(self, history: AgentHistoryList) -> None:
         structured = history.structured_output
