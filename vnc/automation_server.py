@@ -47,7 +47,10 @@ from vnc.page_actions import (
 )
 from vnc.dependency_check import ensure_component_dependencies
 
-from agent.utils.shared_browser import format_shared_browser_error
+from agent.utils.shared_browser import (
+    format_shared_browser_error,
+    normalise_cdp_websocket,
+)
 
 # -------------------------------------------------- 基本設定
 app = Flask(__name__)
@@ -103,6 +106,40 @@ _CDP_DEFAULT_ENDPOINTS = (
     "http://vnc:9222",
 )
 _CDP_FALLBACK = "http://127.0.0.1:9222"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _dedupe_candidates(*groups: Iterable[str | None]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for group in groups:
+        if not group:
+            continue
+        for candidate in group:
+            normalised = _normalise_cdp_candidate(candidate)
+            if not normalised or normalised in seen:
+                continue
+            merged.append(normalised)
+            seen.add(normalised)
+
+    return merged
+
+
+def _candidate_hostname(candidate: str) -> str:
+    candidate = (candidate or "").strip()
+    if not candidate:
+        return ""
+    parsed = urlsplit(candidate if "://" in candidate else f"http://{candidate}")
+    return parsed.hostname or ""
+
+
+def _candidate_port(candidate: str) -> Optional[int]:
+    candidate = (candidate or "").strip()
+    if not candidate:
+        return None
+    parsed = urlsplit(candidate if "://" in candidate else f"http://{candidate}")
+    return parsed.port
 
 
 def _normalise_cdp_candidate(value: Optional[str]) -> str:
@@ -1197,6 +1234,37 @@ async def _wait_cdp(
 
     log.warning("Timed out waiting for CDP endpoint %s", version_url)
     return False
+
+
+async def _fetch_cdp_metadata(endpoint: str) -> Dict[str, Any]:
+    """Fetch DevTools metadata for *endpoint* if it responds."""
+
+    version_url = _json_version_url(endpoint)
+    if not version_url:
+        return {}
+
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            response = await client.get(version_url)
+    except httpx.HTTPError as exc:
+        log.debug("Failed to fetch CDP metadata from %s: %s", version_url, exc)
+        return {}
+
+    if response.status_code != 200:
+        log.debug(
+            "CDP metadata request to %s returned status %s",
+            version_url,
+            response.status_code,
+        )
+        return {}
+
+    try:
+        payload = response.json()
+    except ValueError:
+        log.debug("CDP metadata response from %s was not valid JSON", version_url)
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
 
 
 async def _check_browser_health() -> bool:
@@ -2346,6 +2414,121 @@ def execute_dsl():
         "complete": complete_flag,
     }
     return jsonify(response)
+
+
+@app.post("/shared-browser/ensure")
+def ensure_shared_browser():
+    correlation_id = str(uuid.uuid4())[:8]
+    candidates = _candidate_cdp_endpoints()
+    deduped = _dedupe_candidates(candidates)
+    payload: Dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "candidates": deduped,
+    }
+
+    try:
+        _run(_init_browser())
+        ready = bool(_run(_check_browser_health()))
+    except Exception as exc:
+        log.error("[%s] Shared browser warmup failed: %s", correlation_id, exc)
+        payload.update(
+            {
+                "status": "error",
+                "ready": False,
+                "cdp_ready": False,
+                "error": str(exc),
+            }
+        )
+        return jsonify(payload), 503
+
+    active_endpoint = CDP_URL or (deduped[0] if deduped else "")
+
+    public_endpoint = ""
+    for candidate in deduped:
+        host = _candidate_hostname(candidate).lower()
+        if host and host not in _LOOPBACK_HOSTS:
+            public_endpoint = candidate
+            break
+
+    if not public_endpoint:
+        forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
+        request_host = forwarded_host or request.host or ""
+        host_only = request_host.split(":")[0].strip()
+        if host_only and host_only.lower() not in _LOOPBACK_HOSTS:
+            port = (
+                _candidate_port(active_endpoint)
+                or (_candidate_port(deduped[0]) if deduped else None)
+                or int(os.getenv("CHROMIUM_REMOTE_DEBUG_PORT", "9222"))
+            )
+            public_endpoint = f"http://{host_only}:{port}"
+    if not public_endpoint:
+        public_endpoint = active_endpoint
+
+    version_url = _json_version_url(public_endpoint) if public_endpoint else ""
+
+    cdp_ready = False
+    metadata: Dict[str, Any] = {}
+    public_websocket: Optional[str] = None
+
+    if public_endpoint:
+        try:
+            cdp_ready = bool(
+                _run(_wait_cdp(public_endpoint, timeout=5, poll_interval=0.5))
+            )
+        except Exception as exc:
+            log.debug(
+                "[%s] CDP readiness check failed for %s: %s",
+                correlation_id,
+                public_endpoint,
+                exc,
+            )
+            cdp_ready = False
+
+        try:
+            metadata = _run(_fetch_cdp_metadata(public_endpoint))
+        except Exception as exc:
+            log.debug(
+                "[%s] Failed to retrieve CDP metadata from %s: %s",
+                correlation_id,
+                public_endpoint,
+                exc,
+            )
+            metadata = {}
+
+        raw_ws = None
+        if metadata:
+            raw_ws = metadata.get("webSocketDebuggerUrl") or metadata.get(
+                "websocketDebuggerUrl"
+            )
+        if isinstance(raw_ws, str) and raw_ws.strip():
+            public_websocket = normalise_cdp_websocket(public_endpoint, raw_ws.strip())
+
+    payload.update(
+        {
+            "status": "ready" if ready else "initialising",
+            "ready": ready,
+            "cdp_ready": cdp_ready,
+            "active_endpoint": active_endpoint,
+            "public_endpoint": public_endpoint,
+            "json_version_url": version_url,
+            "candidates": _dedupe_candidates(deduped, [public_endpoint], [active_endpoint]),
+        }
+    )
+
+    if metadata:
+        payload["metadata"] = metadata
+    if public_websocket:
+        payload["public_websocket"] = public_websocket
+
+    log.info(
+        "[%s] Shared browser status: ready=%s cdp_ready=%s public_endpoint=%s",
+        correlation_id,
+        ready,
+        cdp_ready,
+        public_endpoint,
+    )
+
+    return jsonify(payload)
 
 
 @app.get("/source")

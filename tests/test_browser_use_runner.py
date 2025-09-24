@@ -303,7 +303,12 @@ def test_create_browser_session_raises_when_shared_browser_unavailable(
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
 
     monkeypatch.delenv("REQUIRE_SHARED_BROWSER", raising=False)
-    monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
+    monkeypatch.setattr(
+        browser_use_runner, "_resolve_cdp_endpoint", lambda *_, **__: None
+    )
+    monkeypatch.setattr(
+        browser_use_runner, "_warm_shared_browser", lambda candidates: ([], None)
+    )
 
     calls: list[dict[str, object]] = []
 
@@ -410,13 +415,103 @@ def test_create_browser_session_records_remote_success(
     assert session.warnings == []
 
 
+def test_warm_shared_browser_handles_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_base() -> str:
+        return "http://vnc:7000"
+
+    class DummyResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {
+                "status": "ready",
+                "cdp_ready": True,
+                "public_websocket": "ws://vnc:9222/devtools/browser/abc",
+                "public_endpoint": "http://vnc:9222",
+                "candidates": ["http://127.0.0.1:9222"],
+            }
+
+    def fake_post(url: str, json: dict[str, object], timeout: tuple[float, float]):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setattr(browser_use_runner, "get_vnc_api_base", fake_base)
+    monkeypatch.setattr(browser_use_runner.requests, "post", fake_post)
+
+    candidates, websocket = browser_use_runner._warm_shared_browser(
+        ["http://localhost:9222"]
+    )
+
+    assert websocket == "ws://vnc:9222/devtools/browser/abc"
+    assert candidates[0] == "ws://vnc:9222/devtools/browser/abc"
+    assert "http://vnc:9222" in candidates
+    assert captured["url"] == "http://vnc:7000/shared-browser/ensure"
+    assert captured["json"] == {"candidates": ["http://localhost:9222"]}
+    assert isinstance(captured["timeout"], tuple)
+    assert captured["timeout"][1] == browser_use_runner._CDP_WARMUP_TIMEOUT
+
+
+def test_create_browser_session_uses_warmup_websocket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
+
+    attempts = {"count": 0}
+
+    def fake_resolve(*, candidates=None, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return None
+        return "ws://vnc:9222/devtools/browser/fallback"
+
+    monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", fake_resolve)
+    monkeypatch.setattr(
+        browser_use_runner,
+        "_warm_shared_browser",
+        lambda candidates: (["http://vnc:9222"], "ws://vnc:9222/devtools/browser/abc"),
+    )
+
+    calls: list[tuple[str | None, bool]] = []
+
+    class DummyBrowserSession:
+        def __init__(
+            self,
+            *,
+            cdp_url: str | None = None,
+            is_local: bool = False,
+            **_: object,
+        ) -> None:
+            calls.append((cdp_url, is_local))
+            self.cdp_url = cdp_url
+            self.is_local = is_local
+
+    monkeypatch.setattr(browser_use_runner, "BrowserSession", DummyBrowserSession)
+
+    result = session._create_browser_session()
+
+    assert isinstance(result, DummyBrowserSession)
+    assert calls == [("ws://vnc:9222/devtools/browser/abc", False)]
+    assert attempts["count"] >= 1
+    assert session.shared_browser_mode == "remote"
+    assert session.shared_browser_endpoint == "ws://vnc:9222/devtools/browser/abc"
+
+
 def test_create_browser_session_requires_shared_browser_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = BrowserUseSession(command="cmd", model_name="model", max_steps=1)
 
     monkeypatch.setenv("REQUIRE_SHARED_BROWSER", "1")
-    monkeypatch.setattr(browser_use_runner, "_resolve_cdp_endpoint", lambda: None)
+    monkeypatch.setattr(
+        browser_use_runner, "_resolve_cdp_endpoint", lambda *_, **__: None
+    )
+    monkeypatch.setattr(
+        browser_use_runner, "_warm_shared_browser", lambda candidates: ([], None)
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         session._create_browser_session()
